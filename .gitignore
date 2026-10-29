@@ -1,0 +1,15 @@
+# build outputs
+app/build/native/
+app/build/classes/
+app/build/dex/
+app/build/apk/
+app/build/*.apk
+*.apk
+*.apk.idsig
+*.keystore
+debug.keystore
+*.o
+*.so
+
+# ~30 MB of binary resources are not distributed with the source
+app/src/main/assets/
