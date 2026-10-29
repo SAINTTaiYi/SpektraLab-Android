@@ -40,10 +40,16 @@ public class MainActivity extends Activity {
     private ProgressBar exportProgressBar;
     private Spinner filmSpinner, printSpinner;
     private final List<String> filmIds = new ArrayList<>(), filmLabels = new ArrayList<>();
+    private final List<String> filmTypes = new ArrayList<>();
     private final List<String> printIds = new ArrayList<>(), printLabels = new ArrayList<>();
     private String filmStock = "kodak_portra_400";
     private String printStock = "kodak_portra_endura";
     private float printExposure = 1.0f;
+    private float grainAmount = 1.0f;      // 0..2, engine default 1
+    private float halationAmount = 1.0f;   // 0..4
+    private float glareAmount = 3.0f;      // 0..30 (percent x100)
+    private float filmFormatMm = 36.0f;    // frame's long edge, 135 = 36 mm
+    private boolean uiReady = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,14 +81,28 @@ public class MainActivity extends Activity {
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(20);
         title.setSingleLine(true);
-        topBar.addView(title, new LinearLayout.LayoutParams(0, -2, 0.8f));
+        topBar.addView(title, new LinearLayout.LayoutParams(0, -2, 0.45f));
         
         Button importBtn = new Button(this);
         importBtn.setText("导入");
         importBtn.setBackgroundResource(android.R.drawable.btn_default);
         importBtn.setTextColor(0xFF80D0FF);
         importBtn.setOnClickListener(v -> pickImage());
-        topBar.addView(importBtn, new LinearLayout.LayoutParams(0, -2, 0.35f));
+        topBar.addView(importBtn, new LinearLayout.LayoutParams(0, -2, 0.28f));
+
+        Button reimportBtn = new Button(this);
+        reimportBtn.setText("换一张");
+        reimportBtn.setBackgroundResource(android.R.drawable.btn_default);
+        reimportBtn.setTextColor(0xFFFFC080);
+        reimportBtn.setOnClickListener(v -> {
+            // A fresh pick replaces the frame outright: drop the shown bitmap so
+            // nothing of the previous photo lingers while the new one decodes.
+            lastRenderedBitmap = null;
+            imageView.setImageDrawable(null);
+            statusText.setText("选择要替换的照片...");
+            pickImage();
+        });
+        topBar.addView(reimportBtn, new LinearLayout.LayoutParams(0, -2, 0.30f));
         
         Button renderBtn = new Button(this);
         renderBtn.setText("渲染");
@@ -94,8 +114,12 @@ public class MainActivity extends Activity {
         exportBtn.setText("导出");
         exportBtn.setBackgroundResource(android.R.drawable.btn_default);
         exportBtn.setTextColor(0xFFFFD080);
-        exportBtn.setOnClickListener(v -> exportImage("preview"));
-        // Long-press exports the full tier (the camera's own pixel count).
+        // Tap asks which size; long-press goes straight to the full frame.
+        exportBtn.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("导出")
+                .setItems(new String[]{"预览档 2548×3400（快，约 20 秒）", "全尺寸 3523×4700（原图，约 8 秒）"},
+                        (d, which) -> exportImage(which == 0 ? "preview" : "full"))
+                .show());
         exportBtn.setOnLongClickListener(v -> { exportImage("full"); return true; });
         topBar.addView(exportBtn);
         renderBtn.setBackgroundResource(android.R.drawable.btn_default);
@@ -110,7 +134,7 @@ public class MainActivity extends Activity {
         // Use fixed height based on screen aspect ratio to avoid excessive top padding
         android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
         int screenH = dm.heightPixels;
-        int imageH = (int)(screenH * 0.55); // 55% of screen height for image
+        int imageH = (int)(screenH * 0.42); // leave room for the controls below
         layout.addView(imageView, new LinearLayout.LayoutParams(-1, imageH));
         
         // Progress bar
@@ -173,8 +197,21 @@ public class MainActivity extends Activity {
         });
         controls.addView(exposureBar);
         
-        layout.addView(controls);
+        addAmountSlider(controls, "颗粒", 0f, 2f, grainAmount,
+                v -> { grainAmount = v; applyParams(); });
+        addAmountSlider(controls, "光晕", 0f, 4f, halationAmount,
+                v -> { halationAmount = v; applyParams(); });
+        addAmountSlider(controls, "眩光", 0f, 30f, glareAmount,
+                v -> { glareAmount = v; applyParams(); });
+        addFilmFormatRow(controls);
+
+        // Six sections no longer fit a phone screen, so the controls scroll.
+        android.widget.ScrollView scroller = new android.widget.ScrollView(this);
+        scroller.addView(controls);
+        layout.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1f));
+
         setContentView(layout);
+        uiReady = true;
     }
 
     /** Reads assets/resources/stock_catalog.json (generated from the engine's profiles). */
@@ -184,8 +221,8 @@ public class MainActivity extends Activity {
             int off = 0, n;
             while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
             org.json.JSONObject root = new org.json.JSONObject(new String(buf, java.nio.charset.StandardCharsets.UTF_8));
-            readStocks(root.optJSONArray("films"), filmIds, filmLabels);
-            readStocks(root.optJSONArray("prints"), printIds, printLabels);
+            readStocks(root.optJSONArray("films"), filmIds, filmLabels, filmTypes);
+            readStocks(root.optJSONArray("prints"), printIds, printLabels, null);
         } catch (Throwable t) {
             android.util.Log.w("SpektraLab", "stock catalog: " + t);
         }
@@ -198,9 +235,19 @@ public class MainActivity extends Activity {
         filmSpinner.setSelection(Math.max(0, filmIds.indexOf(filmStock)), false);
         filmSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                filmStock = filmIds.get(position);
-                applyParams();
-                if (lastRenderedBitmap != null) renderImage();
+                final String picked = filmIds.get(position);
+                if (picked.equals(filmStock)) return;
+                // A slide is projected, not printed: pairing it with a paper is
+                // not a look, it is a blown-out frame (measured: mean 196/187/176
+                // against Portra Endura). Upstream greys the papers out here; we
+                // do not have a film-only view yet, so refuse the pair.
+                if (position < filmTypes.size() && "positive".equals(filmTypes.get(position))) {
+                    Toast.makeText(MainActivity.this, "反转片（幻灯）不能印到相纸上——本版暂只支持负片", Toast.LENGTH_LONG).show();
+                    filmSpinner.setSelection(Math.max(0, filmIds.indexOf(filmStock)), false);
+                    return;
+                }
+                filmStock = picked;
+                onStockChanged();
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
@@ -211,15 +258,16 @@ public class MainActivity extends Activity {
         printSpinner.setSelection(Math.max(0, printIds.indexOf(printStock)), false);
         printSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (printIds.get(position).equals(printStock)) return;
                 printStock = printIds.get(position);
-                applyParams();
-                if (lastRenderedBitmap != null) renderImage();
+                onStockChanged();
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
     }
 
-    private static void readStocks(org.json.JSONArray array, List<String> ids, List<String> labels) {
+    private static void readStocks(org.json.JSONArray array, List<String> ids, List<String> labels,
+                                   List<String> types) {
         if (array == null) return;
         for (int i = 0; i < array.length(); i++) {
             org.json.JSONObject o = array.optJSONObject(i);
@@ -235,6 +283,7 @@ public class MainActivity extends Activity {
             if ("cine".equals(use)) label.append(" · 电影");
             ids.add(id);
             labels.add(label.toString());
+            if (types != null) types.add(type);
         }
     }
 
@@ -474,14 +523,84 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    /**
+     * A stock change only re-renders. Measured against fresh sessions on this
+     * engine, the stored print solution already gives the same picture after a
+     * film switch (mean 64.4/58.9/55.7 either way) and a paper switch only moves
+     * the paper's own speed, which the enlarger-exposure slider is for. Calling
+     * `spk_solve` here re-metered a cached full-size negative and never returned,
+     * which is what left the status bar stuck on "配光中".
+     */
+    private void onStockChanged() {
+        applyParams();
+        if (session == null || !uiReady) return;
+        if (lastRenderedBitmap != null) {
+            renderImage();
+        } else {
+            statusText.setText("已选择 " + filmStock + " / " + printStock);
+        }
+    }
+
+
+    /** A labelled 0..1000 SeekBar mapped onto [lo, hi]; renders when released. */
+    private void addAmountSlider(LinearLayout parent, String name, float lo, float hi, float initial,
+                                 java.util.function.Consumer<Float> apply) {
+        TextView tv = new TextView(this);
+        tv.setText(String.format("%s: %.2f", name, initial));
+        tv.setTextColor(0xFFFFFFFF);
+        parent.addView(tv);
+        SeekBar bar = new SeekBar(this);
+        bar.setMax(1000);
+        bar.setProgress(Math.round((initial - lo) / (hi - lo) * 1000f));
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                float v = lo + (hi - lo) * progress / 1000f;
+                tv.setText(String.format("%s: %.2f", name, v));
+                apply.accept(v);
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {
+                if (uiReady && lastRenderedBitmap != null) renderImage();
+            }
+        });
+        parent.addView(bar);
+    }
+
+    /** Frame size: grain and halation are scaled by the frame's long edge in mm. */
+    private void addFilmFormatRow(LinearLayout parent) {
+        TextView label = new TextView(this);
+        label.setText("画幅（颗粒 / 光晕的物理尺度）");
+        label.setTextColor(0xFFFFFFFF);
+        parent.addView(label);
+        final String[] names = {"135 全画幅 · 36mm", "半格 · 24mm", "XPan · 65mm", "645 · 56mm",
+                "6×6 · 56mm", "6×7 · 70mm", "6×9 · 84mm", "6×12 · 120mm", "6×17 · 170mm"};
+        final float[] mm = {36f, 24f, 65f, 56f, 56f, 70f, 84f, 120f, 170f};
+        Spinner sp = new Spinner(this);
+        ArrayAdapter<String> a = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, names);
+        a.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sp.setAdapter(a);
+        sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
+                filmFormatMm = mm[pos];
+                applyParams();
+                if (uiReady && lastRenderedBitmap != null) renderImage();
+            }
+            @Override public void onNothingSelected(AdapterView<?> p) {}
+        });
+        parent.addView(sp);
+    }
+
     private void applyParams() {
         if (session != null) {
             session.setParams(String.format(
-                "{\"film_stock\":\"%s\",\"print_stock\":\"%s\",\"input_color_space\":\"%s\",\"input_cctf_decoding\":%s,\"output_color_space\":\"sRGB\",\"print_exposure\":%.2f,\"preview_long_edge\":2048}",
+                "{\"film_stock\":\"%s\",\"print_stock\":\"%s\",\"input_color_space\":\"%s\",\"input_cctf_decoding\":%s,"
+                + "\"output_color_space\":\"sRGB\",\"print_exposure\":%.2f,\"preview_long_edge\":2048,"
+                + "\"grain_amount\":%.3f,\"halation_amount\":%.3f,\"glare_amount\":%.3f,\"film_format_mm\":%.1f}",
                 filmStock, printStock,
                 isRawFile ? "ProPhoto RGB" : "sRGB",
                 isRawFile ? "false" : "true",
-                printExposure
+                printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm
             ));
         }
     }
@@ -735,14 +854,51 @@ public class MainActivity extends Activity {
         f.delete();
     }
 
+    private static final Object RESOURCE_LOCK = new Object();
+
+    /**
+     * The asset tree is ~30 MB; copying it on every import froze the picker for
+     * seconds and was why a second photo only worked after a restart. The copy
+     * now runs once per installed build, keyed by the version code, so an
+     * upgrade still refreshes a stale .spv (which would otherwise show up as a
+     * wrong-sized picture rather than an error).
+     */
     private String getResourcesDir() throws java.io.IOException {
         java.io.File dir = new java.io.File(getFilesDir(), "resources");
-        // Always start from an empty tree. A stale .spv left over from an
-        // earlier build is invisible to the engine loader and shows up as a
-        // wrong-sized picture, not as an error.
-        deleteTree(dir);
-        copyAssetTree("resources", dir);
+        java.io.File marker = new java.io.File(dir, ".bundle");
+        final String want = bundleVersion();
+        if (marker.isFile() && want.equals(readSmallFile(marker))) return dir.getAbsolutePath();
+        synchronized (RESOURCE_LOCK) {
+            if (marker.isFile() && want.equals(readSmallFile(marker))) return dir.getAbsolutePath();
+            final long t0 = System.currentTimeMillis();
+            deleteTree(dir);
+            copyAssetTree("resources", dir);
+            try (java.io.FileWriter fw = new java.io.FileWriter(marker)) { fw.write(want); }
+            try {
+                DebugSink.text("resources", "copied in " + (System.currentTimeMillis() - t0)
+                        + " ms (bundle " + want + ")");
+            } catch (Throwable ignored) {}
+        }
         return dir.getAbsolutePath();
+    }
+
+    private String bundleVersion() {
+        try {
+            return String.valueOf(getPackageManager().getPackageInfo(getPackageName(), 0).versionCode);
+        } catch (Throwable t) {
+            return "0";
+        }
+    }
+
+    private static String readSmallFile(java.io.File f) {
+        try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[(int) Math.min(f.length(), 32)];
+            int off = 0, n;
+            while (off < b.length && (n = in.read(b, off, b.length - off)) > 0) off += n;
+            return new String(b, 0, off, java.nio.charset.StandardCharsets.UTF_8).trim();
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     private void copyAssetTree(String assetPath, java.io.File outDir) throws java.io.IOException {
