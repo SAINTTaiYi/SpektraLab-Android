@@ -79,19 +79,21 @@ public class MainActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("SpektraLab");
         title.setTextColor(0xFFFFFFFF);
-        title.setTextSize(20);
+        title.setTextSize(18);
         title.setSingleLine(true);
         topBar.addView(title, new LinearLayout.LayoutParams(0, -2, 0.45f));
         
         Button importBtn = new Button(this);
         importBtn.setText("导入");
+        importBtn.setTextSize(13);
         importBtn.setBackgroundResource(android.R.drawable.btn_default);
         importBtn.setTextColor(0xFF80D0FF);
         importBtn.setOnClickListener(v -> pickImage());
         topBar.addView(importBtn, new LinearLayout.LayoutParams(0, -2, 0.28f));
 
         Button reimportBtn = new Button(this);
-        reimportBtn.setText("换一张");
+        reimportBtn.setText("换图");
+        reimportBtn.setTextSize(13);
         reimportBtn.setBackgroundResource(android.R.drawable.btn_default);
         reimportBtn.setTextColor(0xFFFFC080);
         reimportBtn.setOnClickListener(v -> {
@@ -106,12 +108,14 @@ public class MainActivity extends Activity {
         
         Button renderBtn = new Button(this);
         renderBtn.setText("渲染");
+        renderBtn.setTextSize(13);
         renderBtn.setBackgroundResource(android.R.drawable.btn_default);
         renderBtn.setTextColor(0xFF80FF80);
         topBar.addView(renderBtn);
         
         Button exportBtn = new Button(this);
         exportBtn.setText("导出");
+        exportBtn.setTextSize(13);
         exportBtn.setBackgroundResource(android.R.drawable.btn_default);
         exportBtn.setTextColor(0xFFFFD080);
         // Tap asks which size; long-press goes straight to the full frame.
@@ -329,32 +333,66 @@ public class MainActivity extends Activity {
                 return;
             }
             
-            InputStream stream = getContentResolver().openInputStream(uri);
-            sourceBitmap = BitmapFactory.decodeStream(stream);
-            stream.close();
-            if (sourceBitmap != null) {
-                sourceBitmap = applyExifRotation(uri, sourceBitmap);
+            // Free the previous frame before decoding: a 20 MP pick wants a
+            // ~200 MB direct buffer and the old session still holds its planes
+            // (this OOM was 241 MB with 201 MB left in the heap).
+            if (session != null) { session.close(); session = null; }
+            lastRenderedBitmap = null;
+            imageView.setImageDrawable(null);
+            sourceBitmap = null;
+            sourcePixels = null;
+            System.gc();
+
+            // Cap the long edge the same way the RAW path does. inSampleSize only
+            // halves, so one exact scale follows if the sample still overshoots.
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream probe = getContentResolver().openInputStream(uri)) {
+                BitmapFactory.decodeStream(probe, null, bounds);
+                if (probe != null) probe.close();
             }
+            int sample = 1;
+            while (Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 4700) sample *= 2;
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = sample;
+            Bitmap decoded;
+            try (InputStream stream = getContentResolver().openInputStream(uri)) {
+                decoded = BitmapFactory.decodeStream(stream, null, opts);
+            }
+            sourceBitmap = decoded == null ? null : applyExifRotation(uri, decoded);
             if (sourceBitmap == null) {
                 Toast.makeText(this, "无法解码图片", Toast.LENGTH_SHORT).show();
                 return;
             }
+            final int longEdge = Math.max(sourceBitmap.getWidth(), sourceBitmap.getHeight());
+            if (longEdge > 4700) {
+                float k = 4700f / longEdge;
+                sourceBitmap = Bitmap.createScaledBitmap(sourceBitmap,
+                        Math.round(sourceBitmap.getWidth() * k), Math.round(sourceBitmap.getHeight() * k), true);
+            }
             sourceWidth = sourceBitmap.getWidth();
             sourceHeight = sourceBitmap.getHeight();
-            
-            // Convert to float32 RGB
-            int[] pixels = new int[sourceWidth * sourceHeight];
-            sourceBitmap.getPixels(pixels, 0, sourceWidth, 0, 0, sourceWidth, sourceHeight);
+
+            // Convert a row at a time: a full int[] of 20 MP would be another
+            // 80 MB on the Java heap next to the direct buffer.
             sourcePixels = ByteBuffer.allocateDirect(sourceWidth * sourceHeight * 3 * 4)
                 .order(ByteOrder.nativeOrder());
-            for (int px : pixels) {
-                sourcePixels.putFloat(((px >> 16) & 0xFF) / 255.0f);
-                sourcePixels.putFloat(((px >> 8) & 0xFF) / 255.0f);
-                sourcePixels.putFloat((px & 0xFF) / 255.0f);
+            final int[] rowPixels = new int[sourceWidth];
+            for (int y = 0; y < sourceHeight; y++) {
+                sourceBitmap.getPixels(rowPixels, 0, sourceWidth, 0, y, sourceWidth, 1);
+                for (int px : rowPixels) {
+                    sourcePixels.putFloat(((px >> 16) & 0xFF) / 255.0f);
+                    sourcePixels.putFloat(((px >> 8) & 0xFF) / 255.0f);
+                    sourcePixels.putFloat((px & 0xFF) / 255.0f);
+                }
             }
             sourcePixels.rewind();
             
-            imageView.setImageBitmap(sourceBitmap);
+            final int pw = Math.max(1, Math.round(sourceWidth * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
+            final int ph = Math.max(1, Math.round(sourceHeight * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
+            imageView.setImageBitmap(Bitmap.createScaledBitmap(sourceBitmap, pw, ph, true));
+            sourceBitmap.recycle();
+            sourceBitmap = null;
             statusText.setText("已加载 " + sourceWidth + "x" + sourceHeight + "，点击渲染");
             
             // Create engine and session
