@@ -161,6 +161,33 @@ shader 侧新增 `spk_frame_index() = origin + base + local`，用索引播种/�
 输出哈希立刻变了（分带反而更错）。所以自动分带已删除，只保留显式的
 `dispatch_banded(...)`：步长必须由**知道内核布局的调用点**给出。
 
+## 已接入分带的阶段（14 个）
+
+`Pipeline::dispatch_plane(kernel, args, strides, shape, elements, error)`：只有当最宽的
+平面超过 `maxStorageBufferRange` 时才分带；`SPK_FORCE_BAND_ROWS=n` 可强制分带，
+用来在没有这个限制的设备上证明分带是精确的。
+
+| 阶段 | 调度单位 | 步长 |
+|---|---|---|
+| `take_rgb` | 像素 | `c*4` / 12 |
+| `curves` | 像素 | `c*4`…`c*4` |
+| `matmul3` | 像素 | `c*4` / `c*4` |
+| `couplers_correction` | 像素 | `c*4` / `c*4` |
+| `highlight_headroom` | 像素 | `c*4` / `c*4` |
+| `grain_layers` / `grain_layer_one` / `grain_simple` | 像素 | `c*4` / `c*4` |
+| `cctf_decode` | 元素 | 4 / 4 |
+| `print_exposure` | 元素 | 4 / 4 |
+| `boost` / `log10_guarded` | 元素 | 4 / 4 |
+| `glare_add` | 元素 | 4 / 4 / 4 |
+| `mul` | 元素 | 4 / 4 / 4 |
+
+**两种调度单位的步长不同**，这是踩过的坑：一个线程处理一个像素时，步长是 `c*4`
+（12 字节）；一个线程处理一个元素时，步长是 4 字节。写错会让窗口是平面的 3 倍，
+最后一带直接越界（`window argument 0 is outside its buffer`，渲染状态 -5、输出 NaN）。
+
+验证：14 个阶段逐个单独强制分带，输出哈希全部等于整幅的 `0b3c0685f4c262d7`；
+全部同时开启、每带 4 / 8 / 32 行，哈希同样不变。
+
 ## 实施顺序
 
 1. `Arg` 增加 `(offset, range)`；`dispatch()` 绑定窗口；size 检查用 `range`。

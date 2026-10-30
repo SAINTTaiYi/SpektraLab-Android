@@ -875,6 +875,272 @@ index ee4ffb0..ee5f2ec 100644
      if (ok) {
          out->width = rgb.w;
          out->height = rgb.h;
+diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
+index 828ac50..192fd32 100644
+--- a/engine/src/pipeline/pipeline.cpp
++++ b/engine/src/pipeline/pipeline.cpp
+@@ -492,23 +492,81 @@ bool Pipeline::build(const Params& params, std::string& error) {
+ // small dispatch helpers
+ // ---------------------------------------------------------------------------
+ 
++bool Pipeline::dispatch_plane(const char* kernel, const std::vector<gpu::Arg>& args,
++                              const std::vector<uint32_t>& strides, const Image& shape,
++                              size_t elements, std::string& error) {
++    std::vector<uint32_t> plan_strides(args.size(), 0u);
++    uint32_t widest = 0;
++    for (size_t i = 0; i < strides.size() && i < args.size(); ++i) {
++        plan_strides[i] = strides[i];
++        if (strides[i]) widest = std::max(widest, strides[i]);
++    }
++    // Two dispatch shapes are in use: one thread per pixel, and one per
++    // element (three per pixel). A band is still whole rows either way.
++    uint32_t columns = 0;
++    if (shape.w && shape.h) {
++        if (elements == shape.pixels()) columns = shape.w;
++        else if (elements == shape.elements()) columns = shape.w * shape.c;
++    }
++    if (!widest || !columns)
++        return gpu_->dispatch(kernel, args, elements, error);
++
++    static const uint32_t forced = [] {
++        const char* v = std::getenv("SPK_FORCE_BAND_ROWS");
++        return v ? uint32_t(std::atoi(v)) : 0u;
++    }();
++    if (forced) {
++        const char* only = std::getenv("SPK_FORCE_BAND_ONLY");
++        if (only && *only && std::strcmp(only, kernel) != 0)
++            return gpu_->dispatch(kernel, args, elements, error);
++    }
++
++    if (const char* dbg = std::getenv("SPK_TILE_DEBUG")) {
++        if (*dbg == '1')
++            std::fprintf(stderr, "[tile] %s elements=%zu w=%u h=%u c=%u columns=%u widest=%u\n",
++                         kernel, elements, shape.w, shape.h, shape.c, columns, widest);
++    }
++    const uint64_t plane_bytes = uint64_t(elements) * widest;
++    const uint64_t limit = gpu_->max_storage_buffer_range();
++    if (!forced && plane_bytes <= limit)
++        return gpu_->dispatch(kernel, args, elements, error);
++
++    uint32_t rows = shape.h;
++    if (forced) {
++        rows = std::min(forced, shape.h);
++    } else {
++        const uint64_t per_row = std::max<uint64_t>(1, uint64_t(columns) * widest);
++        const uint64_t budget = limit * 3 / 4;   // leave headroom for the other planes
++        rows = uint32_t(std::max<uint64_t>(1, budget / per_row));
++        if (rows >= shape.h) return gpu_->dispatch(kernel, args, elements, error);
++    }
++    if (rows >= shape.h) return gpu_->dispatch(kernel, args, elements, error);
++
++    gpu::TilePlan plan;
++    plan.rows = shape.h;
++    plan.columns = columns;
++    plan.band_rows = rows;
++    plan.stride = plan_strides;
++    return gpu_->dispatch_banded(kernel, args, elements, plan, error);
++}
++
+ bool Pipeline::curve_interp(const Image& x, const gpu::BufferRef& xa, const gpu::BufferRef& inv,
+                             const gpu::BufferRef& y, size_t k, Image& out, std::string& error) {
+     if (!alloc_like(x, out, error)) return false;
+     const uint32_t meta[2] = {uint32_t(k), uint32_t(x.pixels())};
+-    return gpu_->dispatch("spk_curves",
++    return dispatch_plane("spk_curves",
+                           {gpu::Arg::buf(x.buf), gpu::Arg::buf(xa), gpu::Arg::buf(inv),
+                            gpu::Arg::buf(y), gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(out.buf)},
+-                          x.pixels(), error);
++                          {x.c * 4u, 0u, 0u, 0u, 0u, x.c * 4u}, x, x.pixels(), error);
+ }
+ 
+ bool Pipeline::matmul3(const Image& x, const gpu::BufferRef& m, Image& out, std::string& error) {
+     if (!alloc_like(x, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(x.pixels())};
+-    return gpu_->dispatch("spk_matmul3",
++    return dispatch_plane("spk_matmul3",
+                           {gpu::Arg::buf(x.buf), gpu::Arg::buf(m), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          x.pixels(), error);
++                          {x.c * 4u, 0u, 0u, x.c * 4u}, x, x.pixels(), error);
+ }
+ 
+ bool Pipeline::spectral(const Image& cmy, const gpu::BufferRef& chd, const gpu::BufferRef& base,
+@@ -578,9 +636,9 @@ bool Pipeline::node_input_cast(const Image& in, Image& out, std::string& error)
+     out.buf = gpu_->alloc(out.bytes(), error);
+     if (!out.buf) return false;
+     const uint32_t meta[2] = {uint32_t(in.pixels()), in.c};
+-    return gpu_->dispatch("spk_take_rgb",
++    return dispatch_plane("spk_take_rgb",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 12u}, in, in.pixels(), error);
+ }
+ 
+ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error) {
+@@ -588,9 +646,9 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
+     Timer t(this, "preprocess.decode_input");
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t meta[2] = {uint32_t(in.elements()), input_cctf_mode_};
+-    return gpu_->dispatch("spk_cctf_decode",
++    return dispatch_plane("spk_cctf_decode",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(out.buf)},
+-                          in.elements(), error);
++                          {4u, 0u, 4u}, in, in.elements(), error);
+ }
+ 
+ bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
+@@ -951,10 +1009,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
+     if (!p_buf) return false;
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.elements())};
+-    return gpu_->dispatch("spk_boost",
++    return dispatch_plane("spk_boost",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(p_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.elements(), error);
++                          {4u, 0u, 0u, 4u}, in, in.elements(), error);
+ }
+ 
+ // **The headroom a digital frame clipped off, given back to the negative.** A
+@@ -992,10 +1050,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
+     if (!p_buf) return false;
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_highlight_headroom",
++    return dispatch_plane("spk_highlight_headroom",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(p_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 0u, in.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ // --- the sigmas, in one place, because a demand must agree with its node ----
+@@ -1272,10 +1330,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
+     if (!k_buf) return false;
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.elements())};
+-    return gpu_->dispatch("spk_log10_guarded",
++    return dispatch_plane("spk_log10_guarded",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(k_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.elements(), error);
++                          {4u, 0u, 0u, 4u}, in, in.elements(), error);
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -1297,11 +1355,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
+     if (!alloc_like(cmy, corr, error)) return false;
+     const uint32_t pos[1] = {params_.film.info.is_positive() ? 1u : 0u};
+     const uint32_t n[1] = {uint32_t(cmy.pixels())};
+-    if (!gpu_->dispatch("spk_couplers_correction",
++    if (!dispatch_plane("spk_couplers_correction",
+                         {gpu::Arg::buf(cmy.buf), gpu::Arg::buf(baked_.coupler_matrix),
+                          gpu::Arg::buf(baked_.coupler_dmax), gpu::Arg::inline_bytes(pos, 1),
+                          gpu::Arg::buf(baked_.coupler_shift), gpu::Arg::inline_bytes(n, 1),
+                          gpu::Arg::buf(corr.buf)},
++                        {cmy.c * 4u, 0u, 0u, 0u, 0u, 0u, cmy.c * 4u}, cmy,
+                         cmy.pixels(), error)) return false;
+ 
+     const std::vector<Blur::Component> diffusion = dir_coupler_diffusion();
+@@ -1393,11 +1452,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+             if (!alloc_like(in, grain, error)) return false;
+             const uint32_t meta[4] = {uint32_t(k), uint32_t(in.pixels()),
+                                       params_.film.info.is_positive() ? 1u : 0u, seed};
+-            if (!gpu_->dispatch("spk_grain_layers",
++            if (!dispatch_plane("spk_grain_layers",
+                                 {gpu::Arg::buf(in.buf), gpu::Arg::buf(baked_.grain_xa),
+                                  gpu::Arg::buf(baked_.grain_inv), gpu::Arg::buf(baked_.grain_ylay),
+                                  gpu::Arg::buf(lp_buf), gpu::Arg::buf(baked_.grain_streams),
+                                  gpu::Arg::inline_bytes(meta, 4), gpu::Arg::buf(grain.buf)},
++                                {in.c * 4u, 0u, 0u, 0u, 0u, 0u, 0u, in.c * 4u}, in,
+                                 in.pixels(), error)) return false;
+         } else {
+             // The dye-cloud blur is per (sub-layer, channel), so each
+@@ -1412,11 +1472,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+                 if (!alloc_like(in, layer, error)) return false;
+                 const uint32_t meta[5] = {uint32_t(k), uint32_t(in.pixels()),
+                                           params_.film.info.is_positive() ? 1u : 0u, seed, sl};
+-                if (!gpu_->dispatch("spk_grain_layer_one",
++                if (!dispatch_plane("spk_grain_layer_one",
+                                     {gpu::Arg::buf(in.buf), gpu::Arg::buf(baked_.grain_xa),
+                                      gpu::Arg::buf(baked_.grain_inv), gpu::Arg::buf(baked_.grain_ylay),
+                                      gpu::Arg::buf(lp_buf), gpu::Arg::buf(baked_.grain_streams),
+                                      gpu::Arg::inline_bytes(meta, 5), gpu::Arg::buf(layer.buf)},
++                                    {in.c * 4u, 0u, 0u, 0u, 0u, 0u, 0u, in.c * 4u}, in,
+                                     in.pixels(), error)) return false;
+                 double sigma[3];
+                 for (int ch = 0; ch < 3; ++ch)
+@@ -1448,9 +1509,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+         if (!lp_buf || !streams_buf) return false;
+         if (!alloc_like(in, grain, error)) return false;
+         const uint32_t meta[3] = {uint32_t(in.pixels()), uint32_t(nsub), seed};
+-        if (!gpu_->dispatch("spk_grain_simple",
++        if (!dispatch_plane("spk_grain_simple",
+                             {gpu::Arg::buf(in.buf), gpu::Arg::buf(lp_buf), gpu::Arg::buf(streams_buf),
+                              gpu::Arg::inline_bytes(meta, 3), gpu::Arg::buf(grain.buf)},
++                            {in.c * 4u, 0u, 0u, 0u, in.c * 4u}, in,
+                             in.pixels(), error)) return false;
+         double s[3], t0[3];
+         fill3(s, 1.0 / double(nsub));
+@@ -1483,10 +1545,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+         Image multiplied;
+         if (!alloc_like(grain, multiplied, error)) return false;
+         const uint32_t n[1] = {uint32_t(grain.elements())};
+-        if (!gpu_->dispatch("spk_mul",
++        if (!dispatch_plane("spk_mul",
+                             {gpu::Arg::buf(grain.buf), gpu::Arg::buf(field.buf),
+                              gpu::Arg::inline_bytes(n, 1), gpu::Arg::buf(multiplied.buf)},
+-                            grain.elements(), error)) return false;
++                            {4u, 4u, 0u, 4u}, grain, grain.elements(), error)) return false;
+         grain = multiplied;
+     }
+     double s[3], t0[3];
+@@ -1620,10 +1682,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
+     if (!k_buf) return false;
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.elements())};
+-    return gpu_->dispatch("spk_print_exposure",
++    return dispatch_plane("spk_print_exposure",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(k_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.elements(), error);
++                          {4u, 0u, 0u, 4u}, in, in.elements(), error);
+ }
+ 
+ bool Pipeline::node_print_curves(const Image& in, Image& out, std::string& error) {
+@@ -1743,11 +1805,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
+     }
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.elements())};
+-    return gpu_->dispatch("spk_glare_add",
++    return dispatch_plane("spk_glare_add",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(field.buf),
+                            gpu::Arg::buf(baked_.glare_illuminant), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.elements(), error);
++                          {4u, 4u, 0u, 0u, 4u}, in, in.elements(), error);
+ }
+ 
+ bool Pipeline::node_xyz_to_rgb(const Image& in, Image& out, std::string& error) {
+diff --git a/engine/src/pipeline/pipeline.hpp b/engine/src/pipeline/pipeline.hpp
+index 5fd77be..1e4b75e 100644
+--- a/engine/src/pipeline/pipeline.hpp
++++ b/engine/src/pipeline/pipeline.hpp
+@@ -699,6 +699,14 @@ private:
+ 
+     // --- helpers ---------------------------------------------------------
+     bool alloc_like(const Image& img, Image& out, std::string& error);
++
++    // A row-independent kernel over an image-shaped plane. Passes straight
++    // through unless the widest windowed plane is larger than the device can
++    // bind at once, or SPK_FORCE_BAND_ROWS asks for bands anyway -- which is how
++    // a device that never needs banding still proves it is exact.
++    bool dispatch_plane(const char* kernel, const std::vector<gpu::Arg>& args,
++                        const std::vector<uint32_t>& strides, const Image& shape,
++                        size_t elements, std::string& error);
+     bool curve_interp(const Image& x, const gpu::BufferRef& xa, const gpu::BufferRef& inv,
+                       const gpu::BufferRef& y, size_t k, Image& out, std::string& error);
+     bool matmul3(const Image& x, const gpu::BufferRef& m, Image& out, std::string& error);
 diff --git a/engine/src/shaders/vulkan/spk_affine3.comp b/engine/src/shaders/vulkan/spk_affine3.comp
 index 76b28db..48fc958 100644
 --- a/engine/src/shaders/vulkan/spk_affine3.comp
