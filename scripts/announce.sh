@@ -47,7 +47,7 @@ curl -s "https://purge.jsdelivr.net/gh/SAINTTaiYi/SpektraLab-Android@master/upda
 
 if [ -n "${CF_TOKEN:-}" ]; then
   echo "Cloudflare:"
-  curl -s -X PUT "https://spektralab-update.geeklightonefish.workers.dev/admin/latest" \
+  curl -s -X PUT "https://update.workshop.skin/admin/latest" \
     -H "authorization: Bearer $CF_TOKEN" \
     -H "content-type: application/json" \
     --data-binary @update.json
