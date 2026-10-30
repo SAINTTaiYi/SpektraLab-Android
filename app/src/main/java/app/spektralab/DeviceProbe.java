@@ -15,7 +15,18 @@ import org.json.JSONObject;
  */
 public final class DeviceProbe {
 
-    /** Frame ceiling that holds on every device measured so far: 65 535 x 256. */
+    /**
+     * The frame ceiling this build will import on its own.
+     *
+     * It used to be a driver limit: past 16,776,960 pixels (65 535 workgroups
+     * x 256 threads) a dispatch folded into workgroup rows and the top rows
+     * came back unwritten. That is fixed -- the engine now issues one 1D
+     * dispatch per 65 535 workgroups and every shader offsets by the chunk's
+     * first element, verified byte-identical at 2 and 4 chunks on a 20.3 MP
+     * frame. The number stays as a **memory** policy until a frame's live
+     * planes are costed properly: three 16.5 MP float planes are ~200 MB each,
+     * and a phone that swaps under that is worse than one that renders smaller.
+     */
     public static final int DISPATCH_PIXEL_CAP = 16_490_040;
 
     public final String backend;

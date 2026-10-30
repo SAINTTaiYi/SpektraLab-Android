@@ -338,6 +338,14 @@ static bool write_jpeg_file(const char* path, const spk_result& r, int quality) 
     cinfo.in_color_space = JCS_RGB;
     jpeg_set_defaults(&cinfo);
     jpeg_set_quality(&cinfo, quality, TRUE);
+    // **4:4:4 chroma.** libjpeg's default is 4:2:0, which throws away three
+    // quarters of the colour resolution -- exactly where film grain, dye clouds
+    // and halation edges live. A 16.5 MP print measured 3.3 MB at q95 with the
+    // default; the same frame at 4:4:4 is ~3x that and keeps its texture.
+    for (int c = 0; c < cinfo.num_components; ++c) {
+        cinfo.comp_info[c].h_samp_factor = 1;
+        cinfo.comp_info[c].v_samp_factor = 1;
+    }
     jpeg_start_compress(&cinfo, TRUE);
     std::vector<uint8_t> row(size_t(w) * 3);
     while (cinfo.next_scanline < h) {

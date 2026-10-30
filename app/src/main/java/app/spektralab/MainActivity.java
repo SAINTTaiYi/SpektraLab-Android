@@ -100,19 +100,21 @@ public class MainActivity extends Activity {
         // binding range is small this can only fail, and it says so before it
         // tries.
         importBtn.setOnLongClickListener(v -> {
-            final String overDispatch =
-                    "\n\n另：超过 1677 万像素（约 5000×3350）时，部分驱动会丢掉画面块，"
-                    + "可能出现顶部未渲染的区域。";
-            final String warning = (probe.isLimited()
-                    ? "本机 GPU 单缓冲上限约 " + String.format("%.1f", probe.maxMegapixels())
-                      + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
-                    : "按原始尺寸导入（不做任何缩放）。") + overDispatch
-                    + "\n\n仍要按原始尺寸导入吗？";
             new android.app.AlertDialog.Builder(this)
-                    .setTitle("按原始尺寸导入")
-                    .setMessage(warning)
-                    .setPositiveButton("继续", (d, w2) -> { importAtNativeSize = true; pickImage(); })
-                    .setNegativeButton("取消", null)
+                    .setTitle("导入")
+                    .setItems(new String[]{
+                            "从相册选择（照片 / JPEG）",
+                            "从文件选择（RAW：ARW / DNG / NEF…）",
+                            "按原始尺寸导入（可能失败）"},
+                            (d, which) -> {
+                                if (which == 0) {
+                                    pickImage();
+                                } else if (which == 1) {
+                                    pickRawFile();
+                                } else {
+                                    confirmNativeImport();
+                                }
+                            })
                     .show();
             return true;
         });
@@ -264,6 +266,23 @@ public class MainActivity extends Activity {
                 .postDelayed(() -> UpdateCheck.check(this, false), 3000);
     }
 
+    /** Full-size import is kept, and honest about itself. */
+    private void confirmNativeImport() {
+        final String overDispatch =
+                "\n\n另：超过 1677 万像素（约 5000×3350）时，部分驱动会丢掉画面块，"
+                + "可能出现顶部未渲染的区域。";
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("按原始尺寸导入")
+                .setMessage((probe.isLimited()
+                        ? "本机 GPU 单缓冲上限约 " + String.format("%.1f", probe.maxMegapixels())
+                          + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
+                        : "按原始尺寸导入（不做任何缩放）。") + overDispatch
+                        + "\n\n仍要继续吗？")
+                .setPositiveButton("继续", (d, w) -> { importAtNativeSize = true; pickRawFile(); })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
     /** Long-press on the title: version, update check, and where the code lives. */
     private void showAbout() {
         final String version = UpdateCheck.versionName(this) + "（" + UpdateCheck.versionCode(this) + "）";
@@ -363,12 +382,27 @@ public class MainActivity extends Activity {
         return result;
     }
 
+    /** Tap: the gallery, which is where phone photos and JPEGs are. */
     private void pickImage() {
-        // **Not image/\*.** Sony's .ARW and several other RAW containers are
-        // typed application/octet-stream by the storage layer, so a picker
-        // filtered to image/* hides them completely -- which the user reads,
-        // correctly, as "this app cannot import RAW". Ask for any file, and
-        // name the RAW types as preferences where the picker honours them.
+        Intent intent;
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            intent = new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);
+        } else {
+            intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.setType("image/*");
+        }
+        startActivityForResult(intent, 1);
+    }
+
+    /**
+     * Documents, for RAW. Sony's .ARW and several other RAW containers are
+     * typed application/octet-stream by the storage layer, so a picker filtered
+     * to image/* hides them completely -- which the user reads, correctly, as
+     * "this app cannot import RAW". Asking for any file fixes that, but Android
+     * then routes to Files rather than Photos, which is why it is its own
+     * entry instead of replacing the gallery.
+     */
+    private void pickRawFile() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
@@ -1055,10 +1089,17 @@ public class MainActivity extends Activity {
                 } catch (Throwable ignored) {}
                 final long secs = Math.max(1, (System.currentTimeMillis() - t0) / 1000);
                 final long fRender = renderMs;
+                final long bytes = tmp.exists() ? tmp.length() : 0;
+                final String sizeLabel = bytes > 0
+                        ? String.format("%.1f MB", bytes / 1048576.0) : "?";
                 runOnUiThread(() -> {
-                    Toast.makeText(this, "已保存 " + fw + "x" + fh, Toast.LENGTH_LONG).show();
-                    statusText.setText("已导出 " + fw + "x" + fh + "（" + secs + " 秒，其中渲染 "
-                        + (fRender / 1000.0) + " 秒）");
+                    // Dimensions and file size together: "3.3 MB" alone reads as
+                    // a bug when the frame is 16 MP, and the reason is worth
+                    // saying out loud rather than guessing at later.
+                    Toast.makeText(this, "已保存 " + fw + "x" + fh + " · " + sizeLabel,
+                            Toast.LENGTH_LONG).show();
+                    statusText.setText("已导出 " + fw + "x" + fh + " · " + sizeLabel
+                        + "（" + secs + " 秒，其中渲染 " + (fRender / 1000.0) + " 秒）");
                     exportProgressBar.setVisibility(View.GONE);
                 });
             } catch (Throwable e) {
