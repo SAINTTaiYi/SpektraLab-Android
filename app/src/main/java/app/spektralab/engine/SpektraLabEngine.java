@@ -61,14 +61,27 @@ public class SpektraLabEngine implements AutoCloseable {
      * The paramsJson is applied at spk_open time.
      */
     public Session openRawSession(String filePath, String paramsJson) {
-        return openRawSession(filePath, paramsJson, 0);
+        return openRawSession(filePath, paramsJson, 0, 0);
     }
 
-    /** Opens a RAW session, optionally bounding the source's long edge (pixels). */
-    public Session openRawSession(String filePath, String paramsJson, int maxLongEdge) {
-        long sessionHandle = nativeOpenRawSession(handle, filePath, paramsJson, maxLongEdge);
+    /** Opens a RAW session, optionally bounding the source by area and long edge. */
+    public Session openRawSession(String filePath, String paramsJson, int maxPixels, int maxLongEdge) {
+        long sessionHandle = nativeOpenRawSession(handle, filePath, paramsJson, maxPixels, maxLongEdge);
         if (sessionHandle == 0) throw new RuntimeException("Failed to open RAW session");
         return new Session(sessionHandle, 0, 0); // width/height unknown until render
+    }
+
+    /**
+     * Largest frame this device can render, in pixels, from the GPU's
+     * maxStorageBufferRange (0 when it has none). Every kernel binds a whole
+     * plane and a plane is 12 bytes per pixel, so a frame past this fails at
+     * render time with "buffer exceeds maxStorageBufferRange".
+     */
+    public int maxFramePixels() {
+        long limit = nativeMaxPlaneBytes(handle);
+        if (limit <= 0) return 0;                 // no limit: caller decides
+        double px = limit / 12.0 * 0.80;          // 20% headroom for wider planes
+        return (int) Math.min(px, Integer.MAX_VALUE);
     }
 
     @Override
@@ -77,6 +90,8 @@ public class SpektraLabEngine implements AutoCloseable {
     }
 
     public static class Session implements AutoCloseable {
+        /** Guards the single native result buffer against a second thread. */
+        private static final Object RENDER_LOCK = new Object();
         private final long handle;
         public final int width;
         public final int height;
@@ -104,17 +119,21 @@ public class SpektraLabEngine implements AutoCloseable {
         }
 
         /** Renders `tier` and keeps the result alive. Returns {width, height}. */
+        // The native render result is one buffer shared by every session, so a
+        // second thread entering between renderBegin and copyArgbRange would
+        // hand back another frame's dimensions. Rare, and it looks like a
+        // randomly rotated or shifted picture rather than a crash.
         public int[] renderBegin(String tier) {
-            return nativeRenderBegin(handle, tier);
+            synchronized (RENDER_LOCK) { return nativeRenderBegin(handle, tier); }
         }
 
         /** Converts `rowCount` rows starting at `rowOffset` into opaque ARGB. */
         public int copyArgbRange(int[] dst, int rowOffset, int rowCount) {
-            return nativeCopyArgbRange(dst, rowOffset, rowCount);
+            synchronized (RENDER_LOCK) { return nativeCopyArgbRange(dst, rowOffset, rowCount); }
         }
 
         public void renderEnd() {
-            nativeRenderEnd();
+            synchronized (RENDER_LOCK) { nativeRenderEnd(); }
         }
 
         public SimResult render(String tier, int outWidth, int outHeight) {
@@ -181,7 +200,21 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native String nativeCapabilities(long handle);
     private static native String nativeMemoryReport(long handle);
     private static native long nativeOpenSession(long engineHandle, ByteBuffer pixels, int width, int height, int channels);
-    private static native long nativeOpenRawSession(long engineHandle, String filePath, String paramsJson, int maxLongEdge);
+    /** The GPU as JSON: binding range, heaps, workgroup limits. */
+    public String deviceProfile() { return nativeDeviceProfile(handle); }
+
+    /** Stable code for an engine message, 0 for empty, 9000 for unrecognised. */
+    public static int errorCode(String message) { return nativeErrorCode(message); }
+
+    /** The RAW decoder's own frame size, before the device cap shrank it. */
+    public static int[] rawSourceSize() { return nativeRawSourceSize(); }
+
+    private native String nativeDeviceProfile(long engineHandle);
+    private static native int nativeErrorCode(String message);
+    private static native int[] nativeRawSourceSize();
+    private static native long nativeMaxPlaneBytes(long engineHandle);
+    private static native long nativeOpenRawSession(long engineHandle, String filePath, String paramsJson,
+                                                    int maxPixels, int maxLongEdge);
     private static native void nativeCloseSession(long sessionHandle);
     private static native void nativeSetParams(long sessionHandle, String paramsJson);
     private static native String nativeGetParams(long sessionHandle);

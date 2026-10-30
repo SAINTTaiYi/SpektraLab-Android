@@ -26,6 +26,10 @@ import java.nio.ByteOrder;
 
 public class MainActivity extends Activity {
     private SpektraLabEngine engine;
+    /** This GPU's limits, read once per engine. Drives the import cap and the export tiers. */
+    private DeviceProbe probe = DeviceProbe.parse("{}");
+    /** Set by the long-press on 导入: keep the decoder's own size and say it may fail. */
+    private boolean importAtNativeSize = false;
     private SpektraLabEngine.Session session;
     private boolean isRawFile = false;
     private String rawFilePath = null;
@@ -82,6 +86,9 @@ public class MainActivity extends Activity {
         title.setTextSize(18);
         title.setSingleLine(true);
         topBar.addView(title, new LinearLayout.LayoutParams(0, -2, 0.45f));
+        // No menu bar on a phone, so the title carries About and the manual
+        // update check: long-press it.
+        title.setOnLongClickListener(v -> { showAbout(); return true; });
         
         Button importBtn = new Button(this);
         importBtn.setText("导入");
@@ -89,6 +96,26 @@ public class MainActivity extends Activity {
         importBtn.setBackgroundResource(android.R.drawable.btn_default);
         importBtn.setTextColor(0xFF80D0FF);
         importBtn.setOnClickListener(v -> pickImage());
+        // Full-size import is kept, and honest about itself: on a device whose
+        // binding range is small this can only fail, and it says so before it
+        // tries.
+        importBtn.setOnLongClickListener(v -> {
+            final String overDispatch =
+                    "\n\n另：超过 1677 万像素（约 5000×3350）时，部分驱动会丢掉画面块，"
+                    + "可能出现顶部未渲染的区域。";
+            final String warning = (probe.isLimited()
+                    ? "本机 GPU 单缓冲上限约 " + String.format("%.1f", probe.maxMegapixels())
+                      + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
+                    : "按原始尺寸导入（不做任何缩放）。") + overDispatch
+                    + "\n\n仍要按原始尺寸导入吗？";
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("按原始尺寸导入")
+                    .setMessage(warning)
+                    .setPositiveButton("继续", (d, w2) -> { importAtNativeSize = true; pickImage(); })
+                    .setNegativeButton("取消", null)
+                    .show();
+            return true;
+        });
         topBar.addView(importBtn, new LinearLayout.LayoutParams(0, -2, 0.28f));
 
         Button reimportBtn = new Button(this);
@@ -119,11 +146,25 @@ public class MainActivity extends Activity {
         exportBtn.setBackgroundResource(android.R.drawable.btn_default);
         exportBtn.setTextColor(0xFFFFD080);
         // Tap asks which size; long-press goes straight to the full frame.
-        exportBtn.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
-                .setTitle("导出")
-                .setItems(new String[]{"预览档 2548×3400（快，约 20 秒）", "全尺寸 3523×4700（原图，约 8 秒）"},
-                        (d, which) -> exportImage(which == 0 ? "preview" : "full"))
-                .show());
+        exportBtn.setOnClickListener(v -> {
+            // Tiers, not a hard-coded sensor: the sizes come from the session
+            // and the device. A phone that can only take 9 MP exports 9 MP,
+            // and saying 3523x4700 there would be a lie the user can check.
+            final String full = (sourceWidth > 0 && sourceHeight > 0)
+                    ? "全尺寸 " + sourceWidth + "×" + sourceHeight
+                    : "全尺寸";
+            final String fullNote = probe.isLimited()
+                    ? "（本机上限约 " + String.format("%.1f", probe.maxMegapixels()) + " MP，可能导出失败）"
+                    : "（原图）";
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("导出 · " + probe.describe())
+                    .setItems(new String[]{
+                            "预览 · 长边 2048（最快）",
+                            "预览 · 长边 3400",
+                            full + fullNote},
+                            (d, which) -> exportImage(which == 0 ? "live" : which == 1 ? "preview" : "full"))
+                    .show();
+        });
         exportBtn.setOnLongClickListener(v -> { exportImage("full"); return true; });
         topBar.addView(exportBtn);
         renderBtn.setBackgroundResource(android.R.drawable.btn_default);
@@ -216,6 +257,30 @@ public class MainActivity extends Activity {
 
         setContentView(layout);
         uiReady = true;
+
+        // Silent, and late enough not to compete with the first import. It only
+        // speaks when there is a newer build than this one.
+        new android.os.Handler(android.os.Looper.getMainLooper())
+                .postDelayed(() -> UpdateCheck.check(this, false), 3000);
+    }
+
+    /** Long-press on the title: version, update check, and where the code lives. */
+    private void showAbout() {
+        final String version = UpdateCheck.versionName(this) + "（" + UpdateCheck.versionCode(this) + "）";
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("SpektraLab Android " + version)
+                .setMessage(probe.describe()
+                        + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
+                        + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android")
+                .setPositiveButton("检查更新", (d, w) -> UpdateCheck.check(this, true))
+                .setNeutralButton("打开 GitHub", (d, w) -> {
+                    try {
+                        startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
+                    } catch (Throwable ignored) { }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
     }
 
     /** Reads assets/resources/stock_catalog.json (generated from the engine's profiles). */
@@ -299,8 +364,22 @@ public class MainActivity extends Activity {
     }
 
     private void pickImage() {
-        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-        intent.setType("image/*");
+        // **Not image/\*.** Sony's .ARW and several other RAW containers are
+        // typed application/octet-stream by the storage layer, so a picker
+        // filtered to image/* hides them completely -- which the user reads,
+        // correctly, as "this app cannot import RAW". Ask for any file, and
+        // name the RAW types as preferences where the picker honours them.
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "image/*",
+                "application/octet-stream",
+                "image/x-sony-arw", "image/x-canon-cr2", "image/x-canon-cr3",
+                "image/x-nikon-nef", "image/x-adobe-dng", "image/x-panasonic-rw2",
+                "image/x-panasonic-raw", "image/x-olympus-orf", "image/x-fuji-raf",
+                "image/x-pentax-pef", "image/x-samsung-srw", "image/x-sigma-x3f"
+        });
         startActivityForResult(intent, 1);
     }
 
@@ -318,15 +397,25 @@ public class MainActivity extends Activity {
         try {
             // Check if this is a RAW file by extension
             String fileName = getFileName(uri);
-            isRawFile = fileName != null && (
-                fileName.toLowerCase().endsWith(".rw2") ||
-                fileName.toLowerCase().endsWith(".raw") ||
-                fileName.toLowerCase().endsWith(".dng") ||
-                fileName.toLowerCase().endsWith(".arw") ||
-                fileName.toLowerCase().endsWith(".nef") ||
-                fileName.toLowerCase().endsWith(".cr2") ||
-                fileName.toLowerCase().endsWith(".cr3")
-            );
+            final String lower = fileName == null ? "" : fileName.toLowerCase();
+            isRawFile = lower.endsWith(".rw2") || lower.endsWith(".raw")
+                    || lower.endsWith(".dng") || lower.endsWith(".arw")
+                    || lower.endsWith(".nef") || lower.endsWith(".cr2")
+                    || lower.endsWith(".cr3") || lower.endsWith(".orf")
+                    || lower.endsWith(".raf") || lower.endsWith(".pef")
+                    || lower.endsWith(".srw") || lower.endsWith(".x3f")
+                    || lower.endsWith(".rwl") || lower.endsWith(".3fr")
+                    || lower.endsWith(".mrw") || lower.endsWith(".erf");
+            // A RAW container we know of but cannot open still beats decoding
+            // its bytes as a JPEG and reporting a mystery.
+            final String[] knownButUnsupported = {".heic.raw", ".iiq", ".mos"};
+            for (String ext : knownButUnsupported) {
+                if (lower.endsWith(ext)) {
+                    Toast.makeText(this, "[E-1107] 暂不支持 " + ext + " 格式",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+            }
             
             if (isRawFile) {
                 loadRawImage(uri);
@@ -343,16 +432,21 @@ public class MainActivity extends Activity {
             sourcePixels = null;
             System.gc();
 
-            // Cap the long edge the same way the RAW path does. inSampleSize only
-            // halves, so one exact scale follows if the sample still overshoots.
+            // Cap by area, the way the RAW path does. inSampleSize only halves,
+            // so one exact scale follows if the sample still overshoots.
+            final boolean nativeSize = importAtNativeSize;
+            importAtNativeSize = false;                       // one import only
+            final int capPixels = nativeSize ? Integer.MAX_VALUE : maxImportPixels();
+            final int edgeCap = nativeSize ? Integer.MAX_VALUE : IMPORT_LONG_EDGE;
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            try (InputStream probe = getContentResolver().openInputStream(uri)) {
-                BitmapFactory.decodeStream(probe, null, bounds);
-                if (probe != null) probe.close();
+            try (InputStream head = getContentResolver().openInputStream(uri)) {
+                BitmapFactory.decodeStream(head, null, bounds);
+                if (head != null) head.close();
             }
             int sample = 1;
-            while (Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 4700) sample *= 2;
+            while ((long) (bounds.outWidth / (sample * 2)) * (bounds.outHeight / (sample * 2)) >= capPixels
+                    || Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edgeCap) sample *= 2;
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
             Bitmap decoded;
@@ -364,11 +458,17 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "无法解码图片", Toast.LENGTH_SHORT).show();
                 return;
             }
+            final long area = (long) sourceBitmap.getWidth() * sourceBitmap.getHeight();
             final int longEdge = Math.max(sourceBitmap.getWidth(), sourceBitmap.getHeight());
-            if (longEdge > 4700) {
-                float k = 4700f / longEdge;
+            if (area > capPixels || longEdge > edgeCap) {
+                // Two ceilings in different units: area is quadratic in the
+                // scale, the long edge is linear. Take the stricter one.
+                final double kArea = Math.sqrt((double) capPixels / (double) area);
+                final double kEdge = (double) edgeCap / (double) longEdge;
+                final double k = Math.min(1.0, Math.min(kArea, kEdge));
                 sourceBitmap = Bitmap.createScaledBitmap(sourceBitmap,
-                        Math.round(sourceBitmap.getWidth() * k), Math.round(sourceBitmap.getHeight() * k), true);
+                        Math.max(1, (int) Math.round(sourceBitmap.getWidth() * k)),
+                        Math.max(1, (int) Math.round(sourceBitmap.getHeight() * k)), true);
             }
             sourceWidth = sourceBitmap.getWidth();
             sourceHeight = sourceBitmap.getHeight();
@@ -396,18 +496,57 @@ public class MainActivity extends Activity {
             statusText.setText("已加载 " + sourceWidth + "x" + sourceHeight + "，点击渲染");
             
             // Create engine and session
-            String resourcesDir = getResourcesDir();
-            if (engine == null) {
-                vkLogFile().delete();
-                engine = SpektraLabEngine.create(resourcesDir, vkLogFile().getAbsolutePath());
-                uploadCapabilities();
-            }
+            ensureEngine();
             if (session != null) session.close();
             session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
             applyParams();
         } catch (Exception e) {
-            Toast.makeText(this, "加载失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, SpkError.format(e.getMessage()), Toast.LENGTH_LONG).show();
         }
+    }
+
+    /**
+     * Ceilings that hold on every device we have measured.
+     *
+     * 16,490,040 px is the largest frame this driver rendered without losing
+     * blocks (16,983,680 lost the top ~200 rows); 65 535 workgroups x 256
+     * threads is 16,776,960, and the failure appears just under it. 4700 is
+     * the long edge we validated end to end, so a phone with a 2 GiB binding
+     * limit still imports what we actually tested rather than the maximum the
+     * hardware would accept.
+     */
+    private static final int IMPORT_PIXEL_FALLBACK = 16490040;
+    private static final int IMPORT_LONG_EDGE = 4700;
+
+    private SpektraLabEngine ensureEngine() throws Exception {
+        if (engine == null) {
+            vkLogFile().delete();
+            engine = SpektraLabEngine.create(getResourcesDir(), vkLogFile().getAbsolutePath());
+            uploadCapabilities();
+            // The probe is what turns "some devices fail" into a number this
+            // build can act on: binding range -> pixels -> the import cap and
+            // the export tiers below.
+            probe = DeviceProbe.parse(engine.deviceProfile());
+            try { DebugSink.text("device-profile", probe.describe() + "\n" + engine.deviceProfile()); }
+            catch (Throwable ignored) { }
+        }
+        return engine;
+    }
+
+    /**
+     * Pixels this device will actually render.
+     *
+     * Every kernel binds a whole plane, a plane is 12 bytes per pixel, and a
+     * binding may not exceed the GPU's maxStorageBufferRange: 128 MiB holds
+     * 11 MP, 256 MiB holds 22 MP. Importing past that does not degrade, it
+     * fails -- "spk_sep_fir_acc: buffer exceeds maxStorageBufferRange" -- which
+     * is what a 50 MP DNG did on a phone reporting 128 MiB. Ask the device
+     * rather than guess a long edge, and keep the old workgroup cap.
+     */
+    private int maxImportPixels() {
+        try { ensureEngine(); } catch (Throwable ignored) { }
+        final long px = probe.maxPixels();          // already min'd with the dispatch cap
+        return (int) Math.min(px, Integer.MAX_VALUE);
     }
 
     private void loadRawImage(Uri uri) {
@@ -437,11 +576,19 @@ public class MainActivity extends Activity {
                     );
                     
                     try { DebugSink.text("open-params", "path=" + filePath + "\n" + params); } catch (Throwable ignored) {}
-                    // 4700 keeps this sensor's frame at ~16.5 MP. Above 16,776,960
-                    // pixels (65 535 workgroups x 256 threads) this driver loses
-                    // blocks of a large dispatch, so the cap stays until the
-                    // generic split lands in the engine.
-                    session = engine.openRawSession(filePath, params, 4700);
+                    // The cap comes from the device, not from a constant: a
+                    // plane is 12 B/px and a binding may not exceed the GPU's
+                    // maxStorageBufferRange. Two limits apply, whichever is
+                    // lower -- that range, and the 65 535-workgroup dispatch
+                    // limit (16,776,960 px) this driver still loses blocks over.
+                    final boolean nativeSize = importAtNativeSize;
+                    importAtNativeSize = false;                   // one import only
+                    if (nativeSize) {
+                        try { DebugSink.text("import-mode", "native size, no cap"); } catch (Throwable ignored) { }
+                    }
+                    session = engine.openRawSession(filePath, params,
+                            nativeSize ? 0 : maxImportPixels(),
+                            nativeSize ? 0 : IMPORT_LONG_EDGE);
                     
                     // "Process" (配光): without a solved print exposure and
                     // filter pack the print runs on defaults and blows the
@@ -461,15 +608,30 @@ public class MainActivity extends Activity {
                     sourceWidth = w;
                     sourceHeight = h;
                     try { DebugSink.text("raw-dims", "w=" + w + " h=" + h); } catch (Throwable ignored) {}
-                    
+
+                    // Say when the device, not the photo, set the size. Silent
+                    // downscaling reads as a bug the next time the user exports.
+                    final int[] src = SpektraLabEngine.rawSourceSize();
+                    final boolean shrunk = src != null && src.length == 2
+                            && (long) src[0] * src[1] > (long) w * h;
+                    try {
+                        DebugSink.text("raw-cap", shrunk
+                                ? "source " + src[0] + "x" + src[1] + " -> session " + w + "x" + h
+                                : "not capped " + w + "x" + h);
+                    } catch (Throwable ignored) {}
+
                     runOnUiThread(() -> {
-                        statusText.setText("RAW已加载 " + w + "x" + h + "，点击渲染");
-                        Toast.makeText(this, "RAW加载成功", Toast.LENGTH_SHORT).show();
+                        statusText.setText(shrunk
+                                ? "RAW已加载 " + w + "x" + h + "（原图 " + src[0] + "x" + src[1] + "，超本机 GPU 上限已缩小）"
+                                : "RAW已加载 " + w + "x" + h + "，点击渲染");
+                        Toast.makeText(this, shrunk
+                                ? "原图超出本机 GPU 单缓冲上限，已按 " + w + "x" + h + " 导入"
+                                : "RAW加载成功", Toast.LENGTH_LONG).show();
                     });
                 } catch (Exception e) {
                     runOnUiThread(() -> {
-                        statusText.setText("RAW加载失败: " + e.getMessage());
-                        Toast.makeText(this, "RAW加载失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        statusText.setText("RAW加载失败 " + SpkError.shortForm(e.getMessage()));
+                        Toast.makeText(this, SpkError.format(e.getMessage()), Toast.LENGTH_LONG).show();
                     });
                 }
             }).start();
@@ -532,14 +694,39 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /**
+     * The EXIF orientation, or -1 when the provider will not give it to us.
+     *
+     * Two attempts on purpose: a stream first, then the file descriptor. Some
+     * pickers and cloud providers hand out a one-shot stream, and the second
+     * openInputStream() then fails -- the old code swallowed that and returned
+     * the unrotated bitmap, which is exactly how a portrait frame arrives
+     * sideways "at random".
+     */
+    private int readOrientation(Uri uri) {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in != null) {
+                return new android.media.ExifInterface(in).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION,
+                        android.media.ExifInterface.ORIENTATION_NORMAL);
+            }
+        } catch (Throwable ignored) { }
+        try (android.os.ParcelFileDescriptor fd = getContentResolver().openFileDescriptor(uri, "r")) {
+            if (fd != null) {
+                return new android.media.ExifInterface(fd.getFileDescriptor()).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION,
+                        android.media.ExifInterface.ORIENTATION_NORMAL);
+            }
+        } catch (Throwable ignored) { }
+        return -1;
+    }
+
     private Bitmap applyExifRotation(Uri uri, Bitmap bitmap) {
+        final int orientation = readOrientation(uri);
+        try { DebugSink.text("exif", "orientation=" + orientation + " bitmap="
+                + bitmap.getWidth() + "x" + bitmap.getHeight()); } catch (Throwable ignored) { }
+        if (orientation <= 0) return bitmap;      // unreadable: leave the pixels alone
         try {
-            InputStream in = getContentResolver().openInputStream(uri);
-            android.media.ExifInterface exif = new android.media.ExifInterface(in);
-            int orientation = exif.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION,
-                android.media.ExifInterface.ORIENTATION_NORMAL);
-            in.close();
-            
             android.graphics.Matrix matrix = new android.graphics.Matrix();
             switch (orientation) {
                 case android.media.ExifInterface.ORIENTATION_ROTATE_90:
@@ -552,6 +739,12 @@ public class MainActivity extends Activity {
                     matrix.postScale(-1, 1); break;
                 case android.media.ExifInterface.ORIENTATION_FLIP_VERTICAL:
                     matrix.postScale(1, -1); break;
+                // The two mirrored rotations. Rare, but a phone that writes 5
+                // or 7 and lands in the default branch shows its photo sideways.
+                case android.media.ExifInterface.ORIENTATION_TRANSPOSE:
+                    matrix.postRotate(90); matrix.postScale(-1, 1); break;
+                case android.media.ExifInterface.ORIENTATION_TRANSVERSE:
+                    matrix.postRotate(-90); matrix.postScale(-1, 1); break;
                 default:
                     return bitmap;
             }
@@ -688,7 +881,7 @@ public class MainActivity extends Activity {
                 try { session.renderEnd(); } catch (Throwable ignored) {}
                 final String msg = e.getClass().getSimpleName() + ": " + e.getMessage();
                 runOnUiThread(() -> {
-                    statusText.setText("渲染失败 " + msg);
+                    statusText.setText("渲染失败 " + SpkError.format(msg));
                     progressBar.setVisibility(View.GONE);
                 });
             }
@@ -874,8 +1067,8 @@ public class MainActivity extends Activity {
                 uploadExportProgress(tmp);
                 uploadVkLog();
                 runOnUiThread(() -> {
-                    statusText.setText("导出失败 " + msg);
-                    Toast.makeText(this, "导出失败: " + msg, Toast.LENGTH_LONG).show();
+                    statusText.setText("导出失败 " + SpkError.shortForm(msg));
+                    Toast.makeText(this, SpkError.format(msg), Toast.LENGTH_LONG).show();
                     exportProgressBar.setVisibility(View.GONE);
                 });
             } finally {

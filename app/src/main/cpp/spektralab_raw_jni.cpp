@@ -41,6 +41,9 @@ static void throw_status(JNIEnv* env, spk_status st) {
 
 static uint32_t g_last_raw_width = 0;
 static uint32_t g_last_raw_height = 0;
+static uint32_t g_last_raw_src_width = 0;    // before the device cap
+static uint32_t g_last_raw_src_height = 0;
+
 
 static void throw_runtime(JNIEnv* env, const char* msg) {
     if (env->ExceptionCheck()) return;
@@ -51,7 +54,7 @@ static void throw_runtime(JNIEnv* env, const char* msg) {
 // Open a session from a RAW file path.
 // Returns session handle, or 0 on failure.
 JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle,
-    jstring filePath, jstring paramsJson, jint maxLongEdge) {
+    jstring filePath, jstring paramsJson, jint maxPixels, jint maxLongEdge) {
     spk_engine* engine = reinterpret_cast<spk_engine*>(engineHandle);
     if (!engine) { throw_runtime(env, "engine is null"); return 0; }
     
@@ -64,7 +67,11 @@ JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle,
     std::string error;
     spk::io::RawDecodeThreadScope scope;
     
-    bool ok = spk::io::decode_raw_compatible(path, raw, error);
+    // maxPixels is a decode-time hint as well: a frame more than four times
+    // the budget is decoded at half size, which is a quarter of the memory
+    // and still more pixels than the session will keep.
+    bool ok = spk::io::decode_raw_compatible(path, nullptr, raw, error,
+                                            size_t(maxPixels > 0 ? maxPixels : 0));
     env->ReleaseStringUTFChars(filePath, path);
     
     if (!ok) {
@@ -74,11 +81,23 @@ JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle,
     }
     
     LOGI("RAW decoded: %ux%u, %zu floats", raw.width, raw.height, raw.rgb.size());
-    // Optional bound on the source the engine is given. A 20 MP frame is a
-    // 244 MB plane; staying under that keeps every stage inside what the phone
-    // GPU will actually complete.
-    if (maxLongEdge > 0 && int(std::max(raw.width, raw.height)) > int(maxLongEdge)) {
-        const double sc = double(maxLongEdge) / double(std::max(raw.width, raw.height));
+    g_last_raw_src_width = raw.width;
+    g_last_raw_src_height = raw.height;
+    // Optional bound on the source the engine is given, in pixels. The app
+    // derives it from spk_max_plane_bytes(): a plane is 12 B/px, and a device
+    // whose maxStorageBufferRange is 128 MiB refuses anything past ~11 MP.
+    const uint64_t src_pixels = uint64_t(raw.width) * uint64_t(raw.height);
+    const uint32_t src_edge = std::max(raw.width, raw.height);
+    const bool over_area = maxPixels > 0 && src_pixels > uint64_t(maxPixels);
+    const bool over_edge = maxLongEdge > 0 && src_edge > uint32_t(maxLongEdge);
+    if (over_area || over_edge) {
+        // Two ceilings, two units. Area is what the GPU enforces -- a plane is
+        // 12 B/px and a binding may not exceed maxStorageBufferRange, so a
+        // 3:4 frame holds half again the pixels of 3:2 at the same long edge.
+        // The long edge is the size this build was actually validated at.
+        double sc = 1.0;
+        if (over_area) sc = std::min(sc, std::sqrt(double(maxPixels) / double(src_pixels)));
+        if (over_edge) sc = std::min(sc, double(maxLongEdge) / double(src_edge));
         const uint32_t nw = uint32_t(std::lround(raw.width * sc));
         const uint32_t nh = uint32_t(std::lround(raw.height * sc));
         std::vector<float> small(size_t(nw) * nh * 3);
@@ -97,7 +116,8 @@ JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle,
             }
         }
         raw.rgb.swap(small); raw.width = nw; raw.height = nh;
-        LOGI("RAW downscaled to %ux%u for the session", raw.width, raw.height);
+        LOGI("RAW downscaled to %ux%u for the session (cap %d px, %d long edge)",
+             raw.width, raw.height, int(maxPixels), int(maxLongEdge));
     }
     g_last_raw_width = raw.width;
     g_last_raw_height = raw.height;
@@ -126,6 +146,16 @@ JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle,
     }
     
     return reinterpret_cast<jlong>(session);
+}
+
+// The decoder's own size, before the device cap shrank it. Equal to the
+// session size whenever nothing was cut, which is what the UI compares.
+JNI(jintArray, nativeRawSourceSize)(JNIEnv* env, jclass) {
+    jintArray result = env->NewIntArray(2);
+    if (!result) return nullptr;
+    jint values[2] = {(jint)g_last_raw_src_width, (jint)g_last_raw_src_height};
+    env->SetIntArrayRegion(result, 0, 2, values);
+    return result;
 }
 
 // Get the actual dimensions of the current session's image.

@@ -54,6 +54,32 @@ JNI(void, nativeSetEnv)(JNIEnv* env, jclass, jstring name, jstring value) {
     if (v) env->ReleaseStringUTFChars(value, v);
 }
 
+// The device's per-binding storage range, in bytes (0 = no limit). The app
+// asks before importing so it can cap the frame itself and say what it did,
+// instead of failing at render time inside a kernel.
+JNI(jlong, nativeMaxPlaneBytes)(JNIEnv*, jclass, jlong engineHandle) {
+    spk_engine* engine = reinterpret_cast<spk_engine*>(engineHandle);
+    if (!engine) return 0;
+    return jlong(spk_max_plane_bytes(engine));
+}
+
+// The device as JSON (binding range, heaps, workgroup limits). The app's probe
+// reads this once per engine and derives the export tiers from it.
+JNI(jstring, nativeDeviceProfile)(JNIEnv* env, jclass, jlong engineHandle) {
+    spk_engine* engine = reinterpret_cast<spk_engine*>(engineHandle);
+    if (!engine) return env->NewStringUTF("{}");
+    return env->NewStringUTF(spk_device_profile(engine));
+}
+
+// A stable code for an engine message, so the UI can show [E-1001] plus text.
+JNI(jint, nativeErrorCode)(JNIEnv* env, jclass, jstring message) {
+    if (!message) return 0;
+    const char* text = env->GetStringUTFChars(message, nullptr);
+    const int code = spk_error_code(text);
+    env->ReleaseStringUTFChars(message, text);
+    return code;
+}
+
 JNI(jlong, nativeCreateEngine)(JNIEnv* env, jclass, jstring resourcesDir) {
     const char* dir = env->GetStringUTFChars(resourcesDir, nullptr);
     if (!dir) { throw_runtime(env, "resourcesDir is null"); return 0; }

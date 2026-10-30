@@ -6,6 +6,10 @@
 
 > 这是社区移植，不是上游官方版本。引擎来自上游 `assist/vulkan-engine-1.3.4`（commit `445e314`）。
 
+**下载** — [spektralab.workshop.skin](https://spektralab.workshop.skin/) ·
+直链 [`/download`](https://spektralab.workshop.skin/download) ·
+[GitHub Releases](https://github.com/SAINTTaiYi/SpektraLab-Android/releases)
+
 ## 现在能做什么
 
 | 项目 | 状态 |
@@ -13,13 +17,28 @@
 | RAW 解码（LibRaw，原生） | ✅ Panasonic GH5 `.RW2` 实测 |
 | 胶片 / 相纸 | ✅ **25 款胶片 + 9 款相纸**，运行时从资源目录读取 |
 | 预览（live 档） | ✅ 2048 长边，约 1 秒 |
-| 导出 | ✅ 点按 = 2548×3400；**长按 = 全尺寸 3523×4700** |
-| 全尺寸耗时 | ✅ 渲染 8.2 s / 总 8.4 s（SM8735 + Adreno 825） |
+| 导出 | ✅ 三档：长边 2048 / 3400 / 全尺寸；受限设备会标注上限 |
+| 全尺寸耗时 | ✅ 渲染 8.2 s / 总 8.4 s（SM8735 + Adreno 825，16.5 MP） |
 | 颗粒 / 光晕 / 眩光 强度 | ✅ 三条滑杆（`grain_amount` / `halation_amount` / `glare_amount`） |
 | 画幅（物理尺度） | ✅ 135 / 半格 / XPan / 645 / 6×6 / 6×7 / 6×9 / 6×12 / 6×17 |
 | 换一张 | ✅ 直接替换当前照片，不需要重启 |
 | 配光（Process） | ✅ 导入时自动 `spk_solve(both)` |
 | 导出写盘 | ✅ 原生 libjpeg，不经 Bitmap |
+
+## 1.2.2 里新增的
+
+- **设备探针**。启动时读 `maxStorageBufferRange`、显存与调度上限，换算成这台机器能吃的
+  最大像素数，导入时据此定尺寸，并在状态栏写明有没有缩过。
+- **分档导出**，并保留全尺寸。受限设备上全尺寸那行会标注「本机上限约 X MP，可能导出失败」；
+  长按「导入」可以强制按原始尺寸导入。
+- **错误码**。每个失败都带 `E-xxxx`（1001 缓冲超限、1101–1106 RAW 各阶段、1201–1202 渲染、
+  1301–1303 请求、2001–2002 更新），截图即可反馈。
+- **修复：选不到 RAW**。文件选择器原为 `image/*`，索尼 `.ARW` 等被存储层标成
+  `application/octet-stream`，于是整个被过滤掉。
+- **修复：竖拍照片偶发被旋转**。读 EXIF 时二次打开流会失败（一次性流），现在有
+  `openFileDescriptor` 兜底。
+- **更新通道**。启动 3 秒后静默检查 `update.workshop.skin`，6 小时节流，同一版本只提醒一次；
+  标题长按可手动检查。
 
 ## 移植过程中修掉的三个硬问题
 
