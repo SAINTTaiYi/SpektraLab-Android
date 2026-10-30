@@ -1,0 +1,11 @@
+{
+  "latest_version_code": 17,
+  "latest_version_name": "1.1.1",
+  "url": "https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest",
+  "notes": [
+    "当前线上的稳定版。",
+    "1.2.x 正在验证，发布后会更新这条公告。"
+  ],
+  "updated_at": "2026-10-30T08:20:00Z",
+  "channel": "stable"
+}
