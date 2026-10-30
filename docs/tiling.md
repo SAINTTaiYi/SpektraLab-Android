@@ -135,6 +135,32 @@ struct TilePlan {
 1 行 / 8 行 / 32 行 / 64 行四种带大小，以及 63 / 64 / 65 / 100 四种宽度，
 输出与整幅**逐字节相同**。整管线渲染哈希仍是 `0b3c0685f4c262d7`。
 
+## push constant 变成 8 字节：{base, origin}
+
+分带后 `base` 在每个窗口里从 0 重启。这对**只把索引当地址**的内核没问题，但对
+**用索引播种或取几何**的内核是致命的——颗粒噪声会每带重来一次。
+
+所以 push constant 现在有两个 word：
+
+| 字段 | 含义 |
+|---|---|
+| `base` | 本 dispatch 在**窗口内**的起始元素（分块链用） |
+| `origin` | 本窗口在**整帧**里的起始元素（分带时非 0） |
+
+shader 侧新增 `spk_frame_index() = origin + base + local`，用索引播种/取几何的内核
+必须用它，寻址仍用 `spk_global_index()`。改动到 5 个内核
+（`grain_layer_one` / `grain_layers` / `grain_simple` / `lognormal_field` / `rng_probe`）
+与 `scene_latitude`（空间梯度按整帧坐标）。整管线哈希仍 `0b3c0685f4c262d7`。
+
+## 试过并撤掉的方案：按缓冲区大小推断步长
+
+想法是 `stride = buffer_bytes / n`，省掉 30 多个调用点的改动。**行不通**：
+
+缓冲池会把大块内存复用给小平面，`Buffer::bytes` 是分配大小而不是逻辑尺寸。
+实测 `spk_lut2d_cubic` 被推断成 `a0=12, a1=4`，而 shader 实际读 8 和 12 字节/像素，
+输出哈希立刻变了（分带反而更错）。所以自动分带已删除，只保留显式的
+`dispatch_banded(...)`：步长必须由**知道内核布局的调用点**给出。
+
 ## 实施顺序
 
 1. `Arg` 增加 `(offset, range)`；`dispatch()` 绑定窗口；size 检查用 `range`。

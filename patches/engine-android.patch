@@ -29,7 +29,7 @@ index b0c2a45..343272b 100644
   * report: version, git-ish build stamp, the Metal math mode the kernels were
   * compiled with, and whether the fast-math probe agreed with it. */
 diff --git a/engine/src/gpu/gpu.hpp b/engine/src/gpu/gpu.hpp
-index b996193..85d8f2a 100644
+index b996193..36dff73 100644
 --- a/engine/src/gpu/gpu.hpp
 +++ b/engine/src/gpu/gpu.hpp
 @@ -209,13 +209,48 @@ struct Arg {
@@ -101,10 +101,18 @@ index b996193..85d8f2a 100644
      // The fast-math probe. Returns false, with a message, when the kernels in
      // the loaded library were compiled with fast math -- which drifts `exp`
      // and fma contraction by up to 1.1e-5, past the float32 bar, silently
-@@ -377,6 +425,13 @@ public:
+@@ -377,6 +425,21 @@ public:
  
      virtual bool dispatch(const char* kernel, const std::vector<Arg>& args,
                            size_t n_threads, std::string& error) = 0;
++
++    // Band every pointwise dispatch of at least this many elements (0 = off).
++    // A band is a contiguous element range, which is all a pointwise kernel
++    // needs -- no row geometry, no halo. Per-element strides are inferred from
++    // each buffer's size (bytes / elements); a buffer that is not an exact
++    // multiple stays bound whole, and the call falls back to one dispatch when
++    // no argument qualifies.
++    virtual void set_band_elements(size_t n) { (void)n; }
 +
 +    // The banded form. Backends without windows fall back to one dispatch.
 +    virtual bool dispatch_banded(const char* kernel, const std::vector<Arg>& args,
@@ -144,7 +152,7 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..4c14242 100644
+index 8d6b100..51f5448 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
 @@ -20,8 +20,10 @@
@@ -366,7 +374,26 @@ index 8d6b100..4c14242 100644
  
      bool check_math_mode(std::string& detail) override {
          if (!math_checked_) {
-@@ -603,12 +683,32 @@ public:
+@@ -582,8 +662,18 @@ public:
+         return true;
+     }
+ 
++    // Auto-banding by inference was tried and removed: the pool hands a plane a
++    // buffer larger than its logical size, so bytes / elements is not the
++    // stride (spk_lut2d_cubic came back 12 and 4 where the shader reads 8 and
++    // 12). Banding needs the stride the kernel actually uses, which only the
++    // call site knows -- hence dispatch_banded and an explicit TilePlan.
+     bool dispatch(const char* kernel, const std::vector<Arg>& args,
+                   size_t n_threads, std::string& error) override {
++        return dispatch_once(kernel, args, n_threads, error);
++    }
++
++    bool dispatch_once(const char* kernel, const std::vector<Arg>& args,
++                       size_t n_threads, std::string& error, uint32_t origin = 0) {
+         if (n_threads == 0) return true;
+         // Probe kernels must not recurse into the startup gate. A rejected
+         // device stays rejected, including low-level callers that dispatch
+@@ -603,12 +693,32 @@ public:
          // index with spk_global_index(). The surplus threads of the last row
          // fail the same bounds check the last partial workgroup always did.
          const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
@@ -405,7 +432,7 @@ index 8d6b100..4c14242 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +723,31 @@ public:
+@@ -623,11 +733,31 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -419,8 +446,9 @@ index 8d6b100..4c14242 100644
 +                bind_offset + bind_range > uint64_t(b->bytes)) {
 +                error = std::string(kernel) + ": window argument " + std::to_string(i) +
 +                        " is outside its buffer";
-+                return false;
-+            }
+                 return false;
+             }
+-            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
 +            if (bind_range > storage_range_limit_) {
 +                // Say both numbers: the caller chooses the frame size, and a
 +                // bare "exceeds the limit" leaves them guessing whether the
@@ -433,14 +461,13 @@ index 8d6b100..4c14242 100644
 +                              double(storage_range_limit_) / 1048576.0,
 +                              double(storage_range_limit_) / 12.0 / 1e6);
 +                error = std::string(kernel) + detail;
-                 return false;
-             }
--            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
++                return false;
++            }
 +            infos[i] = {b->handle, VkDeviceSize(bind_offset), VkDeviceSize(bind_range)};
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,18 +787,94 @@ public:
+@@ -667,18 +797,95 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -458,17 +485,17 @@ index 8d6b100..4c14242 100644
 -                vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
 -            }, "Vulkan compute dispatch", error);
 +                if (!chunk_safe) {
-+                    const uint32_t zero = 0;
++                    const uint32_t words[2] = {0u, origin};
 +                    vkCmdPushConstants(command, pipeline->layout, VK_SHADER_STAGE_COMPUTE_BIT,
-+                                       0, sizeof zero, &zero);
++                                       0, sizeof words, words);
 +                    vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
 +                } else {
 +                    for (size_t chunk = 0; chunk < chunks; ++chunk) {
 +                        const size_t first = chunk * max_x;
 +                        const uint32_t this_groups = uint32_t(std::min(groups - first, max_x));
-+                        const uint32_t base = uint32_t(first * spec->workgroup);
++                        const uint32_t words[2] = {uint32_t(first * spec->workgroup), origin};
 +                        vkCmdPushConstants(command, pipeline->layout, VK_SHADER_STAGE_COMPUTE_BIT,
-+                                           0, sizeof base, &base);
++                                           0, sizeof words, words);
 +                        vkCmdDispatch(command, this_groups, 1, 1);
 +                    }
 +                }
@@ -480,7 +507,7 @@ index 8d6b100..4c14242 100644
 +    bool dispatch_banded(const char* kernel, const std::vector<Arg>& args, size_t n_threads,
 +                         const TilePlan& plan, std::string& error) override {
 +        if (plan.band_rows == 0 || plan.rows <= plan.band_rows)
-+            return dispatch(kernel, args, n_threads, error);
++            return dispatch_once(kernel, args, n_threads, error);
 +        if (!plan.rows || !plan.columns || size_t(plan.rows) * plan.columns != n_threads) {
 +            error = std::string(kernel ? kernel : "dispatch") + ": tile plan does not cover the dispatch";
 +            return false;
@@ -529,7 +556,8 @@ index 8d6b100..4c14242 100644
 +                band[i].offset = y0 * plan.columns * stride;
 +                band[i].range = uint64_t(rows_here) * plan.columns * stride;
 +            }
-+            if (!dispatch(kernel, band, size_t(rows_here) * plan.columns, error)) return false;
++            if (!dispatch_once(kernel, band, size_t(rows_here) * plan.columns, error,
++                               uint32_t(y0 * plan.columns))) return false;
 +        }
 +        return true;
 +    }
@@ -537,7 +565,7 @@ index 8d6b100..4c14242 100644
      bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
      void* texture(Buffer* buffer, uint32_t width, uint32_t height,
                    uint32_t row_stride_px, std::string& error) override {
-@@ -745,7 +941,7 @@ public:
+@@ -745,7 +952,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -546,7 +574,7 @@ index 8d6b100..4c14242 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +963,7 @@ private:
+@@ -767,7 +974,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -555,7 +583,7 @@ index 8d6b100..4c14242 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +975,7 @@ private:
+@@ -779,6 +986,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -563,7 +591,7 @@ index 8d6b100..4c14242 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +1002,8 @@ private:
+@@ -805,6 +1013,8 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -572,7 +600,7 @@ index 8d6b100..4c14242 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -1015,7 +1214,7 @@ private:
+@@ -1015,7 +1225,7 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -581,7 +609,7 @@ index 8d6b100..4c14242 100644
                  "{\"vulkan_allocation\":\"%s\",\"bytes\":%zu,\"allocation_bytes\":%llu,"
                  "\"memory_type\":%u,\"memory_flags\":%u,\"heap\":%u}\n",
                  staging ? (readback ? "read_staging" : "upload_staging") : "compute",
-@@ -1073,10 +1272,20 @@ private:
+@@ -1073,10 +1283,24 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -592,7 +620,11 @@ index 8d6b100..4c14242 100644
 +            VkPushConstantRange push_range{};
 +            push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 +            push_range.offset = 0;
-+            push_range.size = sizeof(uint32_t);
++            // {base, origin}: where this dispatch starts inside its binding
++            // window, and where that window starts inside the frame. A banded
++            // kernel addresses through `base` and derives noise seeds and
++            // geometry from origin + base, so the two stay separable.
++            push_range.size = 2 * sizeof(uint32_t);
              VkPipelineLayoutCreateInfo layout_create{};
              layout_create.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
              layout_create.setLayoutCount = 1;
@@ -602,13 +634,14 @@ index 8d6b100..4c14242 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
-@@ -1115,6 +1324,9 @@ private:
+@@ -1115,6 +1339,10 @@ private:
      VkPhysicalDeviceProperties properties_{};
      // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
      VkDeviceSize storage_range_limit_ = 0;
 +    // Windows must start on a multiple of this; a band boundary that is not
 +    // aligned here is not a legal VkDescriptorBufferInfo.
 +    VkDeviceSize storage_offset_align_ = 1;
++    // dispatch_banded only; there is no inferred form (see dispatch()).
      // -1 unvalidated/rejected, 1 validated fused fma, 0 validated split.
      int fused_fma_ = -1;
      bool math_checked_ = false;
@@ -843,82 +876,118 @@ index ee4ffb0..ee5f2ec 100644
          out->width = rgb.w;
          out->height = rgb.h;
 diff --git a/engine/src/shaders/vulkan/spk_affine3.comp b/engine/src/shaders/vulkan/spk_affine3.comp
-index 76b28db..7e86352 100644
+index 76b28db..48fc958 100644
 --- a/engine/src/shaders/vulkan/spk_affine3.comp
 +++ b/engine/src/shaders/vulkan/spk_affine3.comp
-@@ -10,8 +10,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
+@@ -10,8 +10,22 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_boost.comp b/engine/src/shaders/vulkan/spk_boost.comp
-index af479ba..99c599a 100644
+index af479ba..b515e50 100644
 --- a/engine/src/shaders/vulkan/spk_boost.comp
 +++ b/engine/src/shaders/vulkan/spk_boost.comp
-@@ -9,8 +9,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
+@@ -9,8 +9,22 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_bw_correct.comp b/engine/src/shaders/vulkan/spk_bw_correct.comp
-index d246c08..da4c8e0 100644
+index d246c08..82e900a 100644
 --- a/engine/src/shaders/vulkan/spk_bw_correct.comp
 +++ b/engine/src/shaders/vulkan/spk_bw_correct.comp
-@@ -9,8 +9,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
+@@ -9,8 +9,22 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_cam16ucs_body.glsl b/engine/src/shaders/vulkan/spk_cam16ucs_body.glsl
-index 0fbcbbd..b758108 100644
+index 0fbcbbd..1ef7a04 100644
 --- a/engine/src/shaders/vulkan/spk_cam16ucs_body.glsl
 +++ b/engine/src/shaders/vulkan/spk_cam16ucs_body.glsl
 @@ -1,3 +1,4 @@
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
  
  // CAM16-UCS output gamut compression, transferred from gamut.metal.
  // Matrix buffers are row-major here; the baked c_max table is (nL, nh).
-@@ -17,7 +18,7 @@ layout(set = 0, binding = 7, std430) buffer Stats { uint value[]; } stats;
+@@ -17,7 +18,16 @@ layout(set = 0, binding = 7, std430) buffer Stats { uint value[]; } stats;
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_cctf_decode.comp b/engine/src/shaders/vulkan/spk_cctf_decode.comp
-index a6d0ce6..4295a0b 100644
+index a6d0ce6..3697f65 100644
 --- a/engine/src/shaders/vulkan/spk_cctf_decode.comp
 +++ b/engine/src/shaders/vulkan/spk_cctf_decode.comp
 @@ -8,8 +8,13 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; }
@@ -928,7 +997,7 @@ index a6d0ce6..4295a0b 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -936,8 +1005,24 @@ index a6d0ce6..4295a0b 100644
  }
  
  float signed_power(float value, float exponent) {
+@@ -44,6 +49,15 @@ float decode(float value, uint mode) {
+     }
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i = spk_global_index();
+     if (i >= meta.value[0]) return;
 diff --git a/engine/src/shaders/vulkan/spk_cctf_encode_matrix.comp b/engine/src/shaders/vulkan/spk_cctf_encode_matrix.comp
-index 5c28d66..93ec160 100644
+index 5c28d66..137538f 100644
 --- a/engine/src/shaders/vulkan/spk_cctf_encode_matrix.comp
 +++ b/engine/src/shaders/vulkan/spk_cctf_encode_matrix.comp
 @@ -9,8 +9,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
@@ -947,7 +1032,7 @@ index 5c28d66..93ec160 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -955,27 +1040,52 @@ index 5c28d66..93ec160 100644
  }
  
  float signed_power(float value, float exponent) {
+@@ -33,6 +38,15 @@ float encode(float value, uint mode) {
+     }
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint pixel = spk_global_index();
+     if (pixel >= meta.value[0]) return;
 diff --git a/engine/src/shaders/vulkan/spk_couplers_correction.comp b/engine/src/shaders/vulkan/spk_couplers_correction.comp
-index a2b03bf..98b389a 100644
+index a2b03bf..a4aeed7 100644
 --- a/engine/src/shaders/vulkan/spk_couplers_correction.comp
 +++ b/engine/src/shaders/vulkan/spk_couplers_correction.comp
-@@ -12,8 +12,13 @@ layout(set = 0, binding = 6, std430) writeonly buffer Output { float value[]; }
+@@ -12,8 +12,22 @@ layout(set = 0, binding = 6, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_curves.comp b/engine/src/shaders/vulkan/spk_curves.comp
-index 6ece046..522731a 100644
+index 6ece046..8dcb653 100644
 --- a/engine/src/shaders/vulkan/spk_curves.comp
 +++ b/engine/src/shaders/vulkan/spk_curves.comp
 @@ -12,8 +12,13 @@ layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; }
@@ -985,7 +1095,7 @@ index 6ece046..522731a 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -993,60 +1103,104 @@ index 6ece046..522731a 100644
  }
  
  float interpolate(uint count, uint channel, float value) {
+@@ -35,6 +40,15 @@ float interpolate(uint count, uint channel, float value) {
+     return y0 + fraction * (y1 - y0);
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint pixel = spk_global_index();
+     uint count = meta.value[0];
 diff --git a/engine/src/shaders/vulkan/spk_di_encode.comp b/engine/src/shaders/vulkan/spk_di_encode.comp
-index 7472427..9146d98 100644
+index 7472427..83e9620 100644
 --- a/engine/src/shaders/vulkan/spk_di_encode.comp
 +++ b/engine/src/shaders/vulkan/spk_di_encode.comp
-@@ -5,7 +5,8 @@ layout(set=0,binding=0,std430) readonly buffer Input { float value[]; } input_da
+@@ -5,8 +5,18 @@ layout(set=0,binding=0,std430) readonly buffer Input { float value[]; } input_da
  layout(set=0,binding=1,std430) readonly buffer Params { float value[]; } params;
  layout(set=0,binding=2,std430) readonly buffer Meta { uint value[]; } meta;
  layout(set=0,binding=3,std430) writeonly buffer Output { float value[]; } output_data;
 -uint spk_global_index() { return gl_GlobalInvocationID.y*(gl_NumWorkGroups.x*gl_WorkGroupSize.x)+gl_GlobalInvocationID.x; }
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +uint spk_global_index() { return spk_pc.base + gl_GlobalInvocationID.y*(gl_NumWorkGroups.x*gl_WorkGroupSize.x)+gl_GlobalInvocationID.x; }
  vec3 log10v(vec3 x) { return log(x)/log(10.0); }
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
  void main() {
      uint i = spk_global_index();
+     if (i >= meta.value[0]) return;
 diff --git a/engine/src/shaders/vulkan/spk_di_normalise.comp b/engine/src/shaders/vulkan/spk_di_normalise.comp
-index f81f605..baadcd6 100644
+index f81f605..2a2ddef 100644
 --- a/engine/src/shaders/vulkan/spk_di_normalise.comp
 +++ b/engine/src/shaders/vulkan/spk_di_normalise.comp
-@@ -11,8 +11,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
+@@ -11,8 +11,22 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_edr.comp b/engine/src/shaders/vulkan/spk_edr.comp
-index 761d65d..30ecc90 100644
+index 761d65d..0a56bbb 100644
 --- a/engine/src/shaders/vulkan/spk_edr.comp
 +++ b/engine/src/shaders/vulkan/spk_edr.comp
-@@ -10,8 +10,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
+@@ -10,8 +10,22 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_geometry_resample_df.comp b/engine/src/shaders/vulkan/spk_geometry_resample_df.comp
-index 7bcd954..3887abf 100644
+index 7bcd954..20cbabb 100644
 --- a/engine/src/shaders/vulkan/spk_geometry_resample_df.comp
 +++ b/engine/src/shaders/vulkan/spk_geometry_resample_df.comp
 @@ -15,8 +15,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
@@ -1056,7 +1210,7 @@ index 7bcd954..3887abf 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1064,37 +1218,62 @@ index 7bcd954..3887abf 100644
  }
  
  vec2 two_sum(float a, float b) {
+@@ -69,6 +74,15 @@ vec2 pair_at(uint index) {
+     return vec2(geometry.value[2u * index], geometry.value[2u * index + 1u]);
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i = spk_global_index();
+     uint sh = meta.value[0], sw = meta.value[1];
 diff --git a/engine/src/shaders/vulkan/spk_glare_add.comp b/engine/src/shaders/vulkan/spk_glare_add.comp
-index a2b06b0..598e0b8 100644
+index a2b06b0..ed527ce 100644
 --- a/engine/src/shaders/vulkan/spk_glare_add.comp
 +++ b/engine/src/shaders/vulkan/spk_glare_add.comp
-@@ -10,8 +10,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
+@@ -10,8 +10,22 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_grain_layer_one.comp b/engine/src/shaders/vulkan/spk_grain_layer_one.comp
-index e9527f3..8c3ea93 100644
+index e9527f3..97fd113 100644
 --- a/engine/src/shaders/vulkan/spk_grain_layer_one.comp
 +++ b/engine/src/shaders/vulkan/spk_grain_layer_one.comp
-@@ -13,8 +13,13 @@ layout(std430, binding = 7) writeonly buffer Out { float dst[]; };
+@@ -13,14 +13,28 @@ layout(std430, binding = 7) writeonly buffer Out { float dst[]; };
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1102,46 +1281,113 @@ index e9527f3..8c3ea93 100644
  }
  uint search_right(uint K, uint ch, float v) {
      uint lo = 0u, hi = K;
-diff --git a/engine/src/shaders/vulkan/spk_grain_layers.comp b/engine/src/shaders/vulkan/spk_grain_layers.comp
-index 32795d4..54b858b 100644
---- a/engine/src/shaders/vulkan/spk_grain_layers.comp
-+++ b/engine/src/shaders/vulkan/spk_grain_layers.comp
-@@ -13,8 +13,13 @@ layout(std430, binding = 7) writeonly buffer Out { float dst[]; };
- 
- // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
- // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-+// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
-+// `base` is the first element this one covers. Folding into workgroup rows is
-+// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
-+
- uint spk_global_index() {
--    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-+    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
+     while (lo < hi) { uint mid = lo + ((hi - lo) >> 1); if (xa[mid * 3u + ch] <= v) lo = mid + 1u; else hi = mid; }
+     return lo;
  }
- uint search_right(uint K, uint ch, float v) {
-     uint lo = 0u, hi = K;
-diff --git a/engine/src/shaders/vulkan/spk_grain_simple.comp b/engine/src/shaders/vulkan/spk_grain_simple.comp
-index bc7682b..ce4d24a 100644
---- a/engine/src/shaders/vulkan/spk_grain_simple.comp
-+++ b/engine/src/shaders/vulkan/spk_grain_simple.comp
-@@ -10,8 +10,13 @@ layout(std430, binding = 4) writeonly buffer Out { float dst[]; };
- 
- // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
- // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
-+// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
-+// `base` is the first element this one covers. Folding into workgroup rows is
-+// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
 +
- uint spk_global_index() {
--    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
-+    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
- }
  void main() {
      uint i = spk_global_index();
+     uint K = meta[0], n = meta[1], positive = meta[2], seed = meta[3], sl = meta[4];
+@@ -40,7 +54,7 @@ void main() {
+         else if (mode == 1) d = ylay[(K - 1u) * 9u + col];
+         else { float y0 = ylay[low * 9u + col], y1 = ylay[(low + 1u) * 9u + col]; d = y0 + t * (y1 - y0); }
+         d += lp[4u * col];
+-        Rng rng = rng_init(i, streams[col], seed);
++        Rng rng = rng_init(spk_frame_index(), streams[col], seed);
+         dst[3u * i + ch] = layer_draw(rng, d, lp[4u * col + 1u], lp[4u * col + 2u], lp[4u * col + 3u]);
+     }
+ }
+diff --git a/engine/src/shaders/vulkan/spk_grain_layers.comp b/engine/src/shaders/vulkan/spk_grain_layers.comp
+index 32795d4..4aa238e 100644
+--- a/engine/src/shaders/vulkan/spk_grain_layers.comp
++++ b/engine/src/shaders/vulkan/spk_grain_layers.comp
+@@ -13,14 +13,28 @@ layout(std430, binding = 7) writeonly buffer Out { float dst[]; };
+ 
+ // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
+ // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
++// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
++// `base` is the first element this one covers. Folding into workgroup rows is
++// kept for a single dispatch, where base is 0.
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
++
+ uint spk_global_index() {
+-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
+ }
+ uint search_right(uint K, uint ch, float v) {
+     uint lo = 0u, hi = K;
+     while (lo < hi) { uint mid = lo + ((hi - lo) >> 1); if (xa[mid * 3u + ch] <= v) lo = mid + 1u; else hi = mid; }
+     return lo;
+ }
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i = spk_global_index();
+     uint K = meta[0], n = meta[1], positive = meta[2], seed = meta[3];
+@@ -42,7 +56,7 @@ void main() {
+             else if (mode == 1) d = ylay[(K - 1u) * 9u + col];
+             else { float y0 = ylay[low * 9u + col], y1 = ylay[(low + 1u) * 9u + col]; d = y0 + t * (y1 - y0); }
+             d += lp[4u * col];
+-            Rng rng = rng_init(i, streams[col], seed);
++            Rng rng = rng_init(spk_frame_index(), streams[col], seed);
+             acc += layer_draw(rng, d, lp[4u * col + 1u], lp[4u * col + 2u], lp[4u * col + 3u]);
+         }
+         dst[3u * i + ch] = acc;
+diff --git a/engine/src/shaders/vulkan/spk_grain_simple.comp b/engine/src/shaders/vulkan/spk_grain_simple.comp
+index bc7682b..04f9a76 100644
+--- a/engine/src/shaders/vulkan/spk_grain_simple.comp
++++ b/engine/src/shaders/vulkan/spk_grain_simple.comp
+@@ -10,9 +10,23 @@ layout(std430, binding = 4) writeonly buffer Out { float dst[]; };
+ 
+ // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
+ // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
++// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
++// `base` is the first element this one covers. Folding into workgroup rows is
++// kept for a single dispatch, where base is 0.
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
++
+ uint spk_global_index() {
+-    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
+ }
++
+ void main() {
+     uint i = spk_global_index();
+     uint n = meta[0], nsub = meta[1], seed = meta[2];
+@@ -21,7 +35,7 @@ void main() {
+         precise float d = cmy[3u * i + ch] + lp[4u * ch];
+         precise float acc = 0.0;
+         for (uint sl = 0u; sl < nsub; ++sl) {
+-            Rng rng = rng_init(i, streams[ch] + sl * 10u, seed);
++            Rng rng = rng_init(spk_frame_index(), streams[ch] + sl * 10u, seed);
+             acc += layer_draw(rng, d, lp[4u * ch + 1u], lp[4u * ch + 2u], lp[4u * ch + 3u]);
+         }
+         dst[3u * i + ch] = acc;
 diff --git a/engine/src/shaders/vulkan/spk_highlight_headroom.comp b/engine/src/shaders/vulkan/spk_highlight_headroom.comp
-index 6ebac9f..cec1d73 100644
+index 6ebac9f..14707db 100644
 --- a/engine/src/shaders/vulkan/spk_highlight_headroom.comp
 +++ b/engine/src/shaders/vulkan/spk_highlight_headroom.comp
 @@ -16,8 +16,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
@@ -1151,7 +1397,7 @@ index 6ebac9f..cec1d73 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1159,8 +1405,24 @@ index 6ebac9f..cec1d73 100644
  }
  
  float spk_smoothstep01(float t) {
+@@ -25,6 +30,15 @@ float spk_smoothstep01(float t) {
+     return t * t * (3.0 - 2.0 * t);
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i = spk_global_index();
+     if (i >= count_data.value[0]) return;
 diff --git a/engine/src/shaders/vulkan/spk_iir_df_acc.comp b/engine/src/shaders/vulkan/spk_iir_df_acc.comp
-index 43cd7d0..e8a6383 100644
+index 43cd7d0..b347b4e 100644
 --- a/engine/src/shaders/vulkan/spk_iir_df_acc.comp
 +++ b/engine/src/shaders/vulkan/spk_iir_df_acc.comp
 @@ -18,8 +18,13 @@ layout(set = 0, binding = 6, std430) buffer Output { float value[]; } output_dat
@@ -1170,7 +1432,7 @@ index 43cd7d0..e8a6383 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1178,7 +1440,20 @@ index 43cd7d0..e8a6383 100644
  }
  
  // (hi, lo) float pairs, translated from spk_common.h. precise preserves the
-@@ -72,11 +77,17 @@ void main() {
+@@ -68,15 +73,30 @@ vec2 df_mul_f(vec2 a, float b) {
+     return quick_two_sum(p.x, lo);
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
      uint t = spk_global_index();
      uint height = meta.value[0], width = meta.value[1];
      uint accumulate = meta.value[2], axis = meta.value[3];
@@ -1200,64 +1475,107 @@ index 43cd7d0..e8a6383 100644
      vec2 B = vec2(coefficients.value[8u * channel], coefficients.value[8u * channel + 1u]);
      vec2 B1 = vec2(coefficients.value[8u * channel + 2u], coefficients.value[8u * channel + 3u]);
 diff --git a/engine/src/shaders/vulkan/spk_lincomb3.comp b/engine/src/shaders/vulkan/spk_lincomb3.comp
-index 774e9ab..de728b8 100644
+index 774e9ab..e10ab39 100644
 --- a/engine/src/shaders/vulkan/spk_lincomb3.comp
 +++ b/engine/src/shaders/vulkan/spk_lincomb3.comp
-@@ -12,8 +12,13 @@ layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; }
+@@ -12,8 +12,22 @@ layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_log10_guarded.comp b/engine/src/shaders/vulkan/spk_log10_guarded.comp
-index 1a1c55f..50a4ee7 100644
+index 1a1c55f..4f0cb7b 100644
 --- a/engine/src/shaders/vulkan/spk_log10_guarded.comp
 +++ b/engine/src/shaders/vulkan/spk_log10_guarded.comp
-@@ -8,8 +8,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
+@@ -8,8 +8,22 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_lognormal_field.comp b/engine/src/shaders/vulkan/spk_lognormal_field.comp
-index 05e6457..a821a31 100644
+index 05e6457..b721ffa 100644
 --- a/engine/src/shaders/vulkan/spk_lognormal_field.comp
 +++ b/engine/src/shaders/vulkan/spk_lognormal_field.comp
-@@ -8,8 +8,13 @@ layout(std430, binding = 2) writeonly buffer Out { float dst[]; };
+@@ -8,9 +8,23 @@ layout(std430, binding = 2) writeonly buffer Out { float dst[]; };
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
++
  void main() {
      uint i = spk_global_index();
+     uint n = meta[0], seed = meta[1], stream0 = meta[2], per_channel = meta[3];
+@@ -20,12 +34,12 @@ void main() {
+     precise float mu = log(m) - 0.5 * sig * sig;
+     if (per_channel != 0u) {
+         for (uint ch = 0u; ch < 3u; ++ch) {
+-            Rng rng = rng_init(i, stream0 + ch, seed);
++            Rng rng = rng_init(spk_frame_index(), stream0 + ch, seed);
+             precise float v = exp(mu + sig * rng_normal(rng));
+             dst[3u * i + ch] = v;
+         }
+     } else {
+-        Rng rng = rng_init(i, stream0, seed);
++        Rng rng = rng_init(spk_frame_index(), stream0, seed);
+         precise float v = exp(mu + sig * rng_normal(rng));
+         dst[3u * i] = v; dst[3u * i + 1u] = v; dst[3u * i + 2u] = v;
+     }
 diff --git a/engine/src/shaders/vulkan/spk_lut2d_cubic.comp b/engine/src/shaders/vulkan/spk_lut2d_cubic.comp
-index 8a6a078..5dbccfd 100644
+index 8a6a078..3b6d06c 100644
 --- a/engine/src/shaders/vulkan/spk_lut2d_cubic.comp
 +++ b/engine/src/shaders/vulkan/spk_lut2d_cubic.comp
 @@ -11,8 +11,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer Output { float value[]; }
@@ -1267,7 +1585,7 @@ index 8a6a078..5dbccfd 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1275,8 +1593,24 @@ index 8a6a078..5dbccfd 100644
  }
  
  float mitchell(float t) {
+@@ -45,6 +50,15 @@ void base_frac(float coord, int length, out int base, out float fraction) {
+     fraction = coord - float(base);
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i = spk_global_index();
+     uint length = meta.value[0];
 diff --git a/engine/src/shaders/vulkan/spk_lut3d_trilinear.comp b/engine/src/shaders/vulkan/spk_lut3d_trilinear.comp
-index c11c40d..6f44d29 100644
+index c11c40d..51939f7 100644
 --- a/engine/src/shaders/vulkan/spk_lut3d_trilinear.comp
 +++ b/engine/src/shaders/vulkan/spk_lut3d_trilinear.comp
 @@ -12,8 +12,13 @@ layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; }
@@ -1286,7 +1620,7 @@ index c11c40d..6f44d29 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1294,6 +1628,22 @@ index c11c40d..6f44d29 100644
  }
  
  float metal_clamp01(float x) {
+@@ -24,6 +29,15 @@ float metal_clamp01(float x) {
+     return x;
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint gid = spk_global_index();
+     if (gid >= meta.value[0]) return;
 diff --git a/engine/src/shaders/vulkan/spk_math_probe.comp b/engine/src/shaders/vulkan/spk_math_probe.comp
 index 90ddc81..11fc253 100644
 --- a/engine/src/shaders/vulkan/spk_math_probe.comp
@@ -1314,62 +1664,90 @@ index 90ddc81..11fc253 100644
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_matmul3.comp b/engine/src/shaders/vulkan/spk_matmul3.comp
-index a321ad2..2969c8a 100644
+index a321ad2..584f6cb 100644
 --- a/engine/src/shaders/vulkan/spk_matmul3.comp
 +++ b/engine/src/shaders/vulkan/spk_matmul3.comp
-@@ -9,8 +9,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
+@@ -9,8 +9,22 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_mul.comp b/engine/src/shaders/vulkan/spk_mul.comp
-index 240ecea..5190a28 100644
+index 240ecea..e486e33 100644
 --- a/engine/src/shaders/vulkan/spk_mul.comp
 +++ b/engine/src/shaders/vulkan/spk_mul.comp
-@@ -9,8 +9,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
+@@ -9,8 +9,22 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_overscan_body.glsl b/engine/src/shaders/vulkan/spk_overscan_body.glsl
-index bbef95b..2eba0f9 100644
+index bbef95b..71be1b7 100644
 --- a/engine/src/shaders/vulkan/spk_overscan_body.glsl
 +++ b/engine/src/shaders/vulkan/spk_overscan_body.glsl
 @@ -1,3 +1,4 @@
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
  // Ported from the pinned upstream overscan.metal; parameter indices and
  // physical exposure/film/scan stages are shared with overscan.cpp.
  layout(local_size_x = 256) in;
-@@ -194,7 +195,7 @@ vec3 sample_frame(float fx, float fy, uint fw, uint fh) {
+@@ -193,8 +194,17 @@ vec3 sample_frame(float fx, float fy, uint fw, uint fh) {
+ 
  // ① + ② + the fog of ③: raw exposure on the film canvas.
  #if defined(SPK_OVERSCAN_CANVAS)
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
  void main() {
 -    const uint i = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    const uint i = spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
      if (i >= count.v[0]) return;
      const uint cw = uint(params.v[P_CW]);
      const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
-@@ -256,7 +257,7 @@ void main() {
+@@ -256,7 +266,7 @@ void main() {
  // M = {x0, y0, mw, mh, cw, ch, e_r, e_g, e_b}.
  #if defined(SPK_OVERSCAN_ADD_MASK)
  void main() {
@@ -1378,7 +1756,7 @@ index bbef95b..2eba0f9 100644
      if (i >= count.v[0]) return;
      const uint mw = uint(params.v[2]);
      const int x = int(params.v[0]) + int(i % mw), y = int(params.v[1]) + int(i / mw);
-@@ -351,7 +352,7 @@ float film_alpha(vec2 st) {
+@@ -351,7 +361,7 @@ float film_alpha(vec2 st) {
  // the enlarger or the scanner sees clear light.
  #if defined(SPK_OVERSCAN_FILM_PRESENT)
  void main() {
@@ -1387,7 +1765,7 @@ index bbef95b..2eba0f9 100644
      if (i >= count.v[0]) return;
      const uint cw = uint(params.v[P_CW]);
      const float a = film_alpha(canvas_to_film(float(i % cw), float(i / cw)));
-@@ -375,7 +376,7 @@ void main() {
+@@ -375,7 +385,7 @@ void main() {
  // after the scanner's blur and sharpening (the edge's softness is `film_alpha`'s).
  #if defined(SPK_OVERSCAN_LIGHT)
  void main() {
@@ -1397,66 +1775,117 @@ index bbef95b..2eba0f9 100644
      const uint cw = uint(params.v[P_CW]);
      const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
 diff --git a/engine/src/shaders/vulkan/spk_print_exposure.comp b/engine/src/shaders/vulkan/spk_print_exposure.comp
-index 8046d45..feecb2d 100644
+index 8046d45..370c8c7 100644
 --- a/engine/src/shaders/vulkan/spk_print_exposure.comp
 +++ b/engine/src/shaders/vulkan/spk_print_exposure.comp
-@@ -8,8 +8,13 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
+@@ -8,8 +8,22 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_rng_probe.comp b/engine/src/shaders/vulkan/spk_rng_probe.comp
-index 10a2407..2d12a9f 100644
+index 10a2407..eadd180 100644
 --- a/engine/src/shaders/vulkan/spk_rng_probe.comp
 +++ b/engine/src/shaders/vulkan/spk_rng_probe.comp
-@@ -11,8 +11,13 @@ layout(std430, binding = 3) writeonly buffer Out { uint dst[]; };
+@@ -11,9 +11,23 @@ layout(std430, binding = 3) writeonly buffer Out { uint dst[]; };
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
++
  void main() {
      uint i = spk_global_index();
+     if (i >= meta[0]) return;
+@@ -22,7 +36,7 @@ void main() {
+         uvec4 v = philox4x32_10(uvec4(ctrkey[j], ctrkey[j+1u], ctrkey[j+2u], ctrkey[j+3u]), uvec2(ctrkey[j+4u], ctrkey[j+5u]));
+         dst[4u*i] = v.x; dst[4u*i+1u] = v.y; dst[4u*i+2u] = v.z; dst[4u*i+3u] = v.w;
+     } else {
+-        Rng rng = rng_init(i, meta[2], meta[1]);
++        Rng rng = rng_init(spk_frame_index(), meta[2], meta[1]);
+         float v;
+         if (meta[3] == 1u) v = rng_next(rng);
+         else if (meta[3] == 2u) v = poisson(rng, p[0]);
 diff --git a/engine/src/shaders/vulkan/spk_scene_latitude.comp b/engine/src/shaders/vulkan/spk_scene_latitude.comp
-index ab64c45..57bdd33 100644
+index ab64c45..3815b8a 100644
 --- a/engine/src/shaders/vulkan/spk_scene_latitude.comp
 +++ b/engine/src/shaders/vulkan/spk_scene_latitude.comp
 @@ -1,5 +1,7 @@
  #version 450
  
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  // RFC-023, arithmetic and parameters from scene_latitude.metal. Negative
  // signal components survive: only the scalar norm uses the positive triple.
  layout(local_size_x = 256) in;
-@@ -19,7 +21,7 @@ float departure(float D, float H, float m) {
+@@ -18,9 +20,19 @@ float departure(float D, float H, float m) {
+     return D * (H / pow(pow(H, m) + pow(D, m), 1.0 / m) - 1.0);
  }
  
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
  void main() {
 -    uint i = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    uint i = spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
      if (i >= n.v[0]) return;
++    const uint gi = spk_frame_index();   // geometry, not addressing
      float r = rgb.v[3u * i], g = rgb.v[3u * i + 1u], b = rgb.v[3u * i + 2u];
      float cr = max(r, 0.0), cg = max(g, 0.0), cb = max(b, 0.0);
+     precise float value;
+@@ -39,8 +51,8 @@ void main() {
+         float Kh = p.v[0], Hh = p.v[1], Ks = p.v[2], Hs = p.v[3];
+         if (p.v[13] > 0.0) {
+             uint w = uint(p.v[11]), h = uint(p.v[12]);
+-            float along = w >= h ? (float(i % w) + 0.5) / float(w)
+-                : (float(i / w) + p.v[18] + 0.5) / float(h);
++            float along = w >= h ? (float(gi % w) + 0.5) / float(w)
++                : (float(gi / w) + p.v[18] + 0.5) / float(h);
+             if (along >= p.v[13]) { Kh = p.v[14]; Hh = p.v[15]; Ks = p.v[16]; Hs = p.v[17]; }
+         }
+         if (Hh > 0.0 && E > Kh) d = departure(E - Kh, Hh, p.v[4]);
 diff --git a/engine/src/shaders/vulkan/spk_sep_fir_acc.comp b/engine/src/shaders/vulkan/spk_sep_fir_acc.comp
-index fceff10..ca8dc85 100644
+index fceff10..1718dc8 100644
 --- a/engine/src/shaders/vulkan/spk_sep_fir_acc.comp
 +++ b/engine/src/shaders/vulkan/spk_sep_fir_acc.comp
 @@ -12,8 +12,13 @@ layout(set = 0, binding = 5, std430) writeonly buffer Output { float value[]; }
@@ -1466,7 +1895,7 @@ index fceff10..ca8dc85 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1474,98 +1903,159 @@ index fceff10..ca8dc85 100644
  }
  
  int reflect_index(int index, int length) {
+@@ -34,6 +39,15 @@ int mirror_index(int index, int length) {
+     return int(j >= uint(length) ? period - j : j);
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint pixel = spk_global_index();
+     uint height = meta.value[0], width = meta.value[1];
 diff --git a/engine/src/shaders/vulkan/spk_spectral_epilogue.comp b/engine/src/shaders/vulkan/spk_spectral_epilogue.comp
-index 23f9789..92393d7 100644
+index 23f9789..74bf444 100644
 --- a/engine/src/shaders/vulkan/spk_spectral_epilogue.comp
 +++ b/engine/src/shaders/vulkan/spk_spectral_epilogue.comp
-@@ -13,8 +13,13 @@ layout(set = 0, binding = 6, std430) writeonly buffer Output { float value[]; }
+@@ -13,8 +13,22 @@ layout(set = 0, binding = 6, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_stride_sample.comp b/engine/src/shaders/vulkan/spk_stride_sample.comp
-index a5557eb..e33576f 100644
+index a5557eb..f216c29 100644
 --- a/engine/src/shaders/vulkan/spk_stride_sample.comp
 +++ b/engine/src/shaders/vulkan/spk_stride_sample.comp
-@@ -9,8 +9,13 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; }
+@@ -9,8 +9,22 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_take_rgb.comp b/engine/src/shaders/vulkan/spk_take_rgb.comp
-index 34ed087..5fdfa5b 100644
+index 34ed087..e7e6d0a 100644
 --- a/engine/src/shaders/vulkan/spk_take_rgb.comp
 +++ b/engine/src/shaders/vulkan/spk_take_rgb.comp
-@@ -8,8 +8,13 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; }
+@@ -8,8 +8,22 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; }
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_tc_b.comp b/engine/src/shaders/vulkan/spk_tc_b.comp
-index 9eefcea..580d4f6 100644
+index 9eefcea..bb2aa28 100644
 --- a/engine/src/shaders/vulkan/spk_tc_b.comp
 +++ b/engine/src/shaders/vulkan/spk_tc_b.comp
-@@ -11,8 +11,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer Brightness { float value[]
+@@ -11,8 +11,22 @@ layout(set = 0, binding = 4, std430) writeonly buffer Brightness { float value[]
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_to_rgba16.comp b/engine/src/shaders/vulkan/spk_to_rgba16.comp
-index 216750f..af41f03 100644
+index 216750f..494850c 100644
 --- a/engine/src/shaders/vulkan/spk_to_rgba16.comp
 +++ b/engine/src/shaders/vulkan/spk_to_rgba16.comp
-@@ -9,12 +9,20 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { uint value[]; } o
+@@ -9,12 +9,29 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { uint value[]; } o
  
  // vulkan_gpu.cpp folds a dispatch past maxComputeWorkGroupCount[0] (65535 on
  // lavapipe and Intel) into rows of workgroups; this is the 1D index it means.
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    return spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++}
++
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
  }
  
  void main() {
@@ -1578,13 +2068,13 @@ index 216750f..af41f03 100644
      uint row = i / meta.value[1], column = i % meta.value[1];
      uint dst = row * meta.value[2] + column;
 diff --git a/engine/src/shaders/vulkan/spk_view_geometry.comp b/engine/src/shaders/vulkan/spk_view_geometry.comp
-index 194c5da..47b0c03 100644
+index 194c5da..062b208 100644
 --- a/engine/src/shaders/vulkan/spk_view_geometry.comp
 +++ b/engine/src/shaders/vulkan/spk_view_geometry.comp
-@@ -1,10 +1,12 @@
+@@ -1,11 +1,22 @@
  #version 450
 +
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
  layout(local_size_x=256) in;
  layout(binding=0,std430) readonly buffer Input { float v[]; } src;
  layout(binding=1,std430) readonly buffer Uniforms { float v[]; } u;
@@ -1593,14 +2083,24 @@ index 194c5da..47b0c03 100644
 -uint index1D(){return gl_GlobalInvocationID.y*(gl_NumWorkGroups.x*gl_WorkGroupSize.x)+gl_GlobalInvocationID.x;}
 +uint index1D(){return spk_pc.base + gl_GlobalInvocationID.y*(gl_NumWorkGroups.x*gl_WorkGroupSize.x)+gl_GlobalInvocationID.x;}
  vec3 sampleAt(uint x,uint y){uint i=3u*(y*m.v[0]+x); return vec3(src.v[i],src.v[i+1u],src.v[i+2u]);}
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
  void main(){
   uint i=index1D(); if(i>=m.v[2]*m.v[3])return;
+  vec2 p=(vec2(i%m.v[2],i/m.v[2])+0.5)/vec2(m.v[2],m.v[3]);
 diff --git a/engine/src/shaders/vulkan/spk_view_grade_body.glsl b/engine/src/shaders/vulkan/spk_view_grade_body.glsl
-index dfe49ac..291a22f 100644
+index dfe49ac..ec3ff07 100644
 --- a/engine/src/shaders/vulkan/spk_view_grade_body.glsl
 +++ b/engine/src/shaders/vulkan/spk_view_grade_body.glsl
 @@ -1,3 +1,4 @@
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
  // Encoded ProPhoto Layer 2, ported from Canvas/Shaders.metal. Input and
  // output have the same UNORM16 boundaries as Mac's offscreen textures.
  layout(local_size_x=256) in;
@@ -1613,14 +2113,30 @@ index dfe49ac..291a22f 100644
  #ifdef SPK_DI_VIEW
  layout(binding=5,std430) readonly buffer Table { float value[]; } lut;
  float sample_table(uvec3 p,uint channel) { return lut.value[((p.z*m.v[3]+p.y)*m.v[3]+p.x)*3u+channel]; }
+@@ -32,6 +33,15 @@ float curve(float v,uint row) {
+     return mix(curves.v[row*256u+i],curves.v[row*256u+min(i+1u,255u)],fract(x));
+ }
+ vec3 triple(uint i) { return vec3(u.v[i],u.v[i+1u],u.v[i+2u]); }
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i=index1D(); if(i>=m.v[0]) return;
+     uint rg=src.v[2u*i],ba=src.v[2u*i+1u];
 diff --git a/engine/src/shaders/vulkan/spk_view_pack.comp b/engine/src/shaders/vulkan/spk_view_pack.comp
-index 055280d..86c383c 100644
+index 055280d..892702b 100644
 --- a/engine/src/shaders/vulkan/spk_view_pack.comp
 +++ b/engine/src/shaders/vulkan/spk_view_pack.comp
 @@ -1,10 +1,12 @@
  #version 450
 +
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
  layout(local_size_x=256) in;
  layout(binding=0,std430) readonly buffer Input { float v[]; } src;
  layout(binding=1,std430) readonly buffer Meta { uint v[]; } m;
@@ -1631,20 +2147,46 @@ index 055280d..86c383c 100644
  float encode(float x,uint mode){
   if(mode==0u)return x<=0.0031308?12.92*x:1.055*pow(max(x,0.0),1.0/2.4)-0.055;
   if(mode==1u)return x<1.0/512.0?16.0*x:pow(max(x,0.0),1.0/1.8);
+@@ -18,6 +20,15 @@ uint encoded16(uint sampleIndex){
+  return isnan(value)?0u:uint(floor(clamp(value,0.0,1.0)*65535.0+0.5));
+ }
+ uint to8(uint value){return (value*255u+32767u)/65535u;}
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main(){
+  uint i=index1D();
+  if(m.v[3]==0u){
 diff --git a/engine/src/shaders/vulkan/spk_view_pair.comp b/engine/src/shaders/vulkan/spk_view_pair.comp
-index f8ab7a9..97632a9 100644
+index f8ab7a9..c0695bb 100644
 --- a/engine/src/shaders/vulkan/spk_view_pair.comp
 +++ b/engine/src/shaders/vulkan/spk_view_pair.comp
 @@ -1,4 +1,6 @@
  #version 450
 +
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
  layout(local_size_x=256) in;
  layout(binding=0,std430) readonly buffer Base { uint v[]; } base;
  layout(binding=1,std430) readonly buffer First { uint v[]; } first;
-@@ -9,7 +11,7 @@ layout(binding=5,std430) writeonly buffer Output { uint v[]; } dst;
+@@ -8,8 +10,17 @@ layout(binding=4,std430) readonly buffer Rects { float v[]; } r;
+ layout(binding=5,std430) writeonly buffer Output { uint v[]; } dst;
  vec3 rgb(uint a,uint b){return vec3(a&65535u,a>>16,b&65535u)/65535.0;}
  float coverage(vec2 p,uint k){float d=min(min(p.x-r.v[k],r.v[k+2u]-p.x),min(p.y-r.v[k+1u],r.v[k+3u]-p.y));return clamp(d/1.5+0.5,0.0,1.0);}
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
  void main(){
 - uint i=gl_GlobalInvocationID.y*(gl_NumWorkGroups.x*gl_WorkGroupSize.x)+gl_GlobalInvocationID.x;
 + uint i=spk_pc.base + gl_GlobalInvocationID.y*(gl_NumWorkGroups.x*gl_WorkGroupSize.x)+gl_GlobalInvocationID.x;
@@ -1652,7 +2194,7 @@ index f8ab7a9..97632a9 100644
   vec2 p=vec2(float(i%m.v[1]),float(i/m.v[1]))+0.5;
   vec3 c=rgb(base.v[2u*i],base.v[2u*i+1u]);
 diff --git a/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp b/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp
-index 5425a64..f904661 100644
+index 5425a64..ac48f9f 100644
 --- a/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp
 +++ b/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp
 @@ -8,8 +8,13 @@ layout(std430, binding = 2) writeonly buffer Out { float dst[]; };
@@ -1662,7 +2204,7 @@ index 5425a64..f904661 100644
 +// A frame past maxComputeWorkGroupCount[0] is issued as several 1D dispatches;
 +// `base` is the first element this one covers. Folding into workgroup rows is
 +// kept for a single dispatch, where base is 0.
-+layout(push_constant) uniform SpkDispatch { uint base; } spk_pc;
++layout(push_constant) uniform SpkDispatch { uint base; uint origin; } spk_pc;
 +
  uint spk_global_index() {
 -    return gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
@@ -1670,6 +2212,22 @@ index 5425a64..f904661 100644
  }
  
  // Pair layout is {low, high}. Use exact two-word integer arithmetic instead
+@@ -71,6 +76,15 @@ void sample_axis(uint o, uint in_len, uint out_len, out uint i0, out uint i1, ou
+     t = numerator / denominator;
+ }
+ 
++// Frame-absolute index: where this invocation sits in the whole frame, not in
++// its binding window. Kernels that derive a random seed or a spatial gradient
++// from the index must use this one, or a band would restart the noise.
++uint spk_frame_index() {
++    return spk_pc.origin + spk_pc.base +
++           gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) +
++           gl_GlobalInvocationID.x;
++}
++
+ void main() {
+     uint i = spk_global_index();
+     uint SH = meta[0], SW = meta[1], OH = meta[2], OW = meta[3];
 diff --git a/engine/third_party/volk/volk.c b/engine/third_party/volk/volk.c
 index 6a86f10..ba62608 100644
 --- a/engine/third_party/volk/volk.c
