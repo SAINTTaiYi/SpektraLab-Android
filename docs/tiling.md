@@ -248,6 +248,26 @@ push constant 被后一块覆盖（改成每块单独提交，无变化）、矩
 （`cctf_encode_matrix`、`to_rgba16`、`view_pack`、`view_pair`、`lut3d_trilinear`、
 `di_normalise`、`spectral_epilogue`、`lognormal_field`、`scene_latitude`、`cctf_decode`、`matmul3`）。
 
+## 导出不再复制：结果直接是映射内存
+
+以前导出的峰值是两个整幅缓冲：GPU 里的 RGBA16（50 MP 约 400 MB）+ 读回到 malloc 的同样一份，
+再加上一次全幅拷贝的时间。现在：
+
+- `alloc_host_visible()` 分配 `host_storage` 缓冲（保留 STORAGE 用法，换成
+  DEVICE_LOCAL|HOST_VISIBLE 的内存类型并映射）——统一内存上，shader 写的就是调用方读的
+- `texture()` 对映射缓冲只做一次 invalidate，返回映射指针，并在 `retained_` 里持有一份引用
+- `spk_result` 多一个 `owner`：释放时走后端虚函数，而不是静态的 `free()`。
+  少了这一步会把映射指针当 malloc 释放，进程直接 abort（`Pointer tag … was truncated`）
+- 指针键用**去掉 top-byte tag** 的地址比较：Android 会在同一次映射上带/不带 tag 返回
+
+实测 50 MP：**103 s → 90 s**（-13%），峰值 RSS 792 → 788 MB。
+
+### 峰值不在导出
+
+内存没有明显下降，因为峰值出现在管线中段而不是导出：50 MP 时输入本身 612 MB，
+加上管线里同时存活的几个平面。要让 64 MP 通过，下一个目标是**管线内平面数量**，
+不是导出缓冲。
+
 ## 实施顺序
 
 1. `Arg` 增加 `(offset, range)`；`dispatch()` 绑定窗口；size 检查用 `range`。

@@ -1,8 +1,19 @@
 diff --git a/engine/include/spektrafilm/spk_engine.h b/engine/include/spektrafilm/spk_engine.h
-index b0c2a45..343272b 100644
+index b0c2a45..8fcc0e2 100644
 --- a/engine/include/spektrafilm/spk_engine.h
 +++ b/engine/include/spektrafilm/spk_engine.h
-@@ -391,6 +391,25 @@ void spk_string_free(char* s);
+@@ -130,6 +130,10 @@ typedef struct {
+     int32_t         reprint;              /* 1 if the negative was reused   */
+     int32_t         negative_was_cached;
+     char            progress_id[40];
++    /* The device that owns `texture`, so its release goes through the backend
++     * rather than a plain free: a result may be a mapping of the buffer the
++     * shader wrote, not a malloc. Null for results from an older caller. */
++    void*           owner;
+ } spk_result;
+ 
+ /* --- engine ----------------------------------------------------------- */
+@@ -391,6 +395,25 @@ void spk_string_free(char* s);
   * nothing has failed. Valid until the next failed call on this thread. */
  const char* spk_last_error(spk_engine* engine);
  
@@ -29,7 +40,7 @@ index b0c2a45..343272b 100644
   * report: version, git-ish build stamp, the Metal math mode the kernels were
   * compiled with, and whether the fast-math probe agreed with it. */
 diff --git a/engine/src/gpu/gpu.hpp b/engine/src/gpu/gpu.hpp
-index b996193..64e622b 100644
+index b996193..2fb8e7d 100644
 --- a/engine/src/gpu/gpu.hpp
 +++ b/engine/src/gpu/gpu.hpp
 @@ -209,13 +209,55 @@ struct Arg {
@@ -108,7 +119,19 @@ index b996193..64e622b 100644
      // The fast-math probe. Returns false, with a message, when the kernels in
      // the loaded library were compiled with fast math -- which drifts `exp`
      // and fma contraction by up to 1.1e-5, past the float32 bar, silently
-@@ -377,6 +432,21 @@ public:
+@@ -243,6 +298,11 @@ public:
+ 
+     // Counted. The buffer returns to the pool when the last handle drops.
+     virtual BufferRef alloc(size_t bytes, std::string& error) = 0;
++
++    // A buffer the shader writes and the host then reads *in place*: no
++    // readback copy, which is half the peak at export size. Backends without
++    // host-visible storage fall back to an ordinary allocation.
++    virtual BufferRef alloc_host_visible(size_t bytes, std::string& error) { return alloc(bytes, error); }
+     virtual BufferRef alloc_zeroed(size_t bytes, std::string& error) = 0;
+     virtual BufferRef upload(const void* data, size_t bytes, std::string& error) = 0;
+ 
+@@ -377,6 +437,21 @@ public:
  
      virtual bool dispatch(const char* kernel, const std::vector<Arg>& args,
                            size_t n_threads, std::string& error) = 0;
@@ -159,21 +182,22 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..57f85d0 100644
+index 8d6b100..966188b 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
-@@ -20,8 +20,10 @@
+@@ -20,8 +20,11 @@
  #include <chrono>
  #include <cmath>
  #include <cstdint>
 +#include <cstdarg>
  #include <cstdio>
  #include <cstdlib>
++#include <map>
 +#include <numeric>
  #include <cstring>
  #include <fstream>
  #include <limits>
-@@ -33,6 +35,31 @@
+@@ -33,6 +36,31 @@
  
  namespace spk::gpu {
  
@@ -205,7 +229,7 @@ index 8d6b100..57f85d0 100644
  struct Buffer {
      VkBuffer handle = VK_NULL_HANDLE;
      VkDeviceMemory memory = VK_NULL_HANDLE;
-@@ -53,59 +80,76 @@ std::string vk_error(const char* operation, VkResult result) {
+@@ -53,59 +81,76 @@ std::string vk_error(const char* operation, VkResult result) {
      return std::string(operation) + " failed (VkResult " + std::to_string(int(result)) + ")";
  }
  
@@ -331,7 +355,7 @@ index 8d6b100..57f85d0 100644
  };
  
  const KernelSpec* find_kernel(const char* name) {
-@@ -253,6 +297,16 @@ public:
+@@ -253,6 +298,16 @@ public:
          }
          if (!physical_) { error = "no Vulkan compute queue"; return false; }
          storage_range_limit_ = properties_.limits.maxStorageBufferRange;
@@ -348,7 +372,7 @@ index 8d6b100..57f85d0 100644
          if (properties_.limits.maxComputeWorkGroupInvocations < kWorkgroup ||
              properties_.limits.maxComputeWorkGroupSize[0] < kWorkgroup ||
              properties_.limits.maxPerStageDescriptorStorageBuffers < 8 ||
-@@ -301,6 +355,32 @@ public:
+@@ -301,6 +356,32 @@ public:
      }
  
      std::string device_name() const override { return properties_.deviceName; }
@@ -381,7 +405,15 @@ index 8d6b100..57f85d0 100644
  
      bool check_math_mode(std::string& detail) override {
          if (!math_checked_) {
-@@ -582,8 +662,19 @@ public:
+@@ -459,6 +540,7 @@ public:
+     void end_frame() override {}
+ 
+     BufferRef alloc(size_t bytes, std::string& error) override { return allocate(bytes, false, error); }
++    BufferRef alloc_host_visible(size_t bytes, std::string& error) override { return allocate(bytes, false, error, true); }
+     BufferRef alloc_zeroed(size_t bytes, std::string& error) override {
+         if (bytes % 4) { error = "Vulkan zero-fill size must be 4-byte aligned"; return {}; }
+         BufferRef out = alloc(bytes, error);
+@@ -582,8 +664,19 @@ public:
          return true;
      }
  
@@ -401,7 +433,7 @@ index 8d6b100..57f85d0 100644
          if (n_threads == 0) return true;
          // Probe kernels must not recurse into the startup gate. A rejected
          // device stays rejected, including low-level callers that dispatch
-@@ -603,12 +694,32 @@ public:
+@@ -603,12 +696,32 @@ public:
          // index with spk_global_index(). The surplus threads of the last row
          // fail the same bounds check the last partial workgroup always did.
          const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
@@ -440,7 +472,7 @@ index 8d6b100..57f85d0 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +734,36 @@ public:
+@@ -623,11 +736,36 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -459,8 +491,9 @@ index 8d6b100..57f85d0 100644
 +                              (unsigned long long)(bind_offset + bind_range),
 +                              (unsigned long long)b->bytes);
 +                error = std::string(kernel) + detail;
-+                return false;
-+            }
+                 return false;
+             }
+-            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
 +            if (bind_range > storage_range_limit_) {
 +                // Say both numbers: the caller chooses the frame size, and a
 +                // bare "exceeds the limit" leaves them guessing whether the
@@ -473,14 +506,13 @@ index 8d6b100..57f85d0 100644
 +                              double(storage_range_limit_) / 1048576.0,
 +                              double(storage_range_limit_) / 12.0 / 1e6);
 +                error = std::string(kernel) + detail;
-                 return false;
-             }
--            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
++                return false;
++            }
 +            infos[i] = {b->handle, VkDeviceSize(bind_offset), VkDeviceSize(bind_range)};
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,18 +803,114 @@ public:
+@@ -667,18 +805,114 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -603,7 +635,48 @@ index 8d6b100..57f85d0 100644
      bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
      void* texture(Buffer* buffer, uint32_t width, uint32_t height,
                    uint32_t row_stride_px, std::string& error) override {
-@@ -745,7 +977,7 @@ public:
+@@ -690,15 +924,39 @@ public:
+         // A headless result is a separate CPU-owned RGBA16 copy. It remains
+         // valid after the engine and VkDevice are destroyed, just as a Metal
+         // texture keeps its own result alive after the render's buffers go.
++        // If the export buffer lives in host-visible memory the shader already
++        // wrote the pixels where the caller reads them: retain the buffer and
++        // hand back its mapping. That is the difference between one 490 MB copy
++        // and two at 64 MP, and it removes the readback pass as well.
++        if (buffer->mapped) {
++            if (!mapped_range(*buffer, buffer->bytes, false, error)) return nullptr;
++            {
++                std::lock_guard<std::mutex> lock(retained_mutex_);
++                retained_[untag(buffer->mapped)] = BufferRef(this, buffer);
++            }
++            spk_vk_log("result: mapped %.1f MiB, no readback", double(buffer->bytes) / 1048576.0);
++            return buffer->mapped;
++        }
++        spk_vk_log("result: malloc %.1f MiB", double(buffer->bytes) / 1048576.0);
+         void* pixels = std::malloc(buffer->bytes);
++        spk_vk_log("result: malloc %s", pixels ? "ok" : "FAILED");
+         if (!pixels) { error = "cannot allocate Vulkan result pixels"; return nullptr; }
++        spk_vk_log("result: readback start");
+         if (!read(buffer, 0, pixels, buffer->bytes, error)) {
+             std::free(pixels);
+             return nullptr;
+         }
++        spk_vk_log("result: readback done");
+         return pixels;
+     }
+-    void release_texture(void* pixels) override { std::free(pixels); }
++    void release_texture(void* pixels) override {
++        {
++            std::lock_guard<std::mutex> lock(retained_mutex_);
++            auto it = retained_.find(untag(pixels));
++            if (it != retained_.end()) { retained_.erase(it); return; }   // mapped: drop the hold
++        }
++        std::free(pixels);
++    }
+     uint32_t texture_row_alignment_px() const override { return 1; }
+     uint32_t max_texture_dimension_2d() const override {
+         return properties_.limits.maxImageDimension2D;
+@@ -745,7 +1003,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -612,7 +685,7 @@ index 8d6b100..57f85d0 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +999,7 @@ private:
+@@ -767,7 +1025,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -621,7 +694,7 @@ index 8d6b100..57f85d0 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +1011,7 @@ private:
+@@ -779,6 +1037,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -629,7 +702,7 @@ index 8d6b100..57f85d0 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +1038,8 @@ private:
+@@ -805,6 +1064,8 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -638,7 +711,75 @@ index 8d6b100..57f85d0 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -1015,7 +1250,7 @@ private:
+@@ -918,13 +1179,13 @@ private:
+         return out;
+     }
+ 
+-    BufferRef allocate(size_t bytes, bool persistent, std::string& error) {
++    BufferRef allocate(size_t bytes, bool persistent, std::string& error, bool host_storage = false) {
+         if (bytes == 0 || bytes > std::numeric_limits<VkDeviceSize>::max()) {
+             error = "invalid Vulkan buffer size";
+             return {};
+         }
+         std::lock_guard<std::mutex> lock(buffers_mutex_);
+-        if (!persistent) {
++        if (!persistent && !host_storage) {   // a pooled device-local block cannot serve a mapped request
+             Buffer* best = nullptr;
+             for (Buffer* b : buffers_)
+                 if (!b->persistent && b->refs == 0 && b->bytes >= bytes &&
+@@ -945,7 +1206,7 @@ private:
+         auto b = std::make_unique<Buffer>();
+         b->bytes = bytes;
+         b->persistent = persistent;
+-        if (!create_buffer(*b, error)) return {};
++        if (!create_buffer(*b, error, false, false, host_storage)) return {};
+         Buffer* raw = b.release();
+         buffers_.push_back(raw);
+         if (persistent) ++audit_.persistent_allocations;
+@@ -960,7 +1221,11 @@ private:
+         frame_high_water_ = std::max(frame_high_water_, live);
+     }
+ 
+-    bool create_buffer(Buffer& b, std::string& error, bool staging = false, bool readback = false) {
++    // host_storage: storage buffer the compute shader writes and the host reads in
++// place, no readback copy. Not a staging buffer -- it keeps the storage usage
++// bit and only changes which memory type it lands in.
++    bool create_buffer(Buffer& b, std::string& error, bool staging = false, bool readback = false,
++                       bool host_storage = false) {
+         VkBufferCreateInfo create{};
+         create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+         create.size = VkDeviceSize(b.bytes);
+@@ -976,12 +1241,18 @@ private:
+         int best_score = -1;
+         for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
+             const auto flags = memory_properties_.memoryTypes[i].propertyFlags;
+-            const auto required = staging ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
++            const auto required = (staging || host_storage) ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
++                                                           : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+             if (!(requirements.memoryTypeBits & (1u << i)) || !(flags & required)) continue;
+             // Compute planes stay on the device. Staging is chosen separately:
+             // CPU readback needs cached host memory, not a CPU mapping of VRAM.
+             int score = 0;
+-            if (staging) {
++            if (host_storage) {
++                // Unified memory is what makes this cheap: the same pages the
++                // shader writes are the ones the caller then reads.
++                if (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) score += 8;
++                if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) score += 4;
++            } else if (staging) {
+                 if (readback && (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) score += 8;
+                 if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) score += 4;
+                 if (!(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) score += 2;
+@@ -1007,7 +1278,7 @@ private:
+         b.allocation_bytes = requirements.size;
+         result = vkAllocateMemory(device_, &allocate_info, nullptr, &b.memory);
+         if (result == VK_SUCCESS) result = vkBindBufferMemory(device_, b.handle, b.memory, 0);
+-        if (result == VK_SUCCESS && staging)
++        if (result == VK_SUCCESS && (staging || host_storage))
+             result = vkMapMemory(device_, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped);
+         if (result != VK_SUCCESS) {
+             error = vk_error("Vulkan buffer memory", result);
+@@ -1015,10 +1286,10 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -646,8 +787,12 @@ index 8d6b100..57f85d0 100644
 +            spk_vk_log(
                  "{\"vulkan_allocation\":\"%s\",\"bytes\":%zu,\"allocation_bytes\":%llu,"
                  "\"memory_type\":%u,\"memory_flags\":%u,\"heap\":%u}\n",
-                 staging ? (readback ? "read_staging" : "upload_staging") : "compute",
-@@ -1073,10 +1308,24 @@ private:
+-                staging ? (readback ? "read_staging" : "upload_staging") : "compute",
++                host_storage ? "host_storage" : (staging ? (readback ? "read_staging" : "upload_staging") : "compute"),
+                 b.bytes, static_cast<unsigned long long>(b.allocation_bytes), b.memory_type,
+                 uint32_t(b.memory_flags), memory_properties_.memoryTypes[memory_index].heapIndex);
+         }
+@@ -1073,10 +1344,24 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -672,7 +817,7 @@ index 8d6b100..57f85d0 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
-@@ -1115,6 +1364,10 @@ private:
+@@ -1115,6 +1400,17 @@ private:
      VkPhysicalDeviceProperties properties_{};
      // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
      VkDeviceSize storage_range_limit_ = 0;
@@ -680,6 +825,13 @@ index 8d6b100..57f85d0 100644
 +    // aligned here is not a legal VkDescriptorBufferInfo.
 +    VkDeviceSize storage_offset_align_ = 1;
 +    // dispatch_banded only; there is no inferred form (see dispatch()).
++    // Android tags pointers in their top byte (MTE / HWASAN), and the same
++    // mapping can come back with the tag set and go out with it cleared. Keys
++    // are compared untagged so a release always finds its buffer -- missing it
++    // means free() on a mapping, which aborts.
++    static void* untag(void* p) { return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(p) & 0x00FFFFFFFFFFFFFFull); }
++    std::mutex retained_mutex_;
++    std::map<void*, BufferRef> retained_;
      // -1 unvalidated/rejected, 1 validated fused fma, 0 validated split.
      int fused_fma_ = -1;
      bool math_checked_ = false;
@@ -849,7 +1001,7 @@ index 16014f3..39633aa 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/engine.cpp b/engine/src/pipeline/engine.cpp
-index ee4ffb0..0528ce0 100644
+index ee4ffb0..74b558a 100644
 --- a/engine/src/pipeline/engine.cpp
 +++ b/engine/src/pipeline/engine.cpp
 @@ -57,6 +57,7 @@
@@ -956,8 +1108,16 @@ index ee4ffb0..0528ce0 100644
  const char* spk_params_schema(spk_engine* engine) {
      return engine ? engine->cached_schema.c_str() : "";
  }
-@@ -1192,11 +1256,22 @@ bool materialise(spk_session* session, const Image& rgb, spk_result* out, std::s
-     gpu::BufferRef buffer = gpu->alloc_persistent(bytes, error);
+@@ -1189,20 +1253,36 @@ bool materialise(spk_session* session, const Image& rgb, spk_result* out, std::s
+     const uint32_t align = gpu->texture_row_alignment_px();
+     const uint32_t stride = ((rgb.w + align - 1) / align) * align;
+     const size_t bytes = size_t(stride) * rgb.h * 4 * sizeof(uint16_t);
+-    gpu::BufferRef buffer = gpu->alloc_persistent(bytes, error);
++    // Host-visible: the pack writes where the caller reads, so there is no
++    // second full-size copy and no readback pass. Falls back to device-local
++    // plus a readback when the backend has no mapped storage.
++    gpu::BufferRef buffer = gpu->alloc_host_visible(bytes, error);
++    if (!buffer) { error.clear(); buffer = gpu->alloc_persistent(bytes, error); }
      if (!buffer) return false;
  
 -    const uint32_t meta[3] = {uint32_t(rgb.pixels()), rgb.w, stride};
@@ -984,6 +1144,54 @@ index ee4ffb0..0528ce0 100644
      if (ok) {
          out->width = rgb.w;
          out->height = rgb.h;
+         out->row_stride_px = stride;
+         out->texture = gpu->texture(buffer.get(), rgb.w, rgb.h, stride, error);
+         ok = out->texture != nullptr;
++        if (ok) out->owner = gpu;
+ #if !defined(__APPLE__) || defined(SPK_VULKAN_BACKEND)
+         // The headless Vulkan result owns a separate CPU copy. The dispatch
+         // buffer is released when this function returns.
+@@ -2156,11 +2236,12 @@ spk_status spk_preview_stock_lut(spk_session* session, const char* print_stock,
+         ok = static_cast<bool>(rgb.buf);
+         if (ok) {
+             const uint32_t meta[2] = {uint32_t(rgb.pixels()), lut->size};
+-            ok = gpu->dispatch("spk_lut3d_trilinear",
++            ok = dispatch_tiled(gpu, "spk_lut3d_trilinear",
+                                {gpu::Arg::buf(negative.buf), gpu::Arg::buf(table),
+                                 gpu::Arg::inline_bytes(lut->lo, 3),
+                                 gpu::Arg::inline_bytes(lut->inv_span, 3),
+                                 gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(rgb.buf)},
++                               {rgb.c * 4u, 0u, 0u, 0u, 0u, rgb.c * 4u}, rgb,
+                                rgb.pixels(), error) && gpu->flush(error);
+         }
+         apply_ms = std::chrono::duration<double, std::milli>(
+@@ -2225,11 +2306,11 @@ spk_status spk_export_di(spk_session* session, const char* print_stock, spk_resu
+     }
+     if (ok) {
+         const uint32_t n = uint32_t(di.elements());
+-        ok = gpu->dispatch("spk_di_normalise",
++        ok = dispatch_tiled(gpu, "spk_di_normalise",
+                            {gpu::Arg::buf(negative.buf), gpu::Arg::inline_bytes(lut->lo, 3),
+                             gpu::Arg::inline_bytes(lut->inv_span, 3),
+                             gpu::Arg::inline_bytes(&n, 1), gpu::Arg::buf(di.buf)},
+-                           di.elements(), error) && gpu->flush(error);
++                           {4u, 0u, 0u, 0u, 4u}, di, di.elements(), error) && gpu->flush(error);
+     }
+     if (ok) ok = materialise(session, di, out, error);
+     gpu->end_frame();
+@@ -2951,9 +3032,11 @@ void spk_result_free(spk_result* result) {
+     if (!result || !result->texture) return;
+     // The engine kept no reference to hand back, so this is the caller's own
+     // +1 going away -- and with it the buffer `rgba16` pointed into.
+-    gpu::Gpu::release_texture_static(result->texture);
++    if (result->owner) static_cast<gpu::Gpu*>(result->owner)->release_texture(result->texture);
++    else gpu::Gpu::release_texture_static(result->texture);
+     result->texture = nullptr;
+     result->rgba16 = nullptr;
++    result->owner = nullptr;
+ }
+ 
+ void spk_session_release(spk_session* session) {
 diff --git a/engine/src/pipeline/overscan.cpp b/engine/src/pipeline/overscan.cpp
 index 3a51683..b7feb7c 100644
 --- a/engine/src/pipeline/overscan.cpp
@@ -1044,7 +1252,7 @@ index 3a51683..b7feb7c 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
-index 828ac50..56c9d8b 100644
+index 828ac50..8d1d634 100644
 --- a/engine/src/pipeline/pipeline.cpp
 +++ b/engine/src/pipeline/pipeline.cpp
 @@ -1,4 +1,5 @@
@@ -1087,7 +1295,32 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::spectral(const Image& cmy, const gpu::BufferRef& chd, const gpu::BufferRef& base,
-@@ -578,9 +585,9 @@ bool Pipeline::node_input_cast(const Image& in, Image& out, std::string& error)
+@@ -520,10 +527,11 @@ bool Pipeline::spectral(const Image& cmy, const gpu::BufferRef& chd, const gpu::
+     gpu::BufferRef ep_buf = gpu_->upload(ep, sizeof ep, error);
+     if (!ep_buf) return false;
+     const uint32_t meta[3] = {uint32_t(cmy.pixels()), uint32_t(n_lambda), log_out ? 0u : 1u};
+-    return gpu_->dispatch("spk_spectral_epilogue",
++    return dispatch_plane("spk_spectral_epilogue",
+                           {gpu::Arg::buf(cmy.buf), gpu::Arg::buf(chd), gpu::Arg::buf(base),
+                            gpu::Arg::buf(ixs), gpu::Arg::buf(ep_buf),
+                            gpu::Arg::inline_bytes(meta, 3), gpu::Arg::buf(out.buf)},
++                          {cmy.c * 4u, 0u, 0u, 0u, 0u, 0u, out.c * 4u}, cmy,
+                           cmy.pixels(), error);
+ }
+ 
+@@ -536,9 +544,9 @@ bool Pipeline::lognormal_field(uint32_t h, uint32_t w, double mean, double std,
+     gpu::BufferRef p_buf = gpu_->upload(p, sizeof p, error);
+     if (!p_buf) return false;
+     const uint32_t meta[4] = {uint32_t(out.pixels()), seed, stream0, per_channel ? 1u : 0u};
+-    return gpu_->dispatch("spk_lognormal_field",
++    return dispatch_plane("spk_lognormal_field",
+                           {gpu::Arg::buf(p_buf), gpu::Arg::inline_bytes(meta, 4), gpu::Arg::buf(out.buf)},
+-                          out.pixels(), error);
++                          {0u, 0u, out.c * 4u}, out, out.pixels(), error);
+ }
+ 
+ bool Pipeline::device_max(const Image& img, double& out, std::string& error) {
+@@ -578,9 +586,9 @@ bool Pipeline::node_input_cast(const Image& in, Image& out, std::string& error)
      out.buf = gpu_->alloc(out.bytes(), error);
      if (!out.buf) return false;
      const uint32_t meta[2] = {uint32_t(in.pixels()), in.c};
@@ -1099,7 +1332,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error) {
-@@ -588,9 +595,9 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
+@@ -588,9 +596,9 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
      Timer t(this, "preprocess.decode_input");
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[2] = {uint32_t(in.elements()), input_cctf_mode_};
@@ -1111,7 +1344,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
-@@ -650,10 +657,10 @@ bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
+@@ -650,10 +658,10 @@ bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
      if (!out.buf) return false;
      const uint32_t flips = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
      const uint32_t meta[6] = {in.h, in.w, oh, ow, turns, flips};
@@ -1124,7 +1357,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<double>& Y,
-@@ -671,9 +678,10 @@ bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<doubl
+@@ -671,9 +679,10 @@ bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<doubl
      small.buf = gpu_->alloc(small.bytes(), error);
      if (!small.buf) return false;
      const uint32_t meta[4] = {in.w, small.h, small.w, step};
@@ -1137,7 +1370,7 @@ index 828ac50..56c9d8b 100644
      std::vector<float> host;
      if (!read_back(small, host, error)) return false;
  
-@@ -894,16 +902,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
+@@ -894,16 +903,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
      gpu::BufferRef b = gpu_->alloc(in.pixels() * sizeof(float), error);
      if (!tc.buf || !b) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1160,7 +1393,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_exposure(const Image& in, Image& out, std::string& error) {
-@@ -951,10 +962,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
+@@ -951,10 +963,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1173,7 +1406,7 @@ index 828ac50..56c9d8b 100644
  }
  
  // **The headroom a digital frame clipped off, given back to the negative.** A
-@@ -992,10 +1003,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
+@@ -992,10 +1004,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1186,7 +1419,7 @@ index 828ac50..56c9d8b 100644
  }
  
  // --- the sigmas, in one place, because a demand must agree with its node ----
-@@ -1272,10 +1283,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
+@@ -1272,10 +1284,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1199,7 +1432,7 @@ index 828ac50..56c9d8b 100644
  }
  
  // ---------------------------------------------------------------------------
-@@ -1297,11 +1308,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
+@@ -1297,11 +1309,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
      if (!alloc_like(cmy, corr, error)) return false;
      const uint32_t pos[1] = {params_.film.info.is_positive() ? 1u : 0u};
      const uint32_t n[1] = {uint32_t(cmy.pixels())};
@@ -1213,7 +1446,7 @@ index 828ac50..56c9d8b 100644
                          cmy.pixels(), error)) return false;
  
      const std::vector<Blur::Component> diffusion = dir_coupler_diffusion();
-@@ -1393,11 +1405,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1393,11 +1406,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
              if (!alloc_like(in, grain, error)) return false;
              const uint32_t meta[4] = {uint32_t(k), uint32_t(in.pixels()),
                                        params_.film.info.is_positive() ? 1u : 0u, seed};
@@ -1227,7 +1460,7 @@ index 828ac50..56c9d8b 100644
                                  in.pixels(), error)) return false;
          } else {
              // The dye-cloud blur is per (sub-layer, channel), so each
-@@ -1412,11 +1425,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1412,11 +1426,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
                  if (!alloc_like(in, layer, error)) return false;
                  const uint32_t meta[5] = {uint32_t(k), uint32_t(in.pixels()),
                                            params_.film.info.is_positive() ? 1u : 0u, seed, sl};
@@ -1241,7 +1474,7 @@ index 828ac50..56c9d8b 100644
                                      in.pixels(), error)) return false;
                  double sigma[3];
                  for (int ch = 0; ch < 3; ++ch)
-@@ -1448,9 +1462,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1448,9 +1463,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          if (!lp_buf || !streams_buf) return false;
          if (!alloc_like(in, grain, error)) return false;
          const uint32_t meta[3] = {uint32_t(in.pixels()), uint32_t(nsub), seed};
@@ -1253,7 +1486,7 @@ index 828ac50..56c9d8b 100644
                              in.pixels(), error)) return false;
          double s[3], t0[3];
          fill3(s, 1.0 / double(nsub));
-@@ -1483,10 +1498,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1483,10 +1499,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          Image multiplied;
          if (!alloc_like(grain, multiplied, error)) return false;
          const uint32_t n[1] = {uint32_t(grain.elements())};
@@ -1266,7 +1499,7 @@ index 828ac50..56c9d8b 100644
          grain = multiplied;
      }
      double s[3], t0[3];
-@@ -1620,10 +1635,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
+@@ -1620,10 +1636,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1279,7 +1512,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_print_curves(const Image& in, Image& out, std::string& error) {
-@@ -1687,9 +1702,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
+@@ -1687,9 +1703,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
      if (!p_buf) return false;
      if (!alloc_like(positive, out, error)) return false;
      const uint32_t n[1] = {uint32_t(positive.pixels())};
@@ -1291,7 +1524,7 @@ index 828ac50..56c9d8b 100644
                            positive.pixels(), error);
  }
  
-@@ -1707,10 +1723,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
+@@ -1707,10 +1724,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1304,7 +1537,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
-@@ -1743,11 +1759,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
+@@ -1743,11 +1760,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
      }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1318,7 +1551,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_xyz_to_rgb(const Image& in, Image& out, std::string& error) {
-@@ -1763,11 +1779,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
+@@ -1763,11 +1780,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
      if (!baked_.edr_params || !baked_.edr_lut) { error = "EDR calibration is not available"; return false; }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1332,7 +1565,7 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& error) {
-@@ -1776,12 +1792,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
+@@ -1776,12 +1793,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[4] = {uint32_t(in.pixels()), uint32_t(baked_.cam16_nl),
                                uint32_t(baked_.cam16_nh), baked_.cam16_lightness ? 1u : 0u};
@@ -1347,6 +1580,19 @@ index 828ac50..56c9d8b 100644
  }
  
  bool Pipeline::node_scanner_blur(const Image& in, Image& out, std::string& error) {
+@@ -1814,10 +1831,10 @@ bool Pipeline::node_cctf(const Image& in, Image& out, std::string& error) {
+     Timer t(this, "scanning.cctf");
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t meta[2] = {uint32_t(in.pixels()), output_cctf_mode_};
+-    return gpu_->dispatch("spk_cctf_encode_matrix",
++    return dispatch_plane("spk_cctf_encode_matrix",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(baked_.output_matrix),
+                            gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 0u, in.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ // ---------------------------------------------------------------------------
 diff --git a/engine/src/pipeline/pipeline.hpp b/engine/src/pipeline/pipeline.hpp
 index 5fd77be..1e4b75e 100644
 --- a/engine/src/pipeline/pipeline.hpp
@@ -1366,8 +1612,33 @@ index 5fd77be..1e4b75e 100644
      bool curve_interp(const Image& x, const gpu::BufferRef& xa, const gpu::BufferRef& inv,
                        const gpu::BufferRef& y, size_t k, Image& out, std::string& error);
      bool matmul3(const Image& x, const gpu::BufferRef& m, Image& out, std::string& error);
+diff --git a/engine/src/pipeline/scene_latitude.cpp b/engine/src/pipeline/scene_latitude.cpp
+index 62d4f4b..2ac6381 100644
+--- a/engine/src/pipeline/scene_latitude.cpp
++++ b/engine/src/pipeline/scene_latitude.cpp
+@@ -9,6 +9,7 @@
+ // the metered mid-grey and Exp. Comp. is applied after it by `node_exposure`,
+ // unchanged (§5.1, §15.4: Exp. Comp. has a second consumer in the enlarger,
+ // so Scene Latitude does not carry it).
++#include "tiling.hpp"
+ #include <algorithm>
+ #include <cmath>
+ 
+@@ -62,10 +63,10 @@ bool Pipeline::node_scene_latitude(const Image& in, Image& out, std::string& err
+     gpu::BufferRef p_buf = gpu_->upload(p, sizeof p, error);
+     if (!p_buf || !alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_scene_latitude",
++    return dispatch_tiled(gpu_, "spk_scene_latitude",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(p_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 0u, out.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ bool Pipeline::scene_latitude_sample(const Image& in, double ev, std::vector<double>& E,
 diff --git a/engine/src/pipeline/view_process.cpp b/engine/src/pipeline/view_process.cpp
-index e8d930b..24fdbda 100644
+index e8d930b..ec90eb6 100644
 --- a/engine/src/pipeline/view_process.cpp
 +++ b/engine/src/pipeline/view_process.cpp
 @@ -1,4 +1,5 @@
@@ -1385,6 +1656,21 @@ index e8d930b..24fdbda 100644
      current=std::move(next);return true;
  }
  std::vector<float> floats(const Json& j,size_t n) {
+@@ -117,12 +118,12 @@ bool process(gpu::Gpu* gpu,const Image& print,const Request& req,const Json& tra
+         if(!identity||(compress&&transform.at("gamut_compress").at("algorithm").as_string()=="cam16ucs")){
+             Image next=allocate(gpu,w,h,error);if(!next.valid())return false;
+             uint32_t dm[]={uint32_t(current.elements()),uint32_t(transform.at("source_cctf_mode").as_int())};
+-            if(!gpu->dispatch("spk_cctf_decode",{Arg::buf(current.buf),Arg::inline_bytes(dm,2),Arg::buf(next.buf)},current.elements(),error)||!gpu->flush(error))return false;
++            if(!dispatch_tiled(gpu,"spk_cctf_decode",{Arg::buf(current.buf),Arg::inline_bytes(dm,2),Arg::buf(next.buf)},{4u,0u,4u},current,current.elements(),error)||!gpu->flush(error))return false;
+             current=std::move(next);next=allocate(gpu,w,h,error);if(!next.valid())return false;
+             auto row=floats(transform.at("matrix"),9);std::array<float,9> transpose{};
+             for(size_t r=0;r<3;++r)for(size_t c=0;c<3;++c)transpose[r*3+c]=row[c*3+r];
+             uint32_t count=uint32_t(current.pixels());
+-            if(!gpu->dispatch("spk_matmul3",{Arg::buf(current.buf),Arg::inline_bytes(transpose.data(),9),Arg::inline_bytes(&count,1),Arg::buf(next.buf)},count,error)||!gpu->flush(error))return false;
++            if(!dispatch_tiled(gpu,"spk_matmul3",{Arg::buf(current.buf),Arg::inline_bytes(transpose.data(),9),Arg::inline_bytes(&count,1),Arg::buf(next.buf)},{current.c*4u,0u,0u,next.c*4u},current,count,error)||!gpu->flush(error))return false;
+             current=std::move(next);
+             const Json& gc=transform.at("gamut_compress");
+             if(compress&&gc.at("algorithm").as_string()=="cam16ucs"){
 diff --git a/engine/src/shaders/vulkan/spk_affine3.comp b/engine/src/shaders/vulkan/spk_affine3.comp
 index 76b28db..fb052cd 100644
 --- a/engine/src/shaders/vulkan/spk_affine3.comp
