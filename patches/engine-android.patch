@@ -182,7 +182,7 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..966188b 100644
+index 8d6b100..4d82e6a 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
 @@ -20,8 +20,11 @@
@@ -405,15 +405,24 @@ index 8d6b100..966188b 100644
  
      bool check_math_mode(std::string& detail) override {
          if (!math_checked_) {
-@@ -459,6 +540,7 @@ public:
-     void end_frame() override {}
+@@ -456,9 +537,15 @@ public:
+         std::lock_guard<std::mutex> lock(buffers_mutex_);
+         frame_high_water_ = 0;
+     }
+-    void end_frame() override {}
++    void end_frame() override {
++        // How much device memory this frame actually held at its peak. The
++        // process RSS cannot show it: device-local planes live in the graphics
++        // heap, not in our address space.
++        spk_vk_log("frame high-water %.1f MiB", double(frame_high_water_) / 1048576.0);
++    }
  
      BufferRef alloc(size_t bytes, std::string& error) override { return allocate(bytes, false, error); }
 +    BufferRef alloc_host_visible(size_t bytes, std::string& error) override { return allocate(bytes, false, error, true); }
      BufferRef alloc_zeroed(size_t bytes, std::string& error) override {
          if (bytes % 4) { error = "Vulkan zero-fill size must be 4-byte aligned"; return {}; }
          BufferRef out = alloc(bytes, error);
-@@ -582,8 +664,19 @@ public:
+@@ -582,8 +669,19 @@ public:
          return true;
      }
  
@@ -433,7 +442,7 @@ index 8d6b100..966188b 100644
          if (n_threads == 0) return true;
          // Probe kernels must not recurse into the startup gate. A rejected
          // device stays rejected, including low-level callers that dispatch
-@@ -603,12 +696,32 @@ public:
+@@ -603,12 +701,32 @@ public:
          // index with spk_global_index(). The surplus threads of the last row
          // fail the same bounds check the last partial workgroup always did.
          const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
@@ -472,7 +481,7 @@ index 8d6b100..966188b 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +736,36 @@ public:
+@@ -623,11 +741,36 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -512,7 +521,7 @@ index 8d6b100..966188b 100644
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,18 +805,114 @@ public:
+@@ -667,18 +810,114 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -635,7 +644,7 @@ index 8d6b100..966188b 100644
      bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
      void* texture(Buffer* buffer, uint32_t width, uint32_t height,
                    uint32_t row_stride_px, std::string& error) override {
-@@ -690,15 +924,39 @@ public:
+@@ -690,15 +929,39 @@ public:
          // A headless result is a separate CPU-owned RGBA16 copy. It remains
          // valid after the engine and VkDevice are destroyed, just as a Metal
          // texture keeps its own result alive after the render's buffers go.
@@ -676,7 +685,7 @@ index 8d6b100..966188b 100644
      uint32_t texture_row_alignment_px() const override { return 1; }
      uint32_t max_texture_dimension_2d() const override {
          return properties_.limits.maxImageDimension2D;
-@@ -745,7 +1003,7 @@ public:
+@@ -745,7 +1008,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -685,7 +694,7 @@ index 8d6b100..966188b 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +1025,7 @@ private:
+@@ -767,7 +1030,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -694,7 +703,7 @@ index 8d6b100..966188b 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +1037,7 @@ private:
+@@ -779,6 +1042,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -702,16 +711,17 @@ index 8d6b100..966188b 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +1064,8 @@ private:
+@@ -805,6 +1069,9 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
-+        spk_vk_log("submit %s %.2f ms", operation,
-+                   std::chrono::duration<double, std::milli>(Clock::now() - submit_start).count());
++        spk_vk_log("submit %s %.2f ms  high=%.0f MiB", operation,
++                   std::chrono::duration<double, std::milli>(Clock::now() - submit_start).count(),
++                   double(frame_high_water_) / 1048576.0);
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -918,13 +1179,13 @@ private:
+@@ -918,13 +1185,13 @@ private:
          return out;
      }
  
@@ -727,7 +737,7 @@ index 8d6b100..966188b 100644
              Buffer* best = nullptr;
              for (Buffer* b : buffers_)
                  if (!b->persistent && b->refs == 0 && b->bytes >= bytes &&
-@@ -945,7 +1206,7 @@ private:
+@@ -945,7 +1212,7 @@ private:
          auto b = std::make_unique<Buffer>();
          b->bytes = bytes;
          b->persistent = persistent;
@@ -736,7 +746,7 @@ index 8d6b100..966188b 100644
          Buffer* raw = b.release();
          buffers_.push_back(raw);
          if (persistent) ++audit_.persistent_allocations;
-@@ -960,7 +1221,11 @@ private:
+@@ -960,7 +1227,11 @@ private:
          frame_high_water_ = std::max(frame_high_water_, live);
      }
  
@@ -749,7 +759,7 @@ index 8d6b100..966188b 100644
          VkBufferCreateInfo create{};
          create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
          create.size = VkDeviceSize(b.bytes);
-@@ -976,12 +1241,18 @@ private:
+@@ -976,12 +1247,18 @@ private:
          int best_score = -1;
          for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
              const auto flags = memory_properties_.memoryTypes[i].propertyFlags;
@@ -770,7 +780,7 @@ index 8d6b100..966188b 100644
                  if (readback && (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) score += 8;
                  if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) score += 4;
                  if (!(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) score += 2;
-@@ -1007,7 +1278,7 @@ private:
+@@ -1007,7 +1284,7 @@ private:
          b.allocation_bytes = requirements.size;
          result = vkAllocateMemory(device_, &allocate_info, nullptr, &b.memory);
          if (result == VK_SUCCESS) result = vkBindBufferMemory(device_, b.handle, b.memory, 0);
@@ -779,7 +789,7 @@ index 8d6b100..966188b 100644
              result = vkMapMemory(device_, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped);
          if (result != VK_SUCCESS) {
              error = vk_error("Vulkan buffer memory", result);
-@@ -1015,10 +1286,10 @@ private:
+@@ -1015,10 +1292,10 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -792,7 +802,7 @@ index 8d6b100..966188b 100644
                  b.bytes, static_cast<unsigned long long>(b.allocation_bytes), b.memory_type,
                  uint32_t(b.memory_flags), memory_properties_.memoryTypes[memory_index].heapIndex);
          }
-@@ -1073,10 +1344,24 @@ private:
+@@ -1073,10 +1350,24 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -817,7 +827,7 @@ index 8d6b100..966188b 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
-@@ -1115,6 +1400,17 @@ private:
+@@ -1115,6 +1406,17 @@ private:
      VkPhysicalDeviceProperties properties_{};
      // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
      VkDeviceSize storage_range_limit_ = 0;
@@ -1001,7 +1011,7 @@ index 16014f3..39633aa 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/engine.cpp b/engine/src/pipeline/engine.cpp
-index ee4ffb0..74b558a 100644
+index ee4ffb0..91b3391 100644
 --- a/engine/src/pipeline/engine.cpp
 +++ b/engine/src/pipeline/engine.cpp
 @@ -57,6 +57,7 @@
@@ -1108,7 +1118,27 @@ index ee4ffb0..74b558a 100644
  const char* spk_params_schema(spk_engine* engine) {
      return engine ? engine->cached_schema.c_str() : "";
  }
-@@ -1189,20 +1253,36 @@ bool materialise(spk_session* session, const Image& rgb, spk_result* out, std::s
+@@ -1156,6 +1220,19 @@ bool negative_for(spk_session* session, const Tier& tier, Progress* progress, Im
+     // has to outlive the frame arena. Copying it here is also what makes a
+     // reprint grain-consistent for free: the realisation is baked in and is
+     // never redrawn.
++    // Above this size the cached negative costs more device memory than
++    // re-running the film side costs time: keep nothing, and let a reprint
++    // recompute. 24 MP is where a copy stops being free on a phone; the env
++    // override exists so the policy can be measured rather than assumed.
++    static const size_t kNegativeCacheMaxPixels = [] {
++        const char* v = std::getenv("SPK_NEGATIVE_CACHE_MAX_MP");
++        return v ? size_t(std::atof(v) * 1e6) : SIZE_MAX;   // off unless asked
++    }();
++    if (negative.pixels() > kNegativeCacheMaxPixels) {
++        if (progress) progress->auto_exposure_ev = state.applied_ev;
++        out = negative;             // valid for this render; the next one recomputes
++        return true;
++    }
+     gpu::Gpu* gpu = session->engine->gpu;
+     if (!gpu->flush(error)) return false;
+     Image kept;
+@@ -1189,20 +1266,36 @@ bool materialise(spk_session* session, const Image& rgb, spk_result* out, std::s
      const uint32_t align = gpu->texture_row_alignment_px();
      const uint32_t stride = ((rgb.w + align - 1) / align) * align;
      const size_t bytes = size_t(stride) * rgb.h * 4 * sizeof(uint16_t);
@@ -1151,7 +1181,7 @@ index ee4ffb0..74b558a 100644
  #if !defined(__APPLE__) || defined(SPK_VULKAN_BACKEND)
          // The headless Vulkan result owns a separate CPU copy. The dispatch
          // buffer is released when this function returns.
-@@ -2156,11 +2236,12 @@ spk_status spk_preview_stock_lut(spk_session* session, const char* print_stock,
+@@ -2156,11 +2249,12 @@ spk_status spk_preview_stock_lut(spk_session* session, const char* print_stock,
          ok = static_cast<bool>(rgb.buf);
          if (ok) {
              const uint32_t meta[2] = {uint32_t(rgb.pixels()), lut->size};
@@ -1165,7 +1195,7 @@ index ee4ffb0..74b558a 100644
                                 rgb.pixels(), error) && gpu->flush(error);
          }
          apply_ms = std::chrono::duration<double, std::milli>(
-@@ -2225,11 +2306,11 @@ spk_status spk_export_di(spk_session* session, const char* print_stock, spk_resu
+@@ -2225,11 +2319,11 @@ spk_status spk_export_di(spk_session* session, const char* print_stock, spk_resu
      }
      if (ok) {
          const uint32_t n = uint32_t(di.elements());
@@ -1179,7 +1209,7 @@ index ee4ffb0..74b558a 100644
      }
      if (ok) ok = materialise(session, di, out, error);
      gpu->end_frame();
-@@ -2951,9 +3032,11 @@ void spk_result_free(spk_result* result) {
+@@ -2951,9 +3045,11 @@ void spk_result_free(spk_result* result) {
      if (!result || !result->texture) return;
      // The engine kept no reference to hand back, so this is the caller's own
      // +1 going away -- and with it the buffer `rgba16` pointed into.
