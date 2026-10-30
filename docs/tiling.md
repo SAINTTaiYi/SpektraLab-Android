@@ -41,17 +41,50 @@ shader 侧**已经就绪**：1.2.3 的 `spk_pc.base` 就是"本块第一个元�
 - `read_base`：窗口起点（索引用）
 - `write_base`：本带起点（写回用）
 
-需要按 kernel 标注：
+### 审计结果（2026-10-30，逐个读 shader 源码）
 
-| kernel | halo（行） | 说明 |
-|---|---|---|
-| `spk_sep_fir_acc` | `R`（FIR 半径） | 横/纵两向，纵向需要 R 行 |
-| `spk_grain_*` | ~4 px | 颗粒微结构模糊 |
-| `spk_halation_*` | 由格式决定 | 可能很大，需要实测 |
-| `spk_glare_*` | 由格式决定 | 同上 |
-| `spk_couplers_*` | 由扩散半径决定 | 同上 |
-| `spk_*_resample` | 1–2 行 | 双线性 |
-| 其余点算子 | 0 | |
+48 个 kernel 里只有 **2 个**有真正的行内纵向依赖。证据是源码里的索引算式：
+
+| 规则 | 数量 | kernel | 纵向 halo |
+|---|---|---|---|
+| `pointwise` | 36 | 其余全部 | 0 |
+| `fir_radius` | 1 | `spk_sep_fir_acc` | `meta[2]`（仅 `axis == 0`） |
+| `iir_column` | 1 | `spk_iir_df_acc` | 无界（仅 `axis == 0`） |
+| `cross_grid` | 8 | `stride_sample`、`zoom_bilinear_mirror`、`geometry_resample_df`、`view_geometry`、`overscan_canvas` / `add_mask` / `film_present` / `light` | 不适用，见下 |
+| `global` | 2 | `reduce_max`、`split_probe` | 不可切 |
+
+**与先前猜测不同的四处：**
+
+- **颗粒没有 halo。** `spk_grain_layer_one` / `spk_grain_simple` 都是 `dst[3i+c]`
+  只读 `cmy[3i+c]`，噪声由 `rng_init(i, …)` 以像素索引播种——逐像素独立。
+  `spk_lognormal_field` 同理。原先估的"~4 px 模糊"不存在。
+- **眩光与耦合是点算子。** `spk_glare_add` 是 `out[i] = in[i] + field[i]/100·illum[c]`；
+  `spk_couplers_correction` 是逐像素矩阵。场由别的 pass 预生成。
+- **FIR 只在纵向需要 halo。** `axis == 0` 读 `j = y ± radius`；`axis == 1` 只沿一行走，
+  一行在窗口内天然完整。
+- **IIR 的无限依赖只在纵向那趟。** `axis == 0` 时每条"线"是一列
+  （`stride = width * 3`，长度 = height）；`axis == 1` 时每条线是一整行
+  （`stride = 3`，长度 = width），行与行之间无关。而且它已经是"一次 dispatch 算
+  若干整条线"的结构，本身就是为长依赖分块的。
+
+结论：**真正挡住行带分块的只有 `spk_iir_df_acc` 的纵向趟**，外加
+`spk_sep_fir_acc` 的一个半径。其余 46 个可直接切。
+
+### cross_grid 不等于 halo
+
+这 8 个 kernel 按映射坐标**跨网格取数**（重采样、步进采样、画布合成），读的可能是
+很远的一行。它们不是"本带 ± H 行"，而是"**源必须整块可见、输出可分带**"。
+若把源窗口也缩小到行带，它们会读到窗口外。
+
+处理：这类 kernel 的源参数保持整块绑定（`Arg` 默认），只窗口化输出。前提是源缓冲区
+本身 ≤ `maxStorageBufferRange`；超过时它们需要另一套取块策略（本轮不做，届时该帧
+仍走降分辨率）。
+
+### 落码
+
+`KernelSpec` 增加 `TileRule tile` 字段，48 条全部标注
+（pointwise 36 / fir_radius 1 / iir_column 1 / cross_grid 8 / global 2）。
+本轮**只加标注不改行为**：重编后渲染哈希仍为 `0b3c0685f4c262d7`。
 
 ### IIR 是唯一的真难点
 
@@ -69,10 +102,10 @@ shader 侧**已经就绪**：1.2.3 的 `spk_pc.base` 就是"本块第一个元�
 
 1. `Arg` 增加 `(offset, range)`；`dispatch()` 绑定窗口；size 检查用 `range`。
    —— 不影响现有调用（默认 offset 0、range 全域）。
-2. 给 kernel 表加 `halo_rows` 字段，默认 0；空间算子逐个标注并用
-   「整幅 vs 分块」比对验证。
-3. 点算子先切（零风险），逐步把 halo 为 0 的 kernel 纳入。
-4. FIR / 颗粒 / 光晕 / 眩光 / 重采样：两基址 + halo 窗口。
+2. ✅ kernel 表加 `TileRule`，48 条逐个标注（审计结论见上）。
+3. 点算子先切（36 个，零风险），用「整幅 vs 分块」逐字节比对。
+4. `spk_sep_fir_acc` 纵向：两基址 + `meta[2]` 半径的 halo 窗口。
+   cross_grid 的 8 个：源整块绑定，只切输出。
 5. IIR：状态续跑。
 6. 全部 kernel 标注完成后，才允许对超过 binding 上限的帧启用分块；
    在此之前保持现状（按上限降分辨率并告知）。

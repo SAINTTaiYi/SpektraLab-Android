@@ -105,7 +105,7 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..e3a417e 100644
+index 8d6b100..fedd727 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
 @@ -20,6 +20,7 @@
@@ -148,7 +148,133 @@ index 8d6b100..e3a417e 100644
  struct Buffer {
      VkBuffer handle = VK_NULL_HANDLE;
      VkDeviceMemory memory = VK_NULL_HANDLE;
-@@ -253,6 +279,15 @@ public:
+@@ -53,59 +79,76 @@ std::string vk_error(const char* operation, VkResult result) {
+     return std::string(operation) + " failed (VkResult " + std::to_string(int(result)) + ")";
+ }
+ 
+-struct KernelSpec { const char* name; uint32_t bindings; uint32_t workgroup; };
++// How a kernel may be split into row bands, audited against the shader sources
++// (docs/tiling.md carries the evidence for each row):
++//   pointwise  out[i] reads in[i] and nothing else -- split anywhere.
++//   fir_radius vertical taps of +/- meta[2] when meta[3] == 0, none on a
++//              horizontal pass (that one only walks along a row).
++//   iir_column the recursive filter owns a whole line; on the vertical pass
++//              that line is a column and the dependency has no bound.
++//   cross_grid gathers from another grid (resample, stride, overscan); the
++//              output may be banded but the source must stay bound whole.
++//   global     whole-buffer reduction; never split.
++enum TileRule : uint32_t {
++    kTilePointwise = 0,
++    kTileFirRadius = 1,
++    kTileIirColumn = 2,
++    kTileCrossGrid = 3,
++    kTileGlobal = 4,
++};
++struct KernelSpec { const char* name; uint32_t bindings; uint32_t workgroup; TileRule tile; };
+ constexpr KernelSpec kKernels[] = {
+-    {"spk_math_probe", 2, 1},
++    {"spk_math_probe", 2, 1, kTilePointwise},
+     // The portable error-free product, in its own kernel so that neither probe
+     // has to change the other's output layout. local_size_x = 1, as
+     // spk_math_probe's is; the count is the dispatch's `n`.
+-    {"spk_split_probe", 2, 1},
+-    {"spk_take_rgb", 3, kWorkgroup},
+-    {"spk_matmul3", 4, kWorkgroup},
+-    {"spk_stride_sample", 3, kWorkgroup},
+-    {"spk_affine3", 5, kWorkgroup},
+-    {"spk_tc_b", 5, kWorkgroup},
+-    {"spk_lut2d_cubic", 5, kWorkgroup},
+-    {"spk_sep_fir_acc", 6, kWorkgroup},
+-    {"spk_iir_df_acc", 7, kWorkgroup},
+-    {"spk_lincomb3", 6, kWorkgroup},
+-    {"spk_log10_guarded", 4, kWorkgroup},
+-    {"spk_curves", 6, kWorkgroup},
+-    {"spk_couplers_correction", 7, kWorkgroup},
+-    {"spk_spectral_epilogue", 7, kWorkgroup},
+-    {"spk_print_exposure", 4, kWorkgroup},
+-    {"spk_cam16ucs_compress", 7, kWorkgroup},
+-    {"spk_cctf_encode_matrix", 4, kWorkgroup},
+-    {"spk_to_rgba16", 3, kWorkgroup},
+-    {"spk_view_grade", 5, kWorkgroup},
+-    {"spk_view_grade_di", 6, kWorkgroup},
+-    {"spk_view_geometry", 4, kWorkgroup},
+-    {"spk_view_pack", 4, kWorkgroup},
+-    {"spk_view_cam16", 8, kWorkgroup},
+-    {"spk_grain_layers", 8, kWorkgroup},
+-    {"spk_grain_layer_one", 8, kWorkgroup},
+-    {"spk_grain_simple", 5, kWorkgroup},
+-    {"spk_lognormal_field", 3, kWorkgroup},
+-    {"spk_rng_probe", 4, kWorkgroup},
+-    {"spk_mul", 4, kWorkgroup},
+-    {"spk_glare_add", 5, kWorkgroup},
+-    {"spk_reduce_max", 3, kWorkgroup},
+-    {"spk_boost", 4, kWorkgroup},
+-    {"spk_highlight_headroom", 4, kWorkgroup},
+-    {"spk_bw_correct", 4, kWorkgroup},
+-    {"spk_edr", 5, kWorkgroup},
+-    {"spk_cctf_decode", 3, kWorkgroup},
+-    {"spk_zoom_bilinear_mirror", 3, kWorkgroup},
+-    {"spk_geometry_resample_df", 4, kWorkgroup},
+-    {"spk_lut3d_trilinear", 6, kWorkgroup},
+-    {"spk_di_normalise", 5, kWorkgroup},
+-    {"spk_di_encode", 4, kWorkgroup},
+-    {"spk_scene_latitude", 4, kWorkgroup},
+-    {"spk_overscan_canvas", 4, kWorkgroup},
+-    {"spk_overscan_add_mask", 4, kWorkgroup},
+-    {"spk_overscan_film_present", 4, kWorkgroup},
+-    {"spk_overscan_light", 4, kWorkgroup},
+-    {"spk_view_pair", 6, kWorkgroup},
++    {"spk_split_probe", 2, 1, kTileGlobal},
++    {"spk_take_rgb", 3, kWorkgroup, kTilePointwise},
++    {"spk_matmul3", 4, kWorkgroup, kTilePointwise},
++    {"spk_stride_sample", 3, kWorkgroup, kTileCrossGrid},
++    {"spk_affine3", 5, kWorkgroup, kTilePointwise},
++    {"spk_tc_b", 5, kWorkgroup, kTilePointwise},
++    {"spk_lut2d_cubic", 5, kWorkgroup, kTilePointwise},
++    {"spk_sep_fir_acc", 6, kWorkgroup, kTileFirRadius},
++    {"spk_iir_df_acc", 7, kWorkgroup, kTileIirColumn},
++    {"spk_lincomb3", 6, kWorkgroup, kTilePointwise},
++    {"spk_log10_guarded", 4, kWorkgroup, kTilePointwise},
++    {"spk_curves", 6, kWorkgroup, kTilePointwise},
++    {"spk_couplers_correction", 7, kWorkgroup, kTilePointwise},
++    {"spk_spectral_epilogue", 7, kWorkgroup, kTilePointwise},
++    {"spk_print_exposure", 4, kWorkgroup, kTilePointwise},
++    {"spk_cam16ucs_compress", 7, kWorkgroup, kTilePointwise},
++    {"spk_cctf_encode_matrix", 4, kWorkgroup, kTilePointwise},
++    {"spk_to_rgba16", 3, kWorkgroup, kTilePointwise},
++    {"spk_view_grade", 5, kWorkgroup, kTilePointwise},
++    {"spk_view_grade_di", 6, kWorkgroup, kTilePointwise},
++    {"spk_view_geometry", 4, kWorkgroup, kTileCrossGrid},
++    {"spk_view_pack", 4, kWorkgroup, kTilePointwise},
++    {"spk_view_cam16", 8, kWorkgroup, kTilePointwise},
++    {"spk_grain_layers", 8, kWorkgroup, kTilePointwise},
++    {"spk_grain_layer_one", 8, kWorkgroup, kTilePointwise},
++    {"spk_grain_simple", 5, kWorkgroup, kTilePointwise},
++    {"spk_lognormal_field", 3, kWorkgroup, kTilePointwise},
++    {"spk_rng_probe", 4, kWorkgroup, kTilePointwise},
++    {"spk_mul", 4, kWorkgroup, kTilePointwise},
++    {"spk_glare_add", 5, kWorkgroup, kTilePointwise},
++    {"spk_reduce_max", 3, kWorkgroup, kTileGlobal},
++    {"spk_boost", 4, kWorkgroup, kTilePointwise},
++    {"spk_highlight_headroom", 4, kWorkgroup, kTilePointwise},
++    {"spk_bw_correct", 4, kWorkgroup, kTilePointwise},
++    {"spk_edr", 5, kWorkgroup, kTilePointwise},
++    {"spk_cctf_decode", 3, kWorkgroup, kTilePointwise},
++    {"spk_zoom_bilinear_mirror", 3, kWorkgroup, kTileCrossGrid},
++    {"spk_geometry_resample_df", 4, kWorkgroup, kTileCrossGrid},
++    {"spk_lut3d_trilinear", 6, kWorkgroup, kTilePointwise},
++    {"spk_di_normalise", 5, kWorkgroup, kTilePointwise},
++    {"spk_di_encode", 4, kWorkgroup, kTilePointwise},
++    {"spk_scene_latitude", 4, kWorkgroup, kTilePointwise},
++    {"spk_overscan_canvas", 4, kWorkgroup, kTileCrossGrid},
++    {"spk_overscan_add_mask", 4, kWorkgroup, kTileCrossGrid},
++    {"spk_overscan_film_present", 4, kWorkgroup, kTileCrossGrid},
++    {"spk_overscan_light", 4, kWorkgroup, kTileCrossGrid},
++    {"spk_view_pair", 6, kWorkgroup, kTilePointwise},
+ };
+ 
+ const KernelSpec* find_kernel(const char* name) {
+@@ -253,6 +296,15 @@ public:
          }
          if (!physical_) { error = "no Vulkan compute queue"; return false; }
          storage_range_limit_ = properties_.limits.maxStorageBufferRange;
@@ -164,7 +290,7 @@ index 8d6b100..e3a417e 100644
          if (properties_.limits.maxComputeWorkGroupInvocations < kWorkgroup ||
              properties_.limits.maxComputeWorkGroupSize[0] < kWorkgroup ||
              properties_.limits.maxPerStageDescriptorStorageBuffers < 8 ||
-@@ -301,6 +336,32 @@ public:
+@@ -301,6 +353,32 @@ public:
      }
  
      std::string device_name() const override { return properties_.deviceName; }
@@ -197,7 +323,7 @@ index 8d6b100..e3a417e 100644
  
      bool check_math_mode(std::string& detail) override {
          if (!math_checked_) {
-@@ -603,12 +664,32 @@ public:
+@@ -603,12 +681,32 @@ public:
          // index with spk_global_index(). The surplus threads of the last row
          // fail the same bounds check the last partial workgroup always did.
          const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
@@ -236,7 +362,7 @@ index 8d6b100..e3a417e 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +704,31 @@ public:
+@@ -623,11 +721,31 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -271,7 +397,7 @@ index 8d6b100..e3a417e 100644
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,14 +768,33 @@ public:
+@@ -667,14 +785,33 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -307,7 +433,7 @@ index 8d6b100..e3a417e 100644
          vkDestroyDescriptorPool(device_, descriptor_pool, nullptr);
          return submitted;
      }
-@@ -745,7 +865,7 @@ public:
+@@ -745,7 +882,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -316,7 +442,7 @@ index 8d6b100..e3a417e 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +887,7 @@ private:
+@@ -767,7 +904,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -325,7 +451,7 @@ index 8d6b100..e3a417e 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +899,7 @@ private:
+@@ -779,6 +916,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -333,7 +459,7 @@ index 8d6b100..e3a417e 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +926,8 @@ private:
+@@ -805,6 +943,8 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -342,7 +468,7 @@ index 8d6b100..e3a417e 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -1015,7 +1138,7 @@ private:
+@@ -1015,7 +1155,7 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -351,7 +477,7 @@ index 8d6b100..e3a417e 100644
                  "{\"vulkan_allocation\":\"%s\",\"bytes\":%zu,\"allocation_bytes\":%llu,"
                  "\"memory_type\":%u,\"memory_flags\":%u,\"heap\":%u}\n",
                  staging ? (readback ? "read_staging" : "upload_staging") : "compute",
-@@ -1073,10 +1196,20 @@ private:
+@@ -1073,10 +1213,20 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
