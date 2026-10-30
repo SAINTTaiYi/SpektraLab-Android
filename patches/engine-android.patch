@@ -40,7 +40,7 @@ index b0c2a45..8fcc0e2 100644
   * report: version, git-ish build stamp, the Metal math mode the kernels were
   * compiled with, and whether the fast-math probe agreed with it. */
 diff --git a/engine/src/gpu/gpu.hpp b/engine/src/gpu/gpu.hpp
-index b996193..2fb8e7d 100644
+index b996193..78be003 100644
 --- a/engine/src/gpu/gpu.hpp
 +++ b/engine/src/gpu/gpu.hpp
 @@ -209,13 +209,55 @@ struct Arg {
@@ -131,7 +131,7 @@ index b996193..2fb8e7d 100644
      virtual BufferRef alloc_zeroed(size_t bytes, std::string& error) = 0;
      virtual BufferRef upload(const void* data, size_t bytes, std::string& error) = 0;
  
-@@ -377,6 +437,21 @@ public:
+@@ -377,6 +437,32 @@ public:
  
      virtual bool dispatch(const char* kernel, const std::vector<Arg>& args,
                            size_t n_threads, std::string& error) = 0;
@@ -143,6 +143,17 @@ index b996193..2fb8e7d 100644
 +    // multiple stays bound whole, and the call falls back to one dispatch when
 +    // no argument qualifies.
 +    virtual void set_band_elements(size_t n) { (void)n; }
++
++    // A plain dispatch told where it sits in the frame. Kernels that derive a
++    // noise seed or a spatial gradient from the index read it as
++    // `spk_frame_index()`; kernels that only address memory ignore it. A band of
++    // a larger frame therefore uses band-sized buffers and still seeds exactly
++    // as the whole frame would.
++    virtual bool dispatch_at(const char* kernel, const std::vector<Arg>& args,
++                             size_t n_threads, uint32_t origin, std::string& error) {
++        (void)origin;
++        return dispatch(kernel, args, n_threads, error);
++    }
 +
 +    // The banded form. Backends without windows fall back to one dispatch.
 +    virtual bool dispatch_banded(const char* kernel, const std::vector<Arg>& args,
@@ -182,7 +193,7 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..4d82e6a 100644
+index 8d6b100..353ef34 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
 @@ -20,8 +20,11 @@
@@ -422,7 +433,7 @@ index 8d6b100..4d82e6a 100644
      BufferRef alloc_zeroed(size_t bytes, std::string& error) override {
          if (bytes % 4) { error = "Vulkan zero-fill size must be 4-byte aligned"; return {}; }
          BufferRef out = alloc(bytes, error);
-@@ -582,8 +669,19 @@ public:
+@@ -582,8 +669,24 @@ public:
          return true;
      }
  
@@ -436,13 +447,18 @@ index 8d6b100..4d82e6a 100644
 +        return dispatch_once(kernel, args, n_threads, error);
 +    }
 +
++    bool dispatch_at(const char* kernel, const std::vector<Arg>& args,
++                     size_t n_threads, uint32_t origin, std::string& error) override {
++        return dispatch_once(kernel, args, n_threads, error, origin);
++    }
++
 +    bool dispatch_once(const char* kernel, const std::vector<Arg>& args,
 +                       size_t n_threads, std::string& error, uint32_t origin = 0,
 +                       uint32_t read_bias = 0) {
          if (n_threads == 0) return true;
          // Probe kernels must not recurse into the startup gate. A rejected
          // device stays rejected, including low-level callers that dispatch
-@@ -603,12 +701,32 @@ public:
+@@ -603,12 +706,32 @@ public:
          // index with spk_global_index(). The surplus threads of the last row
          // fail the same bounds check the last partial workgroup always did.
          const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
@@ -481,7 +497,7 @@ index 8d6b100..4d82e6a 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +741,36 @@ public:
+@@ -623,11 +746,36 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -500,9 +516,8 @@ index 8d6b100..4d82e6a 100644
 +                              (unsigned long long)(bind_offset + bind_range),
 +                              (unsigned long long)b->bytes);
 +                error = std::string(kernel) + detail;
-                 return false;
-             }
--            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
++                return false;
++            }
 +            if (bind_range > storage_range_limit_) {
 +                // Say both numbers: the caller chooses the frame size, and a
 +                // bare "exceeds the limit" leaves them guessing whether the
@@ -515,13 +530,14 @@ index 8d6b100..4d82e6a 100644
 +                              double(storage_range_limit_) / 1048576.0,
 +                              double(storage_range_limit_) / 12.0 / 1e6);
 +                error = std::string(kernel) + detail;
-+                return false;
-+            }
+                 return false;
+             }
+-            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
 +            infos[i] = {b->handle, VkDeviceSize(bind_offset), VkDeviceSize(bind_range)};
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,18 +810,114 @@ public:
+@@ -667,18 +815,114 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -644,7 +660,7 @@ index 8d6b100..4d82e6a 100644
      bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
      void* texture(Buffer* buffer, uint32_t width, uint32_t height,
                    uint32_t row_stride_px, std::string& error) override {
-@@ -690,15 +929,39 @@ public:
+@@ -690,15 +934,39 @@ public:
          // A headless result is a separate CPU-owned RGBA16 copy. It remains
          // valid after the engine and VkDevice are destroyed, just as a Metal
          // texture keeps its own result alive after the render's buffers go.
@@ -685,7 +701,7 @@ index 8d6b100..4d82e6a 100644
      uint32_t texture_row_alignment_px() const override { return 1; }
      uint32_t max_texture_dimension_2d() const override {
          return properties_.limits.maxImageDimension2D;
-@@ -745,7 +1008,7 @@ public:
+@@ -745,7 +1013,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -694,7 +710,7 @@ index 8d6b100..4d82e6a 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +1030,7 @@ private:
+@@ -767,7 +1035,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -703,7 +719,7 @@ index 8d6b100..4d82e6a 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +1042,7 @@ private:
+@@ -779,6 +1047,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -711,7 +727,7 @@ index 8d6b100..4d82e6a 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +1069,9 @@ private:
+@@ -805,6 +1074,9 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -721,7 +737,7 @@ index 8d6b100..4d82e6a 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -918,13 +1185,13 @@ private:
+@@ -918,13 +1190,13 @@ private:
          return out;
      }
  
@@ -737,7 +753,7 @@ index 8d6b100..4d82e6a 100644
              Buffer* best = nullptr;
              for (Buffer* b : buffers_)
                  if (!b->persistent && b->refs == 0 && b->bytes >= bytes &&
-@@ -945,7 +1212,7 @@ private:
+@@ -945,7 +1217,7 @@ private:
          auto b = std::make_unique<Buffer>();
          b->bytes = bytes;
          b->persistent = persistent;
@@ -746,7 +762,7 @@ index 8d6b100..4d82e6a 100644
          Buffer* raw = b.release();
          buffers_.push_back(raw);
          if (persistent) ++audit_.persistent_allocations;
-@@ -960,7 +1227,11 @@ private:
+@@ -960,7 +1232,11 @@ private:
          frame_high_water_ = std::max(frame_high_water_, live);
      }
  
@@ -759,7 +775,7 @@ index 8d6b100..4d82e6a 100644
          VkBufferCreateInfo create{};
          create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
          create.size = VkDeviceSize(b.bytes);
-@@ -976,12 +1247,18 @@ private:
+@@ -976,12 +1252,18 @@ private:
          int best_score = -1;
          for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
              const auto flags = memory_properties_.memoryTypes[i].propertyFlags;
@@ -780,7 +796,7 @@ index 8d6b100..4d82e6a 100644
                  if (readback && (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) score += 8;
                  if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) score += 4;
                  if (!(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) score += 2;
-@@ -1007,7 +1284,7 @@ private:
+@@ -1007,7 +1289,7 @@ private:
          b.allocation_bytes = requirements.size;
          result = vkAllocateMemory(device_, &allocate_info, nullptr, &b.memory);
          if (result == VK_SUCCESS) result = vkBindBufferMemory(device_, b.handle, b.memory, 0);
@@ -789,7 +805,7 @@ index 8d6b100..4d82e6a 100644
              result = vkMapMemory(device_, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped);
          if (result != VK_SUCCESS) {
              error = vk_error("Vulkan buffer memory", result);
-@@ -1015,10 +1292,10 @@ private:
+@@ -1015,10 +1297,10 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -802,7 +818,7 @@ index 8d6b100..4d82e6a 100644
                  b.bytes, static_cast<unsigned long long>(b.allocation_bytes), b.memory_type,
                  uint32_t(b.memory_flags), memory_properties_.memoryTypes[memory_index].heapIndex);
          }
-@@ -1073,10 +1350,24 @@ private:
+@@ -1073,10 +1355,24 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -827,7 +843,7 @@ index 8d6b100..4d82e6a 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
-@@ -1115,6 +1406,17 @@ private:
+@@ -1115,6 +1411,17 @@ private:
      VkPhysicalDeviceProperties properties_{};
      // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
      VkDeviceSize storage_range_limit_ = 0;
@@ -1282,7 +1298,7 @@ index 3a51683..b7feb7c 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
-index 828ac50..8d1d634 100644
+index 828ac50..fde6110 100644
 --- a/engine/src/pipeline/pipeline.cpp
 +++ b/engine/src/pipeline/pipeline.cpp
 @@ -1,4 +1,5 @@
@@ -1623,6 +1639,19 @@ index 828ac50..8d1d634 100644
  }
  
  // ---------------------------------------------------------------------------
+@@ -2213,6 +2230,12 @@ bool Pipeline::run_stages_striped(const Stage* stages, size_t count, Chain& chai
+             // or more strips with two F stages in one run.
+             while (j < count && band_able[j]) { halo += halos[j]; ++j; }
+             for (size_t k = i; k < j; ++k) report.stages[k].halo = halo;
++            if (std::getenv("SPK_VK_LOG")) {
++                std::string names;
++                for (size_t k = i; k < j; ++k) names += std::string(" ") + stages[k].name;
++                std::fprintf(stderr, "[strip] run %zu..%zu halo=%u rows=%u:%s\n",
++                             i, j, halo, strip_plane_h_, names.c_str());
++            }
+             ++report.runs;
+             report.crossings += 2;   // the slice in, the assembly out
+ 
 diff --git a/engine/src/pipeline/pipeline.hpp b/engine/src/pipeline/pipeline.hpp
 index 5fd77be..1e4b75e 100644
 --- a/engine/src/pipeline/pipeline.hpp
