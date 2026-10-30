@@ -193,7 +193,7 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..353ef34 100644
+index 8d6b100..7ed3982 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
 @@ -20,8 +20,11 @@
@@ -516,8 +516,9 @@ index 8d6b100..353ef34 100644
 +                              (unsigned long long)(bind_offset + bind_range),
 +                              (unsigned long long)b->bytes);
 +                error = std::string(kernel) + detail;
-+                return false;
-+            }
+                 return false;
+             }
+-            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
 +            if (bind_range > storage_range_limit_) {
 +                // Say both numbers: the caller chooses the frame size, and a
 +                // bare "exceeds the limit" leaves them guessing whether the
@@ -530,14 +531,13 @@ index 8d6b100..353ef34 100644
 +                              double(storage_range_limit_) / 1048576.0,
 +                              double(storage_range_limit_) / 12.0 / 1e6);
 +                error = std::string(kernel) + detail;
-                 return false;
-             }
--            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
++                return false;
++            }
 +            infos[i] = {b->handle, VkDeviceSize(bind_offset), VkDeviceSize(bind_range)};
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,18 +815,114 @@ public:
+@@ -667,18 +815,136 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -624,6 +624,28 @@ index 8d6b100..353ef34 100644
 +        if (rows_per_band < quantum) rows_per_band = quantum;
 +        rows_per_band = (rows_per_band + quantum - 1) / quantum * quantum;
 +
++        // **One band is one dispatch, and a dispatch past 2^24 elements is not
++        // exact on this driver even when it is chunked** (`pipeline/tiling.hpp`
++        // documents the wall and `dispatch_tiled` forces banding because of it).
++        // The alignment quantum rounds the band size *up*, and at the sizes this
++        // is reached for that lands just past the wall -- 3569 rows of a
++        // 4700-wide plane round up to 3572, 16,779,000 elements against a
++        // 16,777,216 wall -- which put every automatically banded dispatch in
++        // exactly the regime the banding exists to avoid. The start of a band is
++        // what alignment constrains, so the size comes down to a multiple of the
++        // quantum instead.
++        constexpr uint64_t kElementWall = 1ull << 24;
++        const uint64_t wall_rows =
++            std::max<uint64_t>(1, kElementWall / std::max<uint64_t>(1, plan.columns));
++        if (rows_per_band > wall_rows) {
++            rows_per_band = (wall_rows / quantum) * quantum;
++            if (rows_per_band == 0) {
++                error = std::string(kernel ? kernel : "dispatch") +
++                        ": no band size is both offset-aligned and under the 2^24 dispatch wall";
++                return false;
++            }
++        }
++
 +        spk_vk_log("dispatch-banded %s rows=%u columns=%u band_rows=%llu quantum=%llu",
 +                   kernel ? kernel : "?", plan.rows, plan.columns,
 +                   (unsigned long long)rows_per_band, (unsigned long long)quantum);
@@ -660,7 +682,7 @@ index 8d6b100..353ef34 100644
      bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
      void* texture(Buffer* buffer, uint32_t width, uint32_t height,
                    uint32_t row_stride_px, std::string& error) override {
-@@ -690,15 +934,39 @@ public:
+@@ -690,15 +956,39 @@ public:
          // A headless result is a separate CPU-owned RGBA16 copy. It remains
          // valid after the engine and VkDevice are destroyed, just as a Metal
          // texture keeps its own result alive after the render's buffers go.
@@ -701,7 +723,7 @@ index 8d6b100..353ef34 100644
      uint32_t texture_row_alignment_px() const override { return 1; }
      uint32_t max_texture_dimension_2d() const override {
          return properties_.limits.maxImageDimension2D;
-@@ -745,7 +1013,7 @@ public:
+@@ -745,7 +1035,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -710,7 +732,7 @@ index 8d6b100..353ef34 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +1035,7 @@ private:
+@@ -767,7 +1057,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -719,7 +741,7 @@ index 8d6b100..353ef34 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +1047,7 @@ private:
+@@ -779,6 +1069,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -727,7 +749,7 @@ index 8d6b100..353ef34 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +1074,9 @@ private:
+@@ -805,6 +1096,9 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -737,7 +759,7 @@ index 8d6b100..353ef34 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -918,13 +1190,13 @@ private:
+@@ -918,13 +1212,13 @@ private:
          return out;
      }
  
@@ -753,7 +775,7 @@ index 8d6b100..353ef34 100644
              Buffer* best = nullptr;
              for (Buffer* b : buffers_)
                  if (!b->persistent && b->refs == 0 && b->bytes >= bytes &&
-@@ -945,7 +1217,7 @@ private:
+@@ -945,7 +1239,7 @@ private:
          auto b = std::make_unique<Buffer>();
          b->bytes = bytes;
          b->persistent = persistent;
@@ -762,7 +784,7 @@ index 8d6b100..353ef34 100644
          Buffer* raw = b.release();
          buffers_.push_back(raw);
          if (persistent) ++audit_.persistent_allocations;
-@@ -960,7 +1232,11 @@ private:
+@@ -960,7 +1254,11 @@ private:
          frame_high_water_ = std::max(frame_high_water_, live);
      }
  
@@ -775,7 +797,7 @@ index 8d6b100..353ef34 100644
          VkBufferCreateInfo create{};
          create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
          create.size = VkDeviceSize(b.bytes);
-@@ -976,12 +1252,18 @@ private:
+@@ -976,12 +1274,18 @@ private:
          int best_score = -1;
          for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
              const auto flags = memory_properties_.memoryTypes[i].propertyFlags;
@@ -796,7 +818,7 @@ index 8d6b100..353ef34 100644
                  if (readback && (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) score += 8;
                  if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) score += 4;
                  if (!(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) score += 2;
-@@ -1007,7 +1289,7 @@ private:
+@@ -1007,7 +1311,7 @@ private:
          b.allocation_bytes = requirements.size;
          result = vkAllocateMemory(device_, &allocate_info, nullptr, &b.memory);
          if (result == VK_SUCCESS) result = vkBindBufferMemory(device_, b.handle, b.memory, 0);
@@ -805,7 +827,7 @@ index 8d6b100..353ef34 100644
              result = vkMapMemory(device_, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped);
          if (result != VK_SUCCESS) {
              error = vk_error("Vulkan buffer memory", result);
-@@ -1015,10 +1297,10 @@ private:
+@@ -1015,10 +1319,10 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -818,7 +840,7 @@ index 8d6b100..353ef34 100644
                  b.bytes, static_cast<unsigned long long>(b.allocation_bytes), b.memory_type,
                  uint32_t(b.memory_flags), memory_properties_.memoryTypes[memory_index].heapIndex);
          }
-@@ -1073,10 +1355,24 @@ private:
+@@ -1073,10 +1377,24 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -843,7 +865,7 @@ index 8d6b100..353ef34 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
-@@ -1115,6 +1411,17 @@ private:
+@@ -1115,6 +1433,17 @@ private:
      VkPhysicalDeviceProperties properties_{};
      // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
      VkDeviceSize storage_range_limit_ = 0;
@@ -1337,7 +1359,7 @@ index 3a51683..b7feb7c 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
-index 828ac50..7e48bb4 100644
+index 828ac50..45eb11c 100644
 --- a/engine/src/pipeline/pipeline.cpp
 +++ b/engine/src/pipeline/pipeline.cpp
 @@ -1,4 +1,5 @@
@@ -1417,7 +1439,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error) {
-@@ -588,9 +596,9 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
+@@ -588,40 +596,50 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
      Timer t(this, "preprocess.decode_input");
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[2] = {uint32_t(in.elements()), input_cctf_mode_};
@@ -1428,21 +1450,188 @@ index 828ac50..7e48bb4 100644
 +                          {4u, 0u, 4u}, in, in.elements(), error);
  }
  
- bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
-@@ -650,10 +658,10 @@ bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
+-bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
+-    // The pre-crop long edge is the film's, whatever part of the frame the
+-    // user kept -- so grain and halation do not coarsen when a crop is
+-    // applied. Recorded before the identity check, as the reference's node
+-    // body does, so it is set on both paths.
+-    //
+-    // **This is the same inference `run_film` used to make, and it is safe
+-    // only because `geometry` stays whole-frame in v1** (§4.5): `in` here is
+-    // the full plane, so `in.h` *is* the frame's height. The moment someone
+-    // stripes this node, `in` becomes a band, this line becomes the film's
+-    // pixel pitch, and every micrometre-specified effect downstream --
+-    // grain, halation, the coupler diffusion, the lens blur -- is silently
+-    // wrong at every size. It is marked rather than fixed because the fix is
+-    // to pass the frame's shape in, which is what `film_prefix` already does
+-    // for the identical line: whoever takes the class off `geometry` should
+-    // take the shape as a parameter at the same time.
+-    source_long_edge_ = std::max(in.h, in.w);
++// The frame's affine map, resolved once per run from the **source's** shape.
++//
++// Two callers need it and they need it for different reasons. `node_geometry`
++// wants the shape and the constants; the streamed prefix wants the shape before
++// any band exists, because the frame's dimensions are what the band plan is
++// over -- and the pitch fixed beside them is the unit every micrometre-specified
++// effect downstream converts with. Resolving it in one place is what keeps the
++// two from disagreeing about either.
++//
++// **`source_long_edge_` is recorded here, and it is the source's, not the
++// frame's.** The pre-crop long edge is the film's whatever part of the frame
++// the user kept, so grain and halation do not coarsen when a crop is applied --
++// which is why this cannot be read off a band, and why it is taken from
++// `in_w`/`in_h` rather than from anything the caller has lying around (§4.5
++// trap 1).
++bool Pipeline::resolve_geometry_frame(uint32_t in_w, uint32_t in_h, GeometryFrame& frame) {
+     const GeometryParams& g = params_.io.geometry;
+-    if (g.is_identity()) { out = in; return true; }
+-    Timer t(this, "preprocess.geometry");
++    source_long_edge_ = std::max(in_h, in_w);
++    frame.in_w = in_w;
++    frame.in_h = in_h;
++    frame.identity = g.is_identity();
++    frame.turns = 0;
++    frame.flips = 0;
++    if (frame.identity) {
++        frame.w = in_w;
++        frame.h = in_h;
++        return true;
++    }
+ 
+     // `utils/geometry.output_size`: the crop in source pixels, rounded, with
+     // the quarter turns swapping the axes.
+     const uint32_t turns = uint32_t(((g.quarter_turns % 4) + 4) % 4);
+-    uint32_t oh = uint32_t(std::lround(g.crop_h * double(in.h)));
+-    uint32_t ow = uint32_t(std::lround(g.crop_w * double(in.w)));
++    uint32_t oh = uint32_t(std::lround(g.crop_h * double(in_h)));
++    uint32_t ow = uint32_t(std::lround(g.crop_w * double(in_w)));
+     if (turns % 2 == 1) std::swap(oh, ow);
+     oh = std::max(oh, 1u);
+     ow = std::max(ow, 1u);
++    // RFC-032 §27: the canvas (and the imprint laid out on it) is the cropped
++    // frame, so *that* is the gate the pitch is measured on when either is on.
+     if (overscan_wanted() || params_.film_render.date_imprint.active)
+         source_long_edge_ = std::max(ow, oh);
+     const uint32_t cw = turns % 2 == 0 ? ow : oh;   // the crop's own frame
+@@ -629,31 +647,104 @@ bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
+ 
+     const double a = g.rotation_deg * 3.14159265358979323846 / 180.0;
+     const double vals[8] = {
+-        g.crop_w * double(in.w) / double(cw), g.crop_h * double(in.h) / double(ch),
+-        g.crop_w * double(in.w) / 2.0, g.crop_h * double(in.h) / 2.0,
+-        (g.crop_x + g.crop_w / 2.0) * double(in.w) - 0.5,
+-        (g.crop_y + g.crop_h / 2.0) * double(in.h) - 0.5,
++        g.crop_w * double(in_w) / double(cw), g.crop_h * double(in_h) / double(ch),
++        g.crop_w * double(in_w) / 2.0, g.crop_h * double(in_h) / 2.0,
++        (g.crop_x + g.crop_w / 2.0) * double(in_w) - 0.5,
++        (g.crop_y + g.crop_h / 2.0) * double(in_h) - 0.5,
+         std::cos(a), std::sin(a),
+     };
+     // Each constant as a (hi, lo) float pair: the kernel carries the pixel
+     // mapping as a double-float because a float32 coordinate on an 8k axis is
+     // off by half a pixel at the far edge.
+-    float consts[16];
+     for (int i = 0; i < 8; ++i) {
+-        consts[2 * i] = float(vals[i]);
+-        consts[2 * i + 1] = float(vals[i] - double(consts[2 * i]));
++        frame.consts[2 * i] = float(vals[i]);
++        frame.consts[2 * i + 1] = float(vals[i] - double(frame.consts[2 * i]));
+     }
+-    gpu::BufferRef g_buf = gpu_->upload(consts, sizeof consts, error);
++    frame.w = ow;
++    frame.h = oh;
++    frame.turns = turns;
++    frame.flips = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
++    return true;
++}
++
++bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
++    GeometryFrame frame;
++    resolve_geometry_frame(in.w, in.h, frame);
++    if (frame.identity) { out = in; return true; }
++    Timer t(this, "preprocess.geometry");
++    gpu::BufferRef g_buf = gpu_->upload(frame.consts, sizeof frame.consts, error);
+     if (!g_buf) return false;
+-    out.h = oh; out.w = ow; out.c = 3;
++    out.h = frame.h; out.w = frame.w; out.c = 3;
+     out.buf = gpu_->alloc(out.bytes(), error);
      if (!out.buf) return false;
-     const uint32_t flips = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
-     const uint32_t meta[6] = {in.h, in.w, oh, ow, turns, flips};
+-    const uint32_t flips = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
+-    const uint32_t meta[6] = {in.h, in.w, oh, ow, turns, flips};
 -    return gpu_->dispatch("spk_geometry_resample_df",
++    const uint32_t meta[6] = {in.h, in.w, frame.h, frame.w, frame.turns, frame.flips};
 +    return dispatch_plane("spk_geometry_resample_df",
                            {gpu::Arg::buf(in.buf), gpu::Arg::buf(g_buf),
                             gpu::Arg::inline_bytes(meta, 6), gpu::Arg::buf(out.buf)},
 -                          out.pixels(), error);
 +                          {0u, 0u, 0u, out.c * 4u}, out, out.pixels(), error);
++}
++
++// Rows [y0, y0+rows) of the frame `resolve_geometry_frame` describes, read out
++// of the whole source.
++//
++// **Why a band of this node is exact rather than approximate.** The kernel is an
++// output-driven gather: every output pixel computes its own source coordinate
++// from `(ox, oy)` and reads four texels there. Nothing crosses a row boundary,
++// so a row band of the output is the *same kernel* with the frame's origin moved
++// to the band's first pixel (`spk_pc.origin`, which the shader already adds
++// before dividing by the width) and a band-sized destination -- the arithmetic
++// that produces each pixel is untouched, down to the float-pair constants.
++// Crop, rotation, quarter turns and flips are all inside that per-pixel map, so
++// the band needs to know none of them: it is enough that the source stays bound
++// whole, which is the one thing a band cannot shrink (an output row of a
++// rotated frame reads a diagonal strip of the source, and at 45 degrees that
++// strip is most of the picture).
++bool Pipeline::node_geometry_band(const Image& in, const GeometryFrame& frame,
++                                  uint32_t y0, uint32_t rows, Image& out, std::string& error) {
++    if (rows == 0 || y0 + rows > frame.h) {
++        error = "geometry band [" + std::to_string(y0) + ", " + std::to_string(y0 + rows) +
++                ") is outside a " + std::to_string(frame.h) + "-row frame";
++        return false;
++    }
++    out.h = rows; out.w = frame.w; out.c = 3;
++    out.buf = gpu_->alloc(out.bytes(), error);
++    if (!out.buf) return false;
++    if (frame.identity) {
++        // A pass-through on the whole path is an alias; a band cannot be one,
++        // because an `Image` has no stride (`image.hpp`) and a window is not a
++        // shape. So the identity band is a row copy.
++        const size_t row_bytes = size_t(frame.w) * 3 * sizeof(float);
++        return gpu_->copy(out.buf.get(), 0, in.buf.get(), size_t(y0) * row_bytes,
++                          size_t(rows) * row_bytes, error);
++    }
++    const uint32_t meta[6] = {in.h, in.w, frame.h, frame.w, frame.turns, frame.flips};
++
++    // One dispatch may not carry more than 2^24 elements (`tiling.hpp`: past it
++    // this driver's addressing stops being exact), so a band taller than that
++    // is cut again. The shader writes through the band's own window, so each
++    // cut keeps the pixel arithmetic and only moves `origin`.
++    constexpr uint32_t kElementWall = 1u << 24;
++    const uint32_t chunk_rows =
++        std::max(1u, uint32_t(std::min<uint64_t>(rows, kElementWall / std::max(1u, frame.w))));
++    for (uint32_t r = 0; r < rows; r += chunk_rows) {
++        const uint32_t n = std::min(chunk_rows, rows - r);
++        Image part;
++        part.h = n; part.w = frame.w; part.c = 3;
++        const uint64_t offset = uint64_t(r) * frame.w * part.c * sizeof(float);
++        part.buf = gpu::BufferRef(gpu_, out.buf.get());   // an alias: `out` still owns it
++        const uint32_t saved = band_row0_;
++        band_row0_ = y0 + r;
++        const bool ok = dispatch_plane("spk_geometry_resample_df",
++                                       {gpu::Arg::buf(in.buf),
++                                        gpu::Arg::inline_bytes(frame.consts, 16),
++                                        gpu::Arg::inline_bytes(meta, 6),
++                                        gpu::Arg::window(out.buf, offset,
++                                                         uint64_t(n) * frame.w * 3 * sizeof(float))},
++                                       {0u, 0u, 0u, part.c * 4u}, part, part.pixels(), error);
++        band_row0_ = saved;
++        if (!ok) return false;
++    }
++    return true;
  }
  
  bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<double>& Y,
-@@ -671,9 +679,10 @@ bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<doubl
+@@ -671,9 +762,10 @@ bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<doubl
      small.buf = gpu_->alloc(small.bytes(), error);
      if (!small.buf) return false;
      const uint32_t meta[4] = {in.w, small.h, small.w, step};
@@ -1455,7 +1644,7 @@ index 828ac50..7e48bb4 100644
      std::vector<float> host;
      if (!read_back(small, host, error)) return false;
  
-@@ -894,16 +903,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
+@@ -894,16 +986,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
      gpu::BufferRef b = gpu_->alloc(in.pixels() * sizeof(float), error);
      if (!tc.buf || !b) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1478,7 +1667,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_exposure(const Image& in, Image& out, std::string& error) {
-@@ -951,10 +963,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
+@@ -951,10 +1046,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1491,7 +1680,7 @@ index 828ac50..7e48bb4 100644
  }
  
  // **The headroom a digital frame clipped off, given back to the negative.** A
-@@ -992,10 +1004,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
+@@ -992,10 +1087,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1504,7 +1693,7 @@ index 828ac50..7e48bb4 100644
  }
  
  // --- the sigmas, in one place, because a demand must agree with its node ----
-@@ -1272,10 +1284,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
+@@ -1272,10 +1367,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1517,7 +1706,7 @@ index 828ac50..7e48bb4 100644
  }
  
  // ---------------------------------------------------------------------------
-@@ -1297,11 +1309,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
+@@ -1297,11 +1392,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
      if (!alloc_like(cmy, corr, error)) return false;
      const uint32_t pos[1] = {params_.film.info.is_positive() ? 1u : 0u};
      const uint32_t n[1] = {uint32_t(cmy.pixels())};
@@ -1531,7 +1720,7 @@ index 828ac50..7e48bb4 100644
                          cmy.pixels(), error)) return false;
  
      const std::vector<Blur::Component> diffusion = dir_coupler_diffusion();
-@@ -1393,11 +1406,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1393,11 +1489,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
              if (!alloc_like(in, grain, error)) return false;
              const uint32_t meta[4] = {uint32_t(k), uint32_t(in.pixels()),
                                        params_.film.info.is_positive() ? 1u : 0u, seed};
@@ -1545,7 +1734,7 @@ index 828ac50..7e48bb4 100644
                                  in.pixels(), error)) return false;
          } else {
              // The dye-cloud blur is per (sub-layer, channel), so each
-@@ -1412,11 +1426,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1412,11 +1509,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
                  if (!alloc_like(in, layer, error)) return false;
                  const uint32_t meta[5] = {uint32_t(k), uint32_t(in.pixels()),
                                            params_.film.info.is_positive() ? 1u : 0u, seed, sl};
@@ -1559,7 +1748,7 @@ index 828ac50..7e48bb4 100644
                                      in.pixels(), error)) return false;
                  double sigma[3];
                  for (int ch = 0; ch < 3; ++ch)
-@@ -1448,9 +1463,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1448,9 +1546,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          if (!lp_buf || !streams_buf) return false;
          if (!alloc_like(in, grain, error)) return false;
          const uint32_t meta[3] = {uint32_t(in.pixels()), uint32_t(nsub), seed};
@@ -1571,7 +1760,7 @@ index 828ac50..7e48bb4 100644
                              in.pixels(), error)) return false;
          double s[3], t0[3];
          fill3(s, 1.0 / double(nsub));
-@@ -1483,10 +1499,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1483,10 +1582,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          Image multiplied;
          if (!alloc_like(grain, multiplied, error)) return false;
          const uint32_t n[1] = {uint32_t(grain.elements())};
@@ -1584,7 +1773,7 @@ index 828ac50..7e48bb4 100644
          grain = multiplied;
      }
      double s[3], t0[3];
-@@ -1620,10 +1636,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
+@@ -1620,10 +1719,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1597,7 +1786,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_print_curves(const Image& in, Image& out, std::string& error) {
-@@ -1687,9 +1703,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
+@@ -1687,9 +1786,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
      if (!p_buf) return false;
      if (!alloc_like(positive, out, error)) return false;
      const uint32_t n[1] = {uint32_t(positive.pixels())};
@@ -1609,7 +1798,7 @@ index 828ac50..7e48bb4 100644
                            positive.pixels(), error);
  }
  
-@@ -1707,10 +1724,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
+@@ -1707,10 +1807,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1622,7 +1811,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
-@@ -1743,11 +1760,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
+@@ -1743,11 +1843,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
      }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1636,7 +1825,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_xyz_to_rgb(const Image& in, Image& out, std::string& error) {
-@@ -1763,11 +1780,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
+@@ -1763,11 +1863,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
      if (!baked_.edr_params || !baked_.edr_lut) { error = "EDR calibration is not available"; return false; }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1650,7 +1839,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& error) {
-@@ -1776,12 +1793,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
+@@ -1776,12 +1876,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[4] = {uint32_t(in.pixels()), uint32_t(baked_.cam16_nl),
                                uint32_t(baked_.cam16_nh), baked_.cam16_lightness ? 1u : 0u};
@@ -1665,7 +1854,7 @@ index 828ac50..7e48bb4 100644
  }
  
  bool Pipeline::node_scanner_blur(const Image& in, Image& out, std::string& error) {
-@@ -1814,10 +1831,10 @@ bool Pipeline::node_cctf(const Image& in, Image& out, std::string& error) {
+@@ -1814,10 +1914,10 @@ bool Pipeline::node_cctf(const Image& in, Image& out, std::string& error) {
      Timer t(this, "scanning.cctf");
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[2] = {uint32_t(in.pixels()), output_cctf_mode_};
@@ -1678,20 +1867,83 @@ index 828ac50..7e48bb4 100644
  }
  
  // ---------------------------------------------------------------------------
-@@ -1856,13 +1873,99 @@ bool Pipeline::node_cctf(const Image& in, Image& out, std::string& error) {
- // so this is plumbing, not a fix. **Plumbed and not yet verified**: step 5 is
- // where a band first reaches a node, and where a pitch taken from one would
- // first bend every grain size and blur radius in the picture.
+@@ -1843,30 +1943,192 @@ bool Pipeline::node_cctf(const Image& in, Image& out, std::string& error) {
+         if (!gpu_->flush(error)) return false;                             \
+     } while (0)
+ 
+-// The film side, split at the one place RFC-020 §4's strips can cut it: the
+-// prefix is everything that must see the whole plane (`geometry` changes the
+-// frame's dimensions, and the pitch fixed beside it is the unit every
+-// micrometre-specified effect downstream converts with), and the segment is
+-// what the strips cut, which is dimension-preserving throughout -- `upsample`
+-// included, which is a lattice resample and not a spatial one.
++// The film side, a band of rows at a time -- **prefix included**.
+ //
+-// `frame_h`/`frame_w` are the **frame's**, passed down rather than read off
+-// `cur` (§4.5 trap 1). Step 4 cannot reach that line with a band -- every node
+-// is handed a full plane, so `cur.h` *is* the frame's height on every pass --
+-// so this is plumbing, not a fix. **Plumbed and not yet verified**: step 5 is
+-// where a band first reaches a node, and where a pitch taken from one would
+-// first bend every grain size and blur radius in the picture.
+-bool Pipeline::film_prefix(const Image& in, const FrameShape& frame, Image& cur,
+-                           std::string& error) {
+-    Image next;
+-    SPK_NODE(node_input_cast(in, cur, error));
+-    SPK_NODE(node_decode_input(cur, next, error)); cur = next;
+-    SPK_NODE(node_geometry(cur, next, error)); cur = next;
+-    SPK_NODE(node_auto_exposure(cur, next, error)); cur = next;
+-
+-    // `preprocess.crop_rescale`: at the shipped defaults its only job is to
+-    // fix the film's pixel pitch, which every micrometre-specified effect
+-    // downstream converts with. The pitch is the *pre-crop* long edge's.
++// Step 5 left the prefix whole because `geometry` changes the frame's
++// dimensions and the pitch fixed beside it is the unit every
++// micrometre-specified effect downstream converts with. Neither of those needs
++// the frame to *exist*: both are decisions, and they are made once from the
++// source's own shape (`film_prefix_begin`) rather than from a plane. What is
++// left of the prefix is pixels, and `node_geometry_band` produces any row
++// window of them -- so a band leaves the prefix with its halo rows already
++// computed, which is also why the first run no longer copies at the boundary.
++//
++// A stage that demands the frame (`film_boost`, `film_overscan`, `film_grain`)
++// materialises the whole prefix the moment it is reached; from then on `cur` is
++// a plane and the bands are cut from it exactly as step 5 did. That is the one
++// place this executor is not streaming, and it is a property of those three
++// nodes rather than of the prefix.
 +bool Pipeline::run_film_banded(const Image& in, Image& out, uint32_t band_rows, std::string& error) {
 +    if (!built_) { error = "pipeline was not built"; return false; }
 +    progress_ = nullptr;
 +    last_ae_ev_.reset();
 +    if (band_rows == 0) return run_film(in, out, nullptr, error);
 +
-+    Image cur;
-+    if (!film_prefix(in, FrameShape{in.h, in.w}, cur, error)) return false;
-+    const uint32_t frame_h = cur.h;
-+    const size_t row_bytes = size_t(cur.w) * cur.c * sizeof(float);
++    PrefixStream prefix;
++    if (!film_prefix_begin(in, FrameShape{in.h, in.w}, prefix, error)) return false;
++    const uint32_t frame_h = prefix.frame.h;
++    const uint32_t frame_w = prefix.frame.w;
++    const size_t row_bytes = size_t(frame_w) * 3 * sizeof(float);
++
++    // The executor's per-band state must not outlive the run, on any exit: a
++    // `band_row0_` left behind would seed the *next* render's noise from the
++    // middle of its own picture.
++    struct BandState {
++        Pipeline* p;
++        ~BandState() { p->band_row0_ = 0; p->strip_plane_h_ = 0; }
++    } band_state{this};
++
++    // `cur` is a **Chain, not an Image**: from `film_log_and_curves` to
++    // `film_couplers` the film side carries two live planes, and a crossing that
++    // kept only `cur.cur` handed the couplers an empty `log_e_film` -- which is
++    // exactly what the old "run it whole" guard was hiding.
++    Chain cur;
++    auto materialise_prefix = [&]() -> bool {
++        if (cur.cur.valid()) return true;
++        if (!film_prefix_whole(prefix, cur.cur, error)) return false;
++        prefix.source = Image{};   // the decoded source is not needed again
++        return true;
++    };
++    // A meter with nothing injected has to see the frame, so that configuration
++    // is whole-prefix by definition -- not a fallback.
++    if (prefix.whole_required && !materialise_prefix()) return false;
 +
 +    auto band_able = [&](size_t k, uint32_t& halo) -> bool {
 +        const Stage& st = kFilmStages[k];
@@ -1704,6 +1956,28 @@ index 828ac50..7e48bb4 100644
 +        return false;
 +    };
 +
++    // **Two stages that may not be cut apart.** The chain carries `log_e_film`
++    // from `film_log_and_curves` to `film_couplers`, so a run that ended between
++    // them would have to hand the next run a value it never assembled. The
++    // producer is therefore banded only when its consumer is in the same run;
++    // otherwise it runs whole, like the stage it has to stay beside. This is a
++    // dependency between two nodes and not a property of either, which is why it
++    // is read off the table here instead of being another `StageClass`.
++    size_t log_curves = kFilmStageCount, couplers = kFilmStageCount;
++    for (size_t k = 0; k < kFilmStageCount; ++k) {
++        const std::string name = kFilmStages[k].name;
++        if (name == "film_log_and_curves") log_curves = k;
++        if (name == "film_couplers") couplers = k;
++    }
++    // `paired` keeps the rule honest if the table is ever renamed: without both
++    // stages found, the executor falls back to the conservative error below
++    // rather than shrinking every run against a sentinel index.
++
++    if (std::getenv("SPK_VK_LOG")) {
++        std::fprintf(stderr, "[band] frame %ux%u, %u rows a band, %s prefix\n", frame_w, frame_h,
++                     band_rows, prefix.whole_required ? "whole" : "streamed");
++    }
++
 +    size_t i = 0;
 +    while (i < kFilmStageCount) {
 +        uint32_t halo = 0;
@@ -1714,16 +1988,36 @@ index 828ac50..7e48bb4 100644
 +            halo += h;   // halos compose along a run -- a sum, not a max
 +            ++j;
 +        }
++        const bool paired = log_curves < couplers && couplers < kFilmStageCount;
++        if (paired && j > i && i <= log_curves && j <= couplers) {
++            // The producer either runs whole or the run stops before it. When
++            // `i` is already the producer the only honest plan is `j == i`.
++            j = i == log_curves ? i : std::min(j, log_curves);
++            halo = 0;
++            for (size_t k = i; k < j; ++k) {
++                uint32_t h = 0;
++                band_able(k, h);
++                halo += h;
++            }
++        }
++        if (std::getenv("SPK_VK_LOG")) {
++            std::fprintf(stderr, "[band] run %zu..%zu halo %u (%s%s)\n", i, j, halo,
++                         i == j ? "whole " : "",
++                         i < kFilmStageCount ? kFilmStages[i].name : "-");
++        }
 +        if (j == i) {
-+            Chain input; input.cur = cur;
++            // A stage that demands the frame: materialise it once, and from here
++            // on `cur` is a plane and every band is cut from it.
++            if (!materialise_prefix()) return false;
 +            Chain next;
-+            if (!(this->*kFilmStages[i].run)(input, next, error)) return false;
-+            cur = next.cur;
++            if (!(this->*kFilmStages[i].run)(cur, next, error)) return false;
++            cur = next;
++            debug_stage_rows("band", kFilmStages[i].name, cur.cur);
 +            ++i;
 +            continue;
 +        }
 +        Image plane;
-+        plane.h = frame_h; plane.w = cur.w; plane.c = cur.c;
++        plane.h = frame_h; plane.w = frame_w; plane.c = 3;
 +        plane.buf = gpu_->alloc(plane.bytes(), error);
 +        if (!plane.buf) return false;
 +        for (uint32_t y0 = 0; y0 < frame_h; y0 += band_rows) {
@@ -1731,62 +2025,174 @@ index 828ac50..7e48bb4 100644
 +            const uint32_t s0 = y0 > halo ? y0 - halo : 0;
 +            const uint32_t s1 = std::min(frame_h, y0 + rows + halo);
 +            Image sub;
-+            sub.h = s1 - s0; sub.w = cur.w; sub.c = cur.c;
-+            sub.buf = gpu_->alloc(sub.bytes(), error);
-+            if (!sub.buf) return false;
-+            if (!gpu_->copy(sub.buf.get(), 0, cur.buf.get(), size_t(s0) * row_bytes,
-+                            size_t(sub.h) * row_bytes, error)) return false;
++            if (cur.cur.valid()) {
++                sub.h = s1 - s0; sub.w = frame_w; sub.c = 3;
++                sub.buf = gpu_->alloc(sub.bytes(), error);
++                if (!sub.buf) return false;
++                if (!gpu_->copy(sub.buf.get(), 0, cur.cur.buf.get(), size_t(s0) * row_bytes,
++                                size_t(s1 - s0) * row_bytes, error)) return false;
++            } else {
++                // The prefix is streamed: the band arrives with its halo rows
++                // already computed, so the first run of the chain pays no copy
++                // at the boundary at all.
++                if (!film_prefix_band(prefix, s0, s1 - s0, sub, error)) return false;
++                debug_stage_rows("band", "prefix_band", sub);
++            }
 +            band_row0_ = s0;
++            // Scene Latitude splits the piece along the *frame's* long axis
++            // (`scene_latitude.cpp`); read off a band it would split along the
++            // band's own height, which is a different curve.
++            strip_plane_h_ = frame_h;
 +            Chain ch; ch.cur = sub;
 +            for (size_t k = i; k < j; ++k) {
 +                Chain next;
-+                if (!(this->*kFilmStages[k].run)(ch, next, error)) { band_row0_ = 0; return false; }
++                if (!(this->*kFilmStages[k].run)(ch, next, error)) return false;
 +                if (next.cur.h != ch.cur.h || next.cur.w != ch.cur.w || next.cur.c != ch.cur.c) {
-+                    band_row0_ = 0;
 +                    error = std::string("a banded stage changed the band's shape: ") + kFilmStages[k].name;
 +                    return false;
 +                }
 +                ch = next;
 +            }
 +            band_row0_ = 0;
++            strip_plane_h_ = 0;
 +            if (ch.log_e_film.buf) {
-+                error = "a banded run produced log_e_film; run it whole";
++                // Unreachable while the plan above keeps the producer and its
++                // consumer in one run; it is here so that a table edit which
++                // breaks that pairing fails loudly instead of dropping a plane.
++                error = "a banded run produced log_e_film; the plan cut its consumer off";
 +                return false;
 +            }
 +            if (!gpu_->flush(error)) return false;
 +            if (!gpu_->copy(plane.buf.get(), size_t(y0) * row_bytes, ch.cur.buf.get(),
 +                            size_t(y0 - s0) * row_bytes, size_t(rows) * row_bytes, error)) return false;
 +        }
-+        cur = plane;
++        cur.cur = plane;
++        cur.log_e_film = Image{};
++        debug_stage_rows("band", kFilmStages[j - 1].name, cur.cur);
++        prefix.source = Image{};   // every band of this run is assembled
 +        i = j;
 +    }
-+    out = cur;
++    out = cur.cur;
++    return true;
++}
++void Pipeline::film_prefix_commit(const FrameShape& frame) {
++    // `preprocess.crop_rescale`: at the shipped defaults its only job is to fix
++    // the film's pixel pitch, which every micrometre-specified effect
++    // downstream converts with. The pitch is the *pre-crop* long edge's, which
++    // `resolve_geometry_frame` has already recorded from the source itself.
+     {
+         Timer t(this, "preprocess.crop_rescale");
+         if (source_long_edge_ == 0) source_long_edge_ = frame.long_edge();
+@@ -1891,9 +2153,84 @@ bool Pipeline::film_prefix(const Image& in, const FrameShape& frame, Image& cur,
+     const GrainParams& film_grain = params_.film_render.grain;
+     film_seed_ = (film_grain.active && params_.settings.grain_sampler != "exact")
+                ? fresh_seed() : 0x5EEDu;
++}
++
++bool Pipeline::film_prefix_begin(const Image& in, const FrameShape& shape, PrefixStream& stream,
++                                 std::string& error) {
++    Image next;
++    SPK_NODE(node_input_cast(in, stream.source, error));
++    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_input_cast", in.pixels());
++    SPK_NODE(node_decode_input(stream.source, next, error)); stream.source = next;
++    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_decode_input", in.pixels());
++
++    // The frame's shape is decided from the **source's**, before any band
++    // exists: it is what the band plan is over.
++    if (!resolve_geometry_frame(stream.source.w, stream.source.h, stream.frame)) return false;
++    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "geometry_frame", in.pixels());
++
++    // Auto-exposure is a statistic of the *frame*, so a band cannot make this
++    // decision for itself. The session's one EV arrives already measured
++    // (RFC-015 P.1) and the node then only applies it, which is why the usual
++    // path never needs the plane; with nothing injected the node would measure
++    // its own input, and that is the one configuration where a streamed prefix
++    // has to materialise the frame before it can cut it.
++    stream.ae_active = params_.camera.auto_exposure;
++    stream.whole_required = false;
++    stream.ae_gain = 1.0;
++    if (stream.ae_active) {
++        if (injected_ev_) {
++            last_ae_ev_ = *injected_ev_;
++            stream.ae_gain = double(float(std::pow(2.0, *injected_ev_)));
++        } else {
++            stream.whole_required = true;
++        }
++    }
++
++    film_prefix_commit(shape);
 +    return true;
 +}
 +
- bool Pipeline::film_prefix(const Image& in, const FrameShape& frame, Image& cur,
-                            std::string& error) {
-     Image next;
-     SPK_NODE(node_input_cast(in, cur, error));
-+    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_input_cast", in.pixels());
-     SPK_NODE(node_decode_input(cur, next, error)); cur = next;
-+    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_decode_input", in.pixels());
-     SPK_NODE(node_geometry(cur, next, error)); cur = next;
-+    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_geometry", in.pixels());
-     SPK_NODE(node_auto_exposure(cur, next, error)); cur = next;
-+    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_auto_exposure", in.pixels());
++bool Pipeline::film_prefix_whole(const PrefixStream& stream, Image& out, std::string& error) {
++    // The same two node bodies, in the same order, as the single-pass prefix
++    // always ran -- so this entry point cannot drift from the banded one in
++    // anything but how the frame is cut.
++    Image cur, next;
++    SPK_NODE(node_geometry(stream.source, cur, error));
++    debug_stage_rows("whole", "prefix_geom", cur);
++    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_geometry", stream.source.pixels());
++    SPK_NODE(node_auto_exposure(cur, next, error));
++    if (std::getenv("SPK_VK_LOG")) log_live("[prefix]", "node_auto_exposure", stream.source.pixels());
++    out = next;
+     return true;
+ }
  
-     // `preprocess.crop_rescale`: at the shipped defaults its only job is to
-     // fix the film's pixel pitch, which every micrometre-specified effect
-@@ -2118,6 +2221,7 @@ bool Pipeline::film_segment(const Image& in, Image& out, std::string& error) {
++bool Pipeline::film_prefix_band(const PrefixStream& stream, uint32_t y0, uint32_t rows,
++                                Image& out, std::string& error) {
++    Image band;
++    if (!node_geometry_band(stream.source, stream.frame, y0, rows, band, error)) return false;
++    debug_stage_rows("band", "prefix_geom", band);
++    if (!stream.ae_active) { out = band; return true; }
++    if (stream.whole_required) {
++        error = "auto-exposure has to measure the frame; the prefix cannot be banded";
++        return false;
++    }
++    // `node_auto_exposure`'s own body, narrowed the same way it narrows it:
++    // `matching_scalar` is `float(pow(2, ev))`, and the gain multiplies the
++    // frame as a float32 scale-plus-offset.
++    Timer t(this, "preprocess.auto_exposure");
++    double s[3], t0[3];
++    fill3(s, stream.ae_gain);
++    fill3(t0, 0.0);
++    return blur_.affine(band, s, t0, out, error);
++}
++
++bool Pipeline::film_prefix(const Image& in, const FrameShape& frame, Image& cur,
++                           std::string& error) {
++    PrefixStream stream;
++    if (!film_prefix_begin(in, frame, stream, error)) return false;
++    return film_prefix_whole(stream, cur, error);
++}
++
+ // The film and print chains, as **stages**: contiguous runs of the same nodes
+ // the segments used to call inline, in the same order, split at the class
+ // boundaries (§4.2) because that is where the executor has to convert between a
+@@ -1991,6 +2328,14 @@ bool Pipeline::film_couplers(const Chain& in, Chain& out, std::string& error) {
+     SPK_NODE(node_dir_couplers(in.cur, in.log_e_film, next, error));
+     out = in;
+     out.cur = next;
++    // **The end of `log_e_film`'s life**, stated where it ends rather than
++    // implied by `film_grain` clearing it three stages later. Nothing reads it
++    // after this node, and a banded run that stopped carrying it here is
++    // therefore keeping the whole plane alive for a value no one asks for --
++    // which is what made `dir_couplers` unbandable with the shipped defaults
++    // ("a banded run produced log_e_film; run it whole") even though produc-
++    // tion and consumption sat inside one band.
++    out.log_e_film = Image{};
+     return true;
+ }
+ 
+@@ -2118,6 +2463,8 @@ bool Pipeline::film_segment(const Image& in, Image& out, std::string& error) {
          Chain next;
          if (!(this->*kFilmStages[i].run)(cur, next, error)) return false;
          cur = next;
++        debug_stage_rows("film", kFilmStages[i].name, cur.cur);
 +        if (std::getenv("SPK_VK_LOG")) log_live("[film] after", kFilmStages[i].name, in.pixels());
      }
      out = cur.cur;
      return true;
-@@ -2149,7 +2253,28 @@ std::vector<StripSpan> Pipeline::strip_plan(uint32_t plane_h) const {
+@@ -2149,7 +2496,28 @@ std::vector<StripSpan> Pipeline::strip_plan(uint32_t plane_h) const {
      return plan;
  }
  
@@ -1815,7 +2221,7 @@ index 828ac50..7e48bb4 100644
      if (!built_) { error = "pipeline was not built"; return false; }
      progress_ = progress;
      if (progress_) { progress_->total_nodes = node_count_; progress_->fired = 0; }
-@@ -2213,6 +2338,12 @@ bool Pipeline::run_stages_striped(const Stage* stages, size_t count, Chain& chai
+@@ -2213,6 +2581,12 @@ bool Pipeline::run_stages_striped(const Stage* stages, size_t count, Chain& chai
              // or more strips with two F stages in one run.
              while (j < count && band_able[j]) { halo += halos[j]; ++j; }
              for (size_t k = i; k < j; ++k) report.stages[k].halo = halo;
@@ -1828,19 +2234,88 @@ index 828ac50..7e48bb4 100644
              ++report.runs;
              report.crossings += 2;   // the slice in, the assembly out
  
-@@ -2398,6 +2529,7 @@ bool Pipeline::print_segment(const Image& cmy, Image& out, std::string& error) {
+@@ -2391,6 +2765,67 @@ bool Pipeline::print_prefix(std::string& error) {
+     return true;
+ }
+ 
++// ---------------------------------------------------------------------------
++// SPK_STAGE_HASH: a row-level fingerprint per stage
++// ---------------------------------------------------------------------------
++//
++// Two renders that should be byte-identical and are not need a *where*, and a
++// whole-plane hash only says *whether*. This reads back the first and last row
++// of a plane and prints their FNV -- two rows, so it is cheap enough to leave in
++// a stage loop -- which is enough to see a seam, an edge, or the row where a
++// band's origin went wrong.
++void Pipeline::debug_stage_rows(const char* tag, const char* stage, const Image& img) {
++    static const bool on = std::getenv("SPK_STAGE_HASH") != nullptr;
++    if (!on || !img.valid()) return;
++    const size_t row = size_t(img.w) * img.c;
++    std::vector<float> host(row);
++    std::string ignored_error;
++    auto hash_row = [&](uint32_t y) -> uint64_t {
++        if (!gpu_->read(img.buf.get(), size_t(y) * row * sizeof(float), host.data(),
++                        row * sizeof(float), ignored_error)) return 0;
++        uint64_t h = 1469598103934665603ull;
++        for (size_t i = 0; i < row; ++i) {
++            uint32_t bits;
++            std::memcpy(&bits, &host[i], 4);
++            h ^= bits;
++            h *= 1099511628211ull;
++        }
++        return h;
++    };
++    // The rows at each end, not just the outermost one: an edge bug is often
++    // "the first two rows", and a single row would hide which side of it the
++    // cause sits on.
++    if (std::getenv("SPK_STAGE_FLOATS")) {
++        // The extreme elements, in full: a difference confined to the buffer's
++        // ends is a different bug from one confined to a row's ends, and a hash
++        // cannot tell them apart.
++        auto first = [&](uint32_t y, bool tail) {
++            if (!gpu_->read(img.buf.get(), size_t(y) * row * sizeof(float), host.data(),
++                            row * sizeof(float), ignored_error)) return;
++            std::fprintf(stderr, "[floats] %-6s %-20s row %-4u %s:", tag, stage, y, tail ? "tail" : "head");
++            for (int k = 0; k < 6; ++k) {
++                const size_t at = tail ? (row > 6 ? row - 6 : 0) + size_t(k) : std::min(size_t(k), row - 1);
++                uint32_t bits;
++                std::memcpy(&bits, &host[at], 4);
++                std::fprintf(stderr, " %08x", bits);
++            }
++            std::fprintf(stderr, "\n");
++        };
++        first(0, false);
++        first(img.h - 1, true);
++    }
++    // A band can be one row tall, so the probes are clamped rather than
++    // subtracted: a probe that reads outside the plane would report a hash of
++    // zeros and read as a difference that is not there.
++    auto near_end = [&](uint32_t back) { return img.h > back ? img.h - 1 - back : 0u; };
++    std::fprintf(stderr, "[stage] %-6s %-24s %ux%u  %016llx %016llx %016llx | %016llx %016llx %016llx\n",
++                 tag, stage, img.w, img.h,
++                 (unsigned long long)hash_row(0), (unsigned long long)hash_row(std::min(1u, img.h - 1)),
++                 (unsigned long long)hash_row(std::min(2u, img.h - 1)),
++                 (unsigned long long)hash_row(near_end(2)), (unsigned long long)hash_row(near_end(1)),
++                 (unsigned long long)hash_row(near_end(0)));
++}
++
+ bool Pipeline::print_segment(const Image& cmy, Image& out, std::string& error) {
+     Chain cur;
+     cur.cur = cmy;
+@@ -2398,6 +2833,8 @@ bool Pipeline::print_segment(const Image& cmy, Image& out, std::string& error) {
          Chain next;
          if (!(this->*kPrintStages[i].run)(cur, next, error)) return false;
          cur = next;
++        debug_stage_rows("print", kPrintStages[i].name, cur.cur);
 +        if (std::getenv("SPK_VK_LOG")) log_live("[print] after", kPrintStages[i].name, cmy.pixels());
      }
      out = cur.cur;
      return true;
 diff --git a/engine/src/pipeline/pipeline.hpp b/engine/src/pipeline/pipeline.hpp
-index 5fd77be..96a0f41 100644
+index 5fd77be..18d17f0 100644
 --- a/engine/src/pipeline/pipeline.hpp
 +++ b/engine/src/pipeline/pipeline.hpp
-@@ -552,6 +552,17 @@ public:
+@@ -552,6 +552,18 @@ public:
      /// strip-outer within segments, with whole-frame nodes materialised once
      /// per run at a segment boundary -- step 5's shape, not this one.
      bool run_film_striped(const Image& in, Image& out, Progress* progress, std::string& error);
@@ -1855,10 +2330,81 @@ index 5fd77be..96a0f41 100644
 +    // Diagnostic: how many frame-sized planes are live right now, against the
 +    // frame's own plane size.
 +    void log_live(const char* tag, const char* stage, size_t pixels);
++    void debug_stage_rows(const char* tag, const char* stage, const Image& img);
      bool run_print_striped(const Image& cmy, Image& out, Progress* progress, std::string& error);
  
      // The film's pixel pitch for the frame most recently run through
-@@ -699,6 +710,14 @@ private:
+@@ -584,19 +596,60 @@ private:
+     static ExposureEvs exposure_evs_from(const std::vector<double>& Y, uint32_t sh, uint32_t sw);
+ 
+     /// The film side split at the one place the strips can cut it. The prefix
+-    /// is everything that must see the whole plane -- `geometry` changes the
+-    /// frame's dimensions, and the pitch it fixes is every micrometre-specified
+-    /// effect downstream's unit -- and the segment is what the strips cut,
+-    /// which is dimension-preserving throughout.
++    /// is everything that was *called* whole-plane -- `geometry` changes the
++    /// frame's dimensions, and the pitch beside it is every micrometre-specified
++    /// effect downstream's unit -- and the segment is what the strips cut, which
++    /// is dimension-preserving throughout.
+     ///
+     /// `frame` is the frame's **own** shape, passed down rather than read off
+     /// `cur` (§4.5 trap 1), and typed so that a band's height cannot be handed
+-    /// to it by mistake. In step 4 nothing can reach that line wrongly -- every
+-    /// node is handed a full plane, so `cur.h` *is* the frame height -- so the
+-    /// typing is plumbing, not a fix. **Plumbed and not yet verified**: step 5
+-    /// is where a band first reaches a node, and where a pitch taken from one
+-    /// would first bend every grain size and blur radius in the picture.
++    /// to it by mistake.
++    ///
++    /// **The prefix is now decisions plus pixels, and only the pixels are
++    /// bands.** `geometry` turned out to be an output-driven gather, so a row
++    /// band of its output is the same kernel with the frame origin moved --
++    /// which means the two things that made the prefix whole are decisions and
++    /// can be made before any band exists. `film_prefix` is kept as the
++    /// whole-frame entry point (it aliases on an identity geometry, as every
++    /// un-striped render relies on); the streamed path is `begin` + `band`.
+     bool film_prefix(const Image& in, const FrameShape& frame, Image& cur, std::string& error);
++
++    /// The geometry node's frame: the shape its kernel writes and the affine
++    /// constants it reads, resolved once from the **source's** shape. `identity`
++    /// means the node is a pass-through on the whole path and a row copy on a
++    /// band.
++    struct GeometryFrame {
++        uint32_t in_w = 0, in_h = 0;   ///< the source it maps from
++        uint32_t w = 0, h = 0;         ///< the frame it maps to
++        uint32_t turns = 0, flips = 0;
++        bool identity = true;
++        float consts[16] = {};
++    };
++    /// Resolves `frame` and records `source_long_edge_` from the *source*, which
++    /// is the one thing a band cannot answer (§4.5 trap 1).
++    bool resolve_geometry_frame(uint32_t in_w, uint32_t in_h, GeometryFrame& frame);
++    /// Rows [y0, y0+rows) of that frame, in a band-sized buffer, from the whole
++    /// source. Bit-identical to the same rows of `node_geometry`'s output.
++    bool node_geometry_band(const Image& in, const GeometryFrame& frame,
++                            uint32_t y0, uint32_t rows, Image& out, std::string& error);
++
++    /// The prefix, staged. `begin` takes the decisions that belong to the frame
++    /// (its shape, the meter's gain, the pitch, the seed); `whole` runs the two
++    /// node bodies over the plane, exactly as the single pass always did; `band`
++    /// produces rows of the frame's geometry output plus the gain.
++    struct PrefixStream {
++        Image source;                  ///< post input_cast / decode_input, whole
++        GeometryFrame frame;
++        bool ae_active = false;
++        bool whole_required = false;   ///< the meter has to measure a plane
++        double ae_gain = 1.0;
++    };
++    bool film_prefix_begin(const Image& in, const FrameShape& shape, PrefixStream& stream,
++                           std::string& error);
++    bool film_prefix_whole(const PrefixStream& stream, Image& out, std::string& error);
++    bool film_prefix_band(const PrefixStream& stream, uint32_t y0, uint32_t rows,
++                          Image& out, std::string& error);
++    void film_prefix_commit(const FrameShape& frame);
+     bool film_segment(const Image& in, Image& out, std::string& error);
+     /// The print side's split. Its prefix is the enlarger's live-mutable
+     /// constants, which are host constants rather than pixels, and its segment
+@@ -699,6 +752,14 @@ private:
  
      // --- helpers ---------------------------------------------------------
      bool alloc_like(const Image& img, Image& out, std::string& error);

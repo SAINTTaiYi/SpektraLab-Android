@@ -46,7 +46,9 @@ final class UpdateCheck {
     private static final String PREFS = "update";
     private static final String KEY_SEEN_CODE = "seen_code";
     private static final String KEY_CHECKED_AT = "checked_at";
-    private static final long MIN_INTERVAL_MS = 6L * 60 * 60 * 1000;
+    // 30 minutes, not 6 hours: an announcement published while someone has the
+    // app open should land on their next launch, not tomorrow.
+    private static final long MIN_INTERVAL_MS = 30L * 60 * 1000;
 
     private UpdateCheck() {}
 

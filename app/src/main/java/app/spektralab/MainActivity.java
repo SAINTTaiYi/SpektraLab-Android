@@ -30,6 +30,10 @@ public class MainActivity extends Activity {
     private DeviceProbe probe = DeviceProbe.parse("{}");
     /** Set by the long-press on 导入: keep the decoder's own size and say it may fail. */
     private boolean importAtNativeSize = false;
+    /** A cap the last E-1001 offered, good for exactly one import. */
+    private int pendingCapPixels = 0;
+    /** One retry offer per import; a dialog loop would be worse than the error. */
+    private boolean e1001Offered = false;
     private SpektraLabEngine.Session session;
     private boolean isRawFile = false;
     private String rawFilePath = null;
@@ -85,6 +89,13 @@ public class MainActivity extends Activity {
         title.setTextColor(0xFFFFFFFF);
         title.setTextSize(18);
         title.setSingleLine(true);
+        // Four buttons plus the name do not fit a narrow phone: the weight split
+        // gave the title ~29% of the bar and "SpektraLab" clipped to
+        // "SpektraLat". Let the text shrink to fit instead of guessing a size.
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            title.setAutoSizeTextTypeUniformWithConfiguration(
+                    11, 18, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+        }
         topBar.addView(title, new LinearLayout.LayoutParams(0, -2, 0.45f));
         // No menu bar on a phone, so the title carries About and the manual
         // update check: long-press it.
@@ -104,7 +115,7 @@ public class MainActivity extends Activity {
                     .setTitle("导入")
                     .setItems(new String[]{
                             "从相册选择（照片 / JPEG）",
-                            "从文件选择（RAW：ARW / DNG / NEF…）",
+                            "从文件选择（RAW / HEIC / 任意格式）",
                             "按原始尺寸导入（可能失败）"},
                             (d, which) -> {
                                 if (which == 0) {
@@ -156,7 +167,7 @@ public class MainActivity extends Activity {
                     ? "全尺寸 " + sourceWidth + "×" + sourceHeight
                     : "全尺寸";
             final String fullNote = probe.isLimited()
-                    ? "（本机上限约 " + String.format("%.1f", probe.maxMegapixels()) + " MP，可能导出失败）"
+                    ? "（本机上限约 " + String.format("%.1f", maxImportPixels() / 1e6) + " MP，可能导出失败）"
                     : "（原图）";
             new android.app.AlertDialog.Builder(this)
                     .setTitle("导出 · " + probe.describe())
@@ -197,7 +208,7 @@ public class MainActivity extends Activity {
         
         // Status
         statusText = new TextView(this);
-        statusText.setText("选择一张 RAW 或 JPEG 开始");
+        statusText.setText("v" + UpdateCheck.versionName(this) + " · 选择一张 RAW 或 JPEG 开始");
         statusText.setTextColor(0xFF888888);
         statusText.setPadding(16, 8, 16, 8);
         layout.addView(statusText);
@@ -274,7 +285,7 @@ public class MainActivity extends Activity {
         new android.app.AlertDialog.Builder(this)
                 .setTitle("按原始尺寸导入")
                 .setMessage((probe.isLimited()
-                        ? "本机 GPU 单缓冲上限约 " + String.format("%.1f", probe.maxMegapixels())
+                        ? "本机可用内存与 GPU 上限合计约 " + String.format("%.1f", maxImportPixels() / 1e6)
                           + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
                         : "按原始尺寸导入（不做任何缩放）。") + overDispatch
                         + "\n\n仍要继续吗？")
@@ -382,16 +393,64 @@ public class MainActivity extends Activity {
         return result;
     }
 
-    /** Tap: the gallery, which is where phone photos and JPEGs are. */
+    /**
+     * Tap: the gallery, which is where phone photos and JPEGs are.
+     *
+     * Three intents, in the order the user expects them, and the first one this
+     * ROM can actually resolve wins: the system Photo Picker (13+), then
+     * `GET_CONTENT image/*` (every Android before 13), then the document
+     * picker (every Android, period).
+     *
+     * The chain is not belt-and-braces. A launch that cannot be resolved throws
+     * `ActivityNotFoundException`, and an uncaught throw inside a click handler
+     * does not show an error -- it kills the process. That is exactly the
+     * report "一选导入就自动退回桌面了" on a Honor/HarmonyOS phone: no message,
+     * because there was nothing left alive to show one. Those ROMs ship without
+     * the AOSP Photo Picker activity (it lives in the MediaProvider module, and
+     * an HMS build does not have it) while the `ACTION_PICK_IMAGES` intent
+     * still resolves to the chooser's fallback -- so the check has to be at the
+     * launch, and it has to have somewhere to go next.
+     */
     private void pickImage() {
-        Intent intent;
+        java.util.List<Intent> chain = new ArrayList<>();
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            intent = new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);
-        } else {
-            intent = new Intent(Intent.ACTION_GET_CONTENT);
-            intent.setType("image/*");
+            chain.add(new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES));
         }
-        startActivityForResult(intent, 1);
+        chain.add(new Intent(Intent.ACTION_GET_CONTENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"));
+        chain.add(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"));
+        if (!launchFirstResolvable(chain, 1)) {
+            Toast.makeText(this, "本机没有可用的图片选择器；请长按「导入」→「从文件选择」",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * Launch the first intent this ROM resolves, and never let the launch itself
+     * kill the process. False when none of them is available.
+     */
+    private boolean launchFirstResolvable(java.util.List<Intent> chain, int requestCode) {
+        for (Intent intent : chain) {
+            try {
+                if (intent.resolveActivity(getPackageManager()) == null) {
+                    try { DebugSink.text("picker", "unresolvable " + intent.getAction()); }
+                    catch (Throwable ignored) { }
+                    continue;
+                }
+                startActivityForResult(intent, requestCode);
+                try { DebugSink.text("picker", "launched " + intent.getAction()); }
+                catch (Throwable ignored) { }
+                return true;
+            } catch (Throwable t) {
+                // Resolvable and still refused: a provider that vanished
+                // between the check and the launch, a SecurityException, or a
+                // picker that throws from its own onCreate. Next one.
+                try { DebugSink.text("picker", intent.getAction() + " failed: " + t); }
+                catch (Throwable ignored) { }
+            }
+        }
+        return false;
     }
 
     /**
@@ -401,29 +460,56 @@ public class MainActivity extends Activity {
      * "this app cannot import RAW". Asking for any file fixes that, but Android
      * then routes to Files rather than Photos, which is why it is its own
      * entry instead of replacing the gallery.
+     *
+     * **The same entry is the answer for a HEIC that the gallery will not
+     * show.** The MIME list below names the HEIF types explicitly as well as
+     * `image/*`, because several storage layers do not map `.heic` to an image
+     * type at all -- a downloaded one then appears nowhere in a picker filtered
+     * to images, which is what "下载后没法导入" describes.
      */
     private void pickRawFile() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+        final String[] types = {
                 "image/*",
+                "image/heic", "image/heif", "image/x-heic", "image/x-heif", "image/x-cfif",
                 "application/octet-stream",
                 "image/x-sony-arw", "image/x-canon-cr2", "image/x-canon-cr3",
                 "image/x-nikon-nef", "image/x-adobe-dng", "image/x-panasonic-rw2",
                 "image/x-panasonic-raw", "image/x-olympus-orf", "image/x-fuji-raf",
                 "image/x-pentax-pef", "image/x-samsung-srw", "image/x-sigma-x3f"
-        });
-        startActivityForResult(intent, 1);
+        };
+        java.util.List<Intent> chain = new ArrayList<>();
+        Intent documents = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        documents.addCategory(Intent.CATEGORY_OPENABLE);
+        documents.setType("*/*");
+        documents.putExtra(Intent.EXTRA_MIME_TYPES, types);
+        chain.add(documents);
+        Intent content = new Intent(Intent.ACTION_GET_CONTENT);
+        content.addCategory(Intent.CATEGORY_OPENABLE);
+        content.setType("*/*");
+        content.putExtra(Intent.EXTRA_MIME_TYPES, types);
+        chain.add(content);
+        if (!launchFirstResolvable(chain, 1)) {
+            Toast.makeText(this, "本机没有可用的文件选择器", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == 1 && resultCode == RESULT_OK && data != null) {
-            Uri uri = data.getData();
-            if (uri != null) loadImage(uri);
+        if (requestCode != 1) return;
+        if (resultCode != RESULT_OK) return;          // the user cancelled
+        // RESULT_OK with no URI happens on ROMs whose picker cannot hand back a
+        // stream for the item (a cloud-only photo, a broken provider). Doing
+        // nothing there is what "下载后没法导入" looks like from the outside: the
+        // tap simply has no effect and nothing is said.
+        Uri uri = data == null ? null : data.getData();
+        if (uri == null) {
+            try { DebugSink.text("picker", "RESULT_OK with no data"); } catch (Throwable ignored) { }
+            Toast.makeText(this, "没有拿到图片（选择器返回空）。请长按「导入」→「从文件选择」再试一次",
+                    Toast.LENGTH_LONG).show();
+            return;
         }
+        loadImage(uri);
     }
 
     private void loadImage(Uri uri) {
@@ -470,39 +556,56 @@ public class MainActivity extends Activity {
             // so one exact scale follows if the sample still overshoots.
             final boolean nativeSize = importAtNativeSize;
             importAtNativeSize = false;                       // one import only
-            final int capPixels = nativeSize ? Integer.MAX_VALUE : maxImportPixels();
+            // A cap the last render failure handed us (see offerSmallerImport):
+            // one import's worth, then back to the device's own answer.
+            final int forcedCap = pendingCapPixels;
+            pendingCapPixels = 0;
+            e1001Offered = false;
+            final int capPixels = nativeSize ? Integer.MAX_VALUE
+                    : (forcedCap > 0 ? forcedCap : maxImportPixels());
             final int edgeCap = nativeSize ? Integer.MAX_VALUE : IMPORT_LONG_EDGE;
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            try (InputStream head = getContentResolver().openInputStream(uri)) {
-                BitmapFactory.decodeStream(head, null, bounds);
-                if (head != null) head.close();
-            }
-            int sample = 1;
-            while ((long) (bounds.outWidth / (sample * 2)) * (bounds.outHeight / (sample * 2)) >= capPixels
-                    || Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edgeCap) sample *= 2;
-            BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = sample;
-            Bitmap decoded;
-            try (InputStream stream = getContentResolver().openInputStream(uri)) {
-                decoded = BitmapFactory.decodeStream(stream, null, opts);
-            }
-            sourceBitmap = decoded == null ? null : applyExifRotation(uri, decoded);
+            sourceBitmap = decodeImport(uri, capPixels, edgeCap);
             if (sourceBitmap == null) {
-                Toast.makeText(this, "无法解码图片", Toast.LENGTH_SHORT).show();
+                // The old message here was "无法解码图片", which gave the user
+                // nothing to act on. A HEIC/HEIF this phone's decoder refuses is
+                // the common case, so the dialog carries the way out instead of
+                // describing it.
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle("[E-1107] 这张图本机解不开")
+                        .setMessage("多半是 HEIC/HEIF 或 10-bit 的图（三星、iPhone 默认存这种）。\n"
+                                + "换「从文件选择」再试一次，读不到的话请先另存为 JPEG。")
+                        .setPositiveButton("从文件选择", (d, w) -> pickRawFile())
+                        .setNegativeButton("取消", null)
+                        .show();
                 return;
             }
+            sourceBitmap = applyExifRotation(uri, sourceBitmap);
             final long area = (long) sourceBitmap.getWidth() * sourceBitmap.getHeight();
             final int longEdge = Math.max(sourceBitmap.getWidth(), sourceBitmap.getHeight());
-            if (area > capPixels || longEdge > edgeCap) {
-                // Two ceilings in different units: area is quadratic in the
-                // scale, the long edge is linear. Take the stricter one.
-                final double kArea = Math.sqrt((double) capPixels / (double) area);
-                final double kEdge = (double) edgeCap / (double) longEdge;
-                final double k = Math.min(1.0, Math.min(kArea, kEdge));
-                sourceBitmap = Bitmap.createScaledBitmap(sourceBitmap,
-                        Math.max(1, (int) Math.round(sourceBitmap.getWidth() * k)),
-                        Math.max(1, (int) Math.round(sourceBitmap.getHeight() * k)), true);
+            // Three ceilings in three units, and the strictest wins: area is
+            // quadratic in the scale, the long edge is linear, and the third is
+            // what this phone can actually hold -- the import's float buffer is
+            // 12 B/px, which is 240 MB at 20 MP and the largest single
+            // allocation the app makes. Asking before taking it is what turns
+            // an OutOfMemoryError (an Error, so the old `catch (Exception)`
+            // never saw it and the process died) into a smaller import.
+            double k = 1.0;
+            if (area > capPixels) k = Math.min(k, Math.sqrt((double) capPixels / (double) area));
+            if (longEdge > edgeCap) k = Math.min(k, (double) edgeCap / longEdge);
+            final long availBytes = availableMemoryBytes();
+            if (availBytes > 0) {
+                final long budget = Math.max(1L << 20, availBytes - (128L << 20));
+                final double wantBytes = (double) area * 12.0;
+                if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
+            }
+            if (k < 1.0) {
+                final int nw = Math.max(1, (int) Math.round(sourceBitmap.getWidth() * k));
+                final int nh = Math.max(1, (int) Math.round(sourceBitmap.getHeight() * k));
+                Bitmap scaled = Bitmap.createScaledBitmap(sourceBitmap, nw, nh, true);
+                if (scaled != sourceBitmap) sourceBitmap.recycle();
+                sourceBitmap = scaled;
+                try { DebugSink.text("import-scale", "k=" + k + " -> " + nw + "x" + nh
+                        + " avail=" + availBytes); } catch (Throwable ignored) { }
             }
             sourceWidth = sourceBitmap.getWidth();
             sourceHeight = sourceBitmap.getHeight();
@@ -534,8 +637,8 @@ public class MainActivity extends Activity {
             if (session != null) session.close();
             session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
             applyParams();
-        } catch (Exception e) {
-            Toast.makeText(this, SpkError.format(e.getMessage()), Toast.LENGTH_LONG).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, describeImportFailure(t), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -577,10 +680,27 @@ public class MainActivity extends Activity {
      * is what a 50 MP DNG did on a phone reporting 128 MiB. Ask the device
      * rather than guess a long edge, and keep the old workgroup cap.
      */
+    private long availableMemoryBytes() {
+        try {
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            return mi.availMem;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
     private int maxImportPixels() {
         try { ensureEngine(); } catch (Throwable ignored) { }
-        final long px = probe.maxPixels();          // already min'd with the dispatch cap
-        return (int) Math.min(px, Integer.MAX_VALUE);
+        // Three ceilings, and the smallest wins: what one binding can name,
+        // what the phone has free right now, and a hard cap so a device with
+        // 24 GB does not accept a 300 MP frame nobody meant to open.
+        final long byBinding = probe.maxPixelsByBinding();
+        final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
+        final long px = Math.min(Math.min(byBinding, byMemory), 100_000_000L);
+        return (int) Math.min(Math.max(px, 1_000_000L), Integer.MAX_VALUE);
     }
 
     private void loadRawImage(Uri uri) {
@@ -662,15 +782,16 @@ public class MainActivity extends Activity {
                                 ? "原图超出本机 GPU 单缓冲上限，已按 " + w + "x" + h + " 导入"
                                 : "RAW加载成功", Toast.LENGTH_LONG).show();
                     });
-                } catch (Exception e) {
+                } catch (Throwable t) {
+                    final String said = describeImportFailure(t);
                     runOnUiThread(() -> {
-                        statusText.setText("RAW加载失败 " + SpkError.shortForm(e.getMessage()));
-                        Toast.makeText(this, SpkError.format(e.getMessage()), Toast.LENGTH_LONG).show();
+                        statusText.setText("RAW加载失败 " + SpkError.shortForm(said));
+                        Toast.makeText(this, said, Toast.LENGTH_LONG).show();
                     });
                 }
             }).start();
-        } catch (Exception e) {
-            Toast.makeText(this, "RAW加载失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "RAW加载失败: " + describeImportFailure(t), Toast.LENGTH_LONG).show();
         }
     }
     
@@ -753,6 +874,98 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) { }
         return -1;
+    }
+
+    /**
+     * The image, decoded. `BitmapFactory` first -- the path every JPEG and PNG
+     * has always taken -- and `ImageDecoder` when that comes back empty.
+     *
+     * The second attempt is for HEIC/HEIF. Samsung and iPhone save 10-bit HEIF,
+     * `BitmapFactory.decodeStream` returns null on those (and reports no bounds
+     * at all for the sniff), while the platform decoder behind `ImageDecoder`
+     * (API 28+) hands back a software bitmap. The old code said "无法解码图片"
+     * and stopped -- which a Samsung user read, correctly, as "this app cannot
+     * import my photos".
+     */
+    private Bitmap decodeImport(Uri uri, int capPixels, int edgeCap) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream head = getContentResolver().openInputStream(uri)) {
+                if (head != null) BitmapFactory.decodeStream(head, null, bounds);
+            } catch (Throwable t) {
+                try { DebugSink.text("decode", "sniff " + t); } catch (Throwable ignored) { }
+            }
+            if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                int sample = 1;
+                while ((long) (bounds.outWidth / (sample * 2)) * (bounds.outHeight / (sample * 2)) >= capPixels
+                        || Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edgeCap) sample *= 2;
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inSampleSize = sample;
+                try (InputStream stream = getContentResolver().openInputStream(uri)) {
+                    Bitmap decoded = BitmapFactory.decodeStream(stream, null, opts);
+                    if (decoded != null) return decoded;
+                    try { DebugSink.text("decode", "null at sample " + sample); }
+                    catch (Throwable ignored) { }
+                } catch (Throwable t) {
+                    try { DebugSink.text("decode", "stream " + t); } catch (Throwable ignored) { }
+                }
+            } else {
+                try { DebugSink.text("decode", "no bounds " + bounds.outWidth + "x" + bounds.outHeight); }
+                catch (Throwable ignored) { }
+            }
+        } catch (Throwable t) {
+            try { DebugSink.text("decode", "outer " + t); } catch (Throwable ignored) { }
+        }
+        return decodeViaImageDecoder(uri, capPixels, edgeCap);
+    }
+
+    /**
+     * The platform decoder through its newer door, scaled in the decoder so the
+     * full-size bitmap never exists. **Software allocator on purpose**: a
+     * hardware bitmap cannot be read back with `getPixels`, and the import path
+     * reads every pixel into a float buffer.
+     */
+    private Bitmap decodeViaImageDecoder(Uri uri, final int capPixels, final int edgeCap) {
+        if (android.os.Build.VERSION.SDK_INT < 28) return null;
+        try {
+            final android.graphics.ImageDecoder.Source src =
+                    android.graphics.ImageDecoder.createSource(getContentResolver(), uri);
+            Bitmap decoded = android.graphics.ImageDecoder.decodeBitmap(src,
+                    (decoder, info, source) -> {
+                        final android.util.Size size = info.getSize();
+                        final int w = size.getWidth(), h = size.getHeight();
+                        double k = 1.0;
+                        final long area = (long) w * (long) h;
+                        if (area > capPixels) k = Math.min(k, Math.sqrt((double) capPixels / area));
+                        final int longEdge = Math.max(w, h);
+                        if (longEdge > edgeCap) k = Math.min(k, (double) edgeCap / longEdge);
+                        if (k < 1.0) {
+                            decoder.setTargetSize(Math.max(1, (int) Math.round(w * k)),
+                                                  Math.max(1, (int) Math.round(h * k)));
+                        }
+                        decoder.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
+                    });
+            try { DebugSink.text("decode", "imagedecoder " + decoded.getWidth() + "x"
+                    + decoded.getHeight()); } catch (Throwable ignored) { }
+            return decoded;
+        } catch (Throwable t) {
+            try { DebugSink.text("decode", "imagedecoder " + t); } catch (Throwable ignored) { }
+            return null;
+        }
+    }
+
+    /**
+     * A failure the user can act on. `OutOfMemoryError` is an `Error`, not an
+     * `Exception`, which is why the `catch (Exception)` this replaces let the
+     * process die on the Honor report instead of saying 内存不足.
+     */
+    private String describeImportFailure(Throwable t) {
+        try { DebugSink.text("import-error", String.valueOf(t)); } catch (Throwable ignored) { }
+        if (t instanceof OutOfMemoryError) {
+            return "[E-1003] 内存不足：这张图对本机太大。换一张小一点的，或先关掉其它应用再试";
+        }
+        return SpkError.format(t.getClass().getSimpleName() + ": " + t.getMessage());
     }
 
     private Bitmap applyExifRotation(Uri uri, Bitmap bitmap) {
@@ -918,8 +1131,42 @@ public class MainActivity extends Activity {
                     statusText.setText("渲染失败 " + SpkError.format(msg));
                     progressBar.setVisibility(View.GONE);
                 });
+                // E-1001 is "a plane is bigger than one binding may name", and
+                // the only cure is a smaller session. The import cap already
+                // answers for a normal import, so reaching here means the frame
+                // came in past it -- a native-size import, or a build that had
+                // no cap. Offering the retry beats printing a code and leaving
+                // the user to find the long-press menu.
+                if (SpkError.codeOf(msg) == 1001) offerSmallerImport();
             }
         }).start();
+    }
+
+    /**
+     * Re-import at a size this device can actually bind, then render again.
+     * One offer per import: a loop of dialogs is worse than the error.
+     */
+    private void offerSmallerImport() {
+        if (sourceUri == null || e1001Offered) return;
+        e1001Offered = true;
+        long target = probe.maxPixelsByBinding();
+        if (target == Long.MAX_VALUE) target = DeviceProbe.DISPATCH_PIXEL_CAP;
+        target = (long) (target * 0.75);
+        final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
+        if (byMemory > 0) target = Math.min(target, byMemory);
+        target = Math.max(1_000_000L, Math.min(target, 100_000_000L));
+        final long picking = target;
+        runOnUiThread(() -> new android.app.AlertDialog.Builder(this)
+                .setTitle("这张图超出本机的单缓冲上限")
+                .setMessage("按约 " + String.format("%.1f", picking / 1e6)
+                        + " MP 重新导入并渲染？画面会小一些，但能出图。")
+                .setPositiveButton("重试", (d, w) -> {
+                    pendingCapPixels = (int) picking;
+                    loadImage(sourceUri);
+                    if (session != null) renderImage();
+                })
+                .setNegativeButton("取消", null)
+                .show());
     }
 
     private void exportImage() {

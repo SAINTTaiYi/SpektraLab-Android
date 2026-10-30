@@ -14,19 +14,28 @@ public final class SpkError {
 
     private SpkError() {}
 
+    /**
+     * The stable code for a raw engine message, or 0 when the engine has no
+     * opinion. Callers that want to *act* on a failure branch on this: E-1001
+     * is the one with a cure (a smaller session), and a string compare on the
+     * wording would break the moment the wording improves.
+     */
+    public static int codeOf(String raw) {
+        if (raw == null || raw.isEmpty()) return 0;
+        try { return SpektraLabEngine.errorCode(raw); } catch (Throwable ignored) { return 0; }
+    }
+
     /** "[E-1001] 中文说明" plus the engine's own text, which carries the numbers. */
     public static String format(String raw) {
         if (raw == null || raw.isEmpty()) return "[E-0000] 未知错误";
-        int code = 9000;
-        try { code = SpektraLabEngine.errorCode(raw); } catch (Throwable ignored) { }
+        int code = codeOf(raw);
         if (code == 0) code = 9000;
-        return "[E-" + code + "] " + explain(code) + (raw.isEmpty() ? "" : "（" + raw + "）");
+        return "[E-" + code + "] " + explain(code) + "（" + raw + "）";
     }
 
     /** Short form for a status line, without the engine text. */
     public static String shortForm(String raw) {
-        int code = 9000;
-        try { code = SpektraLabEngine.errorCode(raw); } catch (Throwable ignored) { }
+        int code = codeOf(raw);
         if (code == 0) code = 9000;
         return "[E-" + code + "] " + explain(code);
     }

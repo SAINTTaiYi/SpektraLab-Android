@@ -1,3 +1,6 @@
 app/src/main/java/app/spektralab/DebugSink.java
+app/src/main/java/app/spektralab/DeviceProbe.java
 app/src/main/java/app/spektralab/MainActivity.java
+app/src/main/java/app/spektralab/SpkError.java
+app/src/main/java/app/spektralab/UpdateCheck.java
 app/src/main/java/app/spektralab/engine/SpektraLabEngine.java

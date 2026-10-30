@@ -65,6 +65,20 @@ public final class DeviceProbe {
                 : Long.MAX_VALUE;
     }
 
+    /**
+     * What the *living* system can take, which is the limit that actually
+     * bites once the binding cap is lifted: a whole-frame render holds seven
+     * live planes of 12 B/px (docs/tiling.md measures 7.0 at 20.3 and 50 MP
+     * alike). The 1.5 GiB reserve is this app's own host side plus whatever
+     * else the phone is running -- at 4.5 GB available that lands on 38 MP,
+     * which is where the measured ceiling sat.
+     */
+    public static long maxPixelsByMemory(long availableBytes) {
+        if (availableBytes <= 0) return DISPATCH_PIXEL_CAP;
+        final long reserve = 1536L << 20;   // 1.5 GiB: a frame that pushes the system into its low-memory killer costs more than it gives
+        return Math.max(0, availableBytes - reserve) / (12L * 7);
+    }
+
     /** Largest frame imported without asking. */
     public long maxPixels() {
         return Math.min(maxPixelsByBinding(), DISPATCH_PIXEL_CAP);
