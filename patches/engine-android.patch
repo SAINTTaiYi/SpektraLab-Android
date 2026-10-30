@@ -849,10 +849,18 @@ index 16014f3..39633aa 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/engine.cpp b/engine/src/pipeline/engine.cpp
-index ee4ffb0..ee5f2ec 100644
+index ee4ffb0..0528ce0 100644
 --- a/engine/src/pipeline/engine.cpp
 +++ b/engine/src/pipeline/engine.cpp
-@@ -317,6 +317,7 @@ struct spk_engine {
+@@ -57,6 +57,7 @@
+ #include "latitude_fit.hpp"
+ #include "params.hpp"
+ #include "pipeline.hpp"
++#include "tiling.hpp"
+ #include "print_lut.hpp"
+ #include "setup_cache.hpp"
+ #if !defined(__APPLE__) || defined(SPK_VULKAN_BACKEND)
+@@ -317,6 +318,7 @@ struct spk_engine {
      std::string cached_capabilities;
      std::string cached_schema;
      std::string cached_memory_report;
@@ -860,7 +868,19 @@ index ee4ffb0..ee5f2ec 100644
      std::vector<spk_session*> sessions;
      // RFC-020 §3.1: the frame the pool's buffers were made for. A pool is a
      // set of planes of *some* frame, and this is what says whether the frame
-@@ -605,6 +606,11 @@ const char* spk_last_error(spk_engine* engine) {
+@@ -571,9 +573,9 @@ bool downscale(gpu::Gpu* gpu, const Image& src, uint32_t max_size, Image& out, s
+     out.buf = gpu->alloc(out.bytes(), error);
+     if (!out.buf) return false;
+     const uint32_t meta[4] = {cur.h, cur.w, oh, ow};
+-    return gpu->dispatch("spk_zoom_bilinear_mirror",
++    return dispatch_tiled(gpu, "spk_zoom_bilinear_mirror",
+                          {gpu::Arg::buf(cur.buf), gpu::Arg::inline_bytes(meta, 4), gpu::Arg::buf(out.buf)},
+-                         out.pixels(), error);
++                         {0u, 0u, out.c * 4u}, out, out.pixels(), error);
+ }
+ 
+ }  // namespace
+@@ -605,6 +607,11 @@ const char* spk_last_error(spk_engine* engine) {
  
  void spk_string_free(char* s) { std::free(s); }
  
@@ -872,7 +892,7 @@ index ee4ffb0..ee5f2ec 100644
  spk_engine* spk_engine_create(const char* resources_dir, void* device) {
      g_error.clear();
      if (!resources_dir) { g_error = "resources_dir is null"; return nullptr; }
-@@ -669,6 +675,63 @@ const char* spk_capabilities(spk_engine* engine) {
+@@ -669,6 +676,63 @@ const char* spk_capabilities(spk_engine* engine) {
      return engine->cached_capabilities.c_str();
  }
  
@@ -936,7 +956,7 @@ index ee4ffb0..ee5f2ec 100644
  const char* spk_params_schema(spk_engine* engine) {
      return engine ? engine->cached_schema.c_str() : "";
  }
-@@ -1192,11 +1255,22 @@ bool materialise(spk_session* session, const Image& rgb, spk_result* out, std::s
+@@ -1192,11 +1256,22 @@ bool materialise(spk_session* session, const Image& rgb, spk_result* out, std::s
      gpu::BufferRef buffer = gpu->alloc_persistent(bytes, error);
      if (!buffer) return false;
  
@@ -964,8 +984,67 @@ index ee4ffb0..ee5f2ec 100644
      if (ok) {
          out->width = rgb.w;
          out->height = rgb.h;
+diff --git a/engine/src/pipeline/overscan.cpp b/engine/src/pipeline/overscan.cpp
+index 3a51683..b7feb7c 100644
+--- a/engine/src/pipeline/overscan.cpp
++++ b/engine/src/pipeline/overscan.cpp
+@@ -2290,10 +2290,12 @@ bool Pipeline::node_overscan(const Image& in, Image& out, std::string& error) {
+         canvas.buf = gpu_->alloc(canvas.bytes(), error);
+         if (!canvas.buf) return false;
+         const uint32_t n[1] = {uint32_t(canvas.pixels())};
+-        if (!gpu_->dispatch("spk_overscan_canvas",
++        // Composites the developed photo onto a canvas: the photo is gathered
++        // whole, the canvas is what bands.
++        if (!dispatch_plane("spk_overscan_canvas",
+                             {gpu::Arg::buf(in.buf), gpu::Arg::buf(pb), gpu::Arg::inline_bytes(n, 1),
+                              gpu::Arg::buf(canvas.buf)},
+-                            canvas.pixels(), error)) return false;
++                            {0u, 0u, 0u, canvas.c * 4u}, canvas, canvas.pixels(), error)) return false;
+     } else {
+         // The date alone, on the frame: an identity layout over the frame.
+         overscan_ = OverscanLayout{};
+@@ -2365,10 +2367,11 @@ bool Pipeline::node_overscan(const Image& in, Image& out, std::string& error) {
+         const float M[9] = {float(x0), float(y0), float(w), float(h), float(canvas.w), float(canvas.h),
+                             float(gg.exposure[0]), float(gg.exposure[1]), float(gg.exposure[2])};
+         const uint32_t n[1] = {uint32_t(size_t(w) * size_t(h))};
+-        if (!gpu_->dispatch("spk_overscan_add_mask",
++        if (!dispatch_plane("spk_overscan_add_mask",
+                             {gpu::Arg::buf(mb), gpu::Arg::inline_bytes(M, 9), gpu::Arg::inline_bytes(n, 1),
+                              gpu::Arg::buf(canvas.buf)},
+-                            size_t(w) * size_t(h), error)) return false;
++                            {0u, 0u, 0u, canvas.c * 4u}, canvas, size_t(w) * size_t(h),
++                            error)) return false;
+     }
+     out = canvas;
+     return true;
+@@ -2386,10 +2389,10 @@ bool Pipeline::node_overscan_film_present(const Image& in, Image& out, std::stri
+     gpu::BufferRef pb = gpu_->upload(P.data(), P.size() * sizeof(float), error);
+     if (!pb || !alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_overscan_film_present",
++    return dispatch_plane("spk_overscan_film_present",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(pb), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {0u, 0u, 0u, out.c * 4u}, out, in.pixels(), error);
+ }
+ 
+ bool Pipeline::node_overscan_light(const Image& in, Image& out, std::string& error) {
+@@ -2404,10 +2407,10 @@ bool Pipeline::node_overscan_light(const Image& in, Image& out, std::string& err
+     gpu::BufferRef pb = gpu_->upload(P.data(), P.size() * sizeof(float), error);
+     if (!pb || !alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_overscan_light",
++    return dispatch_plane("spk_overscan_light",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(pb), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {0u, 0u, 0u, out.c * 4u}, out, in.pixels(), error);
+ }
+ 
+ }  // namespace spk
 diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
-index 828ac50..34cbb47 100644
+index 828ac50..56c9d8b 100644
 --- a/engine/src/pipeline/pipeline.cpp
 +++ b/engine/src/pipeline/pipeline.cpp
 @@ -1,4 +1,5 @@
@@ -1032,7 +1111,33 @@ index 828ac50..34cbb47 100644
  }
  
  bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
-@@ -894,16 +901,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
+@@ -650,10 +657,10 @@ bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
+     if (!out.buf) return false;
+     const uint32_t flips = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
+     const uint32_t meta[6] = {in.h, in.w, oh, ow, turns, flips};
+-    return gpu_->dispatch("spk_geometry_resample_df",
++    return dispatch_plane("spk_geometry_resample_df",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(g_buf),
+                            gpu::Arg::inline_bytes(meta, 6), gpu::Arg::buf(out.buf)},
+-                          out.pixels(), error);
++                          {0u, 0u, 0u, out.c * 4u}, out, out.pixels(), error);
+ }
+ 
+ bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<double>& Y,
+@@ -671,9 +678,10 @@ bool Pipeline::exposure_sample_y(const Image& in, bool stride, std::vector<doubl
+     small.buf = gpu_->alloc(small.bytes(), error);
+     if (!small.buf) return false;
+     const uint32_t meta[4] = {in.w, small.h, small.w, step};
+-    if (!gpu_->dispatch("spk_stride_sample",
++    // A gather: the source stays bound whole, only the output bands.
++    if (!dispatch_plane("spk_stride_sample",
+                         {gpu::Arg::buf(in.buf), gpu::Arg::inline_bytes(meta, 4), gpu::Arg::buf(small.buf)},
+-                        small.pixels(), error)) return false;
++                        {0u, 0u, small.c * 4u}, small, small.pixels(), error)) return false;
+     std::vector<float> host;
+     if (!read_back(small, host, error)) return false;
+ 
+@@ -894,16 +902,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
      gpu::BufferRef b = gpu_->alloc(in.pixels() * sizeof(float), error);
      if (!tc.buf || !b) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1055,7 +1160,7 @@ index 828ac50..34cbb47 100644
  }
  
  bool Pipeline::node_exposure(const Image& in, Image& out, std::string& error) {
-@@ -951,10 +961,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
+@@ -951,10 +962,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1068,7 +1173,7 @@ index 828ac50..34cbb47 100644
  }
  
  // **The headroom a digital frame clipped off, given back to the negative.** A
-@@ -992,10 +1002,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
+@@ -992,10 +1003,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1081,7 +1186,7 @@ index 828ac50..34cbb47 100644
  }
  
  // --- the sigmas, in one place, because a demand must agree with its node ----
-@@ -1272,10 +1282,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
+@@ -1272,10 +1283,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1094,7 +1199,7 @@ index 828ac50..34cbb47 100644
  }
  
  // ---------------------------------------------------------------------------
-@@ -1297,11 +1307,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
+@@ -1297,11 +1308,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
      if (!alloc_like(cmy, corr, error)) return false;
      const uint32_t pos[1] = {params_.film.info.is_positive() ? 1u : 0u};
      const uint32_t n[1] = {uint32_t(cmy.pixels())};
@@ -1108,7 +1213,7 @@ index 828ac50..34cbb47 100644
                          cmy.pixels(), error)) return false;
  
      const std::vector<Blur::Component> diffusion = dir_coupler_diffusion();
-@@ -1393,11 +1404,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1393,11 +1405,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
              if (!alloc_like(in, grain, error)) return false;
              const uint32_t meta[4] = {uint32_t(k), uint32_t(in.pixels()),
                                        params_.film.info.is_positive() ? 1u : 0u, seed};
@@ -1122,7 +1227,7 @@ index 828ac50..34cbb47 100644
                                  in.pixels(), error)) return false;
          } else {
              // The dye-cloud blur is per (sub-layer, channel), so each
-@@ -1412,11 +1424,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1412,11 +1425,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
                  if (!alloc_like(in, layer, error)) return false;
                  const uint32_t meta[5] = {uint32_t(k), uint32_t(in.pixels()),
                                            params_.film.info.is_positive() ? 1u : 0u, seed, sl};
@@ -1136,7 +1241,7 @@ index 828ac50..34cbb47 100644
                                      in.pixels(), error)) return false;
                  double sigma[3];
                  for (int ch = 0; ch < 3; ++ch)
-@@ -1448,9 +1461,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1448,9 +1462,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          if (!lp_buf || !streams_buf) return false;
          if (!alloc_like(in, grain, error)) return false;
          const uint32_t meta[3] = {uint32_t(in.pixels()), uint32_t(nsub), seed};
@@ -1148,7 +1253,7 @@ index 828ac50..34cbb47 100644
                              in.pixels(), error)) return false;
          double s[3], t0[3];
          fill3(s, 1.0 / double(nsub));
-@@ -1483,10 +1497,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1483,10 +1498,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          Image multiplied;
          if (!alloc_like(grain, multiplied, error)) return false;
          const uint32_t n[1] = {uint32_t(grain.elements())};
@@ -1161,7 +1266,7 @@ index 828ac50..34cbb47 100644
          grain = multiplied;
      }
      double s[3], t0[3];
-@@ -1620,10 +1634,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
+@@ -1620,10 +1635,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1174,7 +1279,7 @@ index 828ac50..34cbb47 100644
  }
  
  bool Pipeline::node_print_curves(const Image& in, Image& out, std::string& error) {
-@@ -1687,9 +1701,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
+@@ -1687,9 +1702,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
      if (!p_buf) return false;
      if (!alloc_like(positive, out, error)) return false;
      const uint32_t n[1] = {uint32_t(positive.pixels())};
@@ -1186,7 +1291,7 @@ index 828ac50..34cbb47 100644
                            positive.pixels(), error);
  }
  
-@@ -1707,10 +1722,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
+@@ -1707,10 +1723,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1199,7 +1304,7 @@ index 828ac50..34cbb47 100644
  }
  
  bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
-@@ -1743,11 +1758,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
+@@ -1743,11 +1759,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
      }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1213,7 +1318,7 @@ index 828ac50..34cbb47 100644
  }
  
  bool Pipeline::node_xyz_to_rgb(const Image& in, Image& out, std::string& error) {
-@@ -1763,11 +1778,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
+@@ -1763,11 +1779,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
      if (!baked_.edr_params || !baked_.edr_lut) { error = "EDR calibration is not available"; return false; }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1227,7 +1332,7 @@ index 828ac50..34cbb47 100644
  }
  
  bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& error) {
-@@ -1776,12 +1791,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
+@@ -1776,12 +1792,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[4] = {uint32_t(in.pixels()), uint32_t(baked_.cam16_nl),
                                uint32_t(baked_.cam16_nh), baked_.cam16_lightness ? 1u : 0u};
@@ -1261,6 +1366,25 @@ index 5fd77be..1e4b75e 100644
      bool curve_interp(const Image& x, const gpu::BufferRef& xa, const gpu::BufferRef& inv,
                        const gpu::BufferRef& y, size_t k, Image& out, std::string& error);
      bool matmul3(const Image& x, const gpu::BufferRef& m, Image& out, std::string& error);
+diff --git a/engine/src/pipeline/view_process.cpp b/engine/src/pipeline/view_process.cpp
+index e8d930b..24fdbda 100644
+--- a/engine/src/pipeline/view_process.cpp
++++ b/engine/src/pipeline/view_process.cpp
+@@ -1,4 +1,5 @@
+ #include "view_process.hpp"
++#include "tiling.hpp"
+ #include <algorithm>
+ #include <array>
+ #include <chrono>
+@@ -49,7 +50,7 @@ Image allocate(gpu::Gpu* gpu,uint32_t w,uint32_t h,std::string& error) {
+ bool resample(gpu::Gpu* gpu,Image& current,uint32_t w,uint32_t h,const float* geo,uint32_t turns,uint32_t flips,std::string& error) {
+     Image next=allocate(gpu,w,h,error);if(!next.valid())return false;
+     uint32_t meta[]={current.w,current.h,w,h,turns,flips};
+-    if(!gpu->dispatch("spk_view_geometry",{Arg::buf(current.buf),Arg::inline_bytes(geo,7),Arg::inline_bytes(meta,6),Arg::buf(next.buf)},next.pixels(),error)||!gpu->flush(error))return false;
++    if(!dispatch_tiled(gpu, "spk_view_geometry",{Arg::buf(current.buf),Arg::inline_bytes(geo,7),Arg::inline_bytes(meta,6),Arg::buf(next.buf)},{0u,0u,0u,next.c*4u},next,next.pixels(),error)||!gpu->flush(error))return false;
+     current=std::move(next);return true;
+ }
+ std::vector<float> floats(const Json& j,size_t n) {
 diff --git a/engine/src/shaders/vulkan/spk_affine3.comp b/engine/src/shaders/vulkan/spk_affine3.comp
 index 76b28db..fb052cd 100644
 --- a/engine/src/shaders/vulkan/spk_affine3.comp
@@ -1630,7 +1754,7 @@ index 761d65d..11bba89 100644
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_geometry_resample_df.comp b/engine/src/shaders/vulkan/spk_geometry_resample_df.comp
-index 7bcd954..0ded279 100644
+index 7bcd954..a591e54 100644
 --- a/engine/src/shaders/vulkan/spk_geometry_resample_df.comp
 +++ b/engine/src/shaders/vulkan/spk_geometry_resample_df.comp
 @@ -15,8 +15,17 @@ layout(set = 0, binding = 3, std430) writeonly buffer Output { float value[]; }
@@ -1652,7 +1776,7 @@ index 7bcd954..0ded279 100644
  }
  
  vec2 two_sum(float a, float b) {
-@@ -69,6 +78,15 @@ vec2 pair_at(uint index) {
+@@ -69,13 +78,23 @@ vec2 pair_at(uint index) {
      return vec2(geometry.value[2u * index], geometry.value[2u * index + 1u]);
  }
  
@@ -1668,6 +1792,16 @@ index 7bcd954..0ded279 100644
  void main() {
      uint i = spk_global_index();
      uint sh = meta.value[0], sw = meta.value[1];
+     uint oh = meta.value[2], ow = meta.value[3];
+     uint turns = meta.value[4], flips = meta.value[5];
+-    if (i >= oh * ow) return;
+-    uint oy = i / ow, ox = i % ow;
++    uint abs_i = spk_pc.origin + i;
++    if (abs_i >= oh * ow) return;
++    uint oy = abs_i / ow, ox = abs_i % ow;
+     precise float u = float(ox) + 0.5;
+     precise float v = float(oy) + 0.5;
+     if ((flips & 1u) != 0u) u = float(ow) - u;
 diff --git a/engine/src/shaders/vulkan/spk_glare_add.comp b/engine/src/shaders/vulkan/spk_glare_add.comp
 index a2b06b0..0f39f6b 100644
 --- a/engine/src/shaders/vulkan/spk_glare_add.comp
@@ -2206,7 +2340,7 @@ index 240ecea..1702dcb 100644
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_overscan_body.glsl b/engine/src/shaders/vulkan/spk_overscan_body.glsl
-index bbef95b..b607453 100644
+index bbef95b..3a2ec39 100644
 --- a/engine/src/shaders/vulkan/spk_overscan_body.glsl
 +++ b/engine/src/shaders/vulkan/spk_overscan_body.glsl
 @@ -1,3 +1,8 @@
@@ -2218,7 +2352,7 @@ index bbef95b..b607453 100644
  // Ported from the pinned upstream overscan.metal; parameter indices and
  // physical exposure/film/scan stages are shared with overscan.cpp.
  layout(local_size_x = 256) in;
-@@ -193,8 +198,17 @@ vec3 sample_frame(float fx, float fy, uint fw, uint fh) {
+@@ -193,11 +198,21 @@ vec3 sample_frame(float fx, float fy, uint fw, uint fh) {
  
  // ① + ② + the fog of ③: raw exposure on the film canvas.
  #if defined(SPK_OVERSCAN_CANVAS)
@@ -2234,36 +2368,52 @@ index bbef95b..b607453 100644
  void main() {
 -    const uint i = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    const uint i = spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++    const uint abs_i = spk_pc.origin + i;   // canvas position; i addresses the window
      if (i >= count.v[0]) return;
      const uint cw = uint(params.v[P_CW]);
-     const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
-@@ -256,7 +270,7 @@ void main() {
+-    const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
++    const vec2 st = canvas_to_film(float(abs_i % cw), float(abs_i / cw));
+     const float W = params.v[P_FILM_W];
+     vec3 e = vec3(0.0f);
+     if (params.v[P_CARRIER] > 1.5f || (st.y >= 0.0f && st.y <= W)) {
+@@ -256,10 +271,11 @@ void main() {
  // M = {x0, y0, mw, mh, cw, ch, e_r, e_g, e_b}.
  #if defined(SPK_OVERSCAN_ADD_MASK)
  void main() {
 -    const uint i = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    const uint i = spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++    const uint abs_i = spk_pc.origin + i;   // canvas position; i addresses the window
      if (i >= count.v[0]) return;
      const uint mw = uint(params.v[2]);
-     const int x = int(params.v[0]) + int(i % mw), y = int(params.v[1]) + int(i / mw);
-@@ -351,7 +365,7 @@ float film_alpha(vec2 st) {
+-    const int x = int(params.v[0]) + int(i % mw), y = int(params.v[1]) + int(i / mw);
++    const int x = int(params.v[0]) + int(abs_i % mw), y = int(params.v[1]) + int(abs_i / mw);
+     if (x < 0 || y < 0 || x >= int(params.v[4]) || y >= int(params.v[5])) return;
+     const float c = src.v[i];
+     if (c <= 0.0f) return;
+@@ -351,7 +367,8 @@ float film_alpha(vec2 st) {
  // the enlarger or the scanner sees clear light.
  #if defined(SPK_OVERSCAN_FILM_PRESENT)
  void main() {
 -    const uint i = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    const uint i = spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++    const uint abs_i = spk_pc.origin + i;   // canvas position; i addresses the window
      if (i >= count.v[0]) return;
      const uint cw = uint(params.v[P_CW]);
      const float a = film_alpha(canvas_to_film(float(i % cw), float(i / cw)));
-@@ -375,7 +389,7 @@ void main() {
+@@ -375,10 +392,11 @@ void main() {
  // after the scanner's blur and sharpening (the edge's softness is `film_alpha`'s).
  #if defined(SPK_OVERSCAN_LIGHT)
  void main() {
 -    const uint i = gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
 +    const uint i = spk_pc.base + gl_GlobalInvocationID.y * (gl_NumWorkGroups.x * gl_WorkGroupSize.x) + gl_GlobalInvocationID.x;
++    const uint abs_i = spk_pc.origin + i;   // canvas position; i addresses the window
      if (i >= count.v[0]) return;
      const uint cw = uint(params.v[P_CW]);
-     const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
+-    const vec2 st = canvas_to_film(float(i % cw), float(i / cw));
++    const vec2 st = canvas_to_film(float(abs_i % cw), float(abs_i / cw));
+     const float a = film_alpha(st);
+     const bool white = params.v[P_HOLES_LIGHT] > 0.5f;
+     vec3 light = vec3(params.v[P_LIGHT_R], params.v[P_LIGHT_G], params.v[P_LIGHT_B]);
 diff --git a/engine/src/shaders/vulkan/spk_print_exposure.comp b/engine/src/shaders/vulkan/spk_print_exposure.comp
 index 8046d45..4f5ad7d 100644
 --- a/engine/src/shaders/vulkan/spk_print_exposure.comp
@@ -2482,7 +2632,7 @@ index 23f9789..ef7a27c 100644
  
  void main() {
 diff --git a/engine/src/shaders/vulkan/spk_stride_sample.comp b/engine/src/shaders/vulkan/spk_stride_sample.comp
-index a5557eb..a137c5f 100644
+index a5557eb..3a7c346 100644
 --- a/engine/src/shaders/vulkan/spk_stride_sample.comp
 +++ b/engine/src/shaders/vulkan/spk_stride_sample.comp
 @@ -9,8 +9,26 @@ layout(set = 0, binding = 2, std430) writeonly buffer Output { float value[]; }
@@ -2513,6 +2663,20 @@ index a5557eb..a137c5f 100644
  }
  
  void main() {
+@@ -19,8 +37,11 @@ void main() {
+     uint output_height = meta.value[1];
+     uint output_width = meta.value[2];
+     uint step = meta.value[3];
+-    if (i >= output_height * output_width) return;
+-    uint y = i / output_width;
++    // Geometry from the frame index, addresses from the window: this kernel
++    // gathers from another grid, so only its output is banded.
++    uint abs_i = spk_pc.origin + i;
++    if (abs_i >= output_height * output_width) return;
++    uint y = abs_i / output_width;
+     uint x = i % output_width;
+     uint source = (y * step) * source_width + x * step;
+     for (uint c = 0; c < 3; ++c)
 diff --git a/engine/src/shaders/vulkan/spk_take_rgb.comp b/engine/src/shaders/vulkan/spk_take_rgb.comp
 index 34ed087..8c4640d 100644
 --- a/engine/src/shaders/vulkan/spk_take_rgb.comp
@@ -2618,10 +2782,10 @@ index 216750f..9304d94 100644
      uint row = i / meta.value[1], column = i % meta.value[1];
      uint dst = row * meta.value[2] + column;
 diff --git a/engine/src/shaders/vulkan/spk_view_geometry.comp b/engine/src/shaders/vulkan/spk_view_geometry.comp
-index 194c5da..39a3a30 100644
+index 194c5da..ece8b82 100644
 --- a/engine/src/shaders/vulkan/spk_view_geometry.comp
 +++ b/engine/src/shaders/vulkan/spk_view_geometry.comp
-@@ -1,11 +1,26 @@
+@@ -1,14 +1,29 @@
  #version 450
 +
 +// base   this dispatch's first element inside its binding window
@@ -2647,8 +2811,13 @@ index 194c5da..39a3a30 100644
 +}
 +
  void main(){
-  uint i=index1D(); if(i>=m.v[2]*m.v[3])return;
-  vec2 p=(vec2(i%m.v[2],i/m.v[2])+0.5)/vec2(m.v[2],m.v[3]);
+- uint i=index1D(); if(i>=m.v[2]*m.v[3])return;
+- vec2 p=(vec2(i%m.v[2],i/m.v[2])+0.5)/vec2(m.v[2],m.v[3]);
++ uint i=index1D(); uint abs_i=spk_pc.origin+i; if(abs_i>=m.v[2]*m.v[3])return;
++ vec2 p=(vec2(abs_i%m.v[2],abs_i/m.v[2])+0.5)/vec2(m.v[2],m.v[3]);
+  if((m.v[5]&1u)!=0u)p.x=1.0-p.x; if((m.v[5]&2u)!=0u)p.y=1.0-p.y;
+  if(m.v[4]==1u)p=vec2(p.y,1.0-p.x); else if(m.v[4]==2u)p=1.0-p; else if(m.v[4]==3u)p=vec2(1.0-p.y,p.x);
+  float px=(p.x-0.5)*u.v[2],py=(p.y-0.5)*u.v[3]*u.v[6];
 diff --git a/engine/src/shaders/vulkan/spk_view_grade_body.glsl b/engine/src/shaders/vulkan/spk_view_grade_body.glsl
 index dfe49ac..e3d63ab 100644
 --- a/engine/src/shaders/vulkan/spk_view_grade_body.glsl
@@ -2760,7 +2929,7 @@ index f8ab7a9..c9ee8a1 100644
   vec2 p=vec2(float(i%m.v[1]),float(i/m.v[1]))+0.5;
   vec3 c=rgb(base.v[2u*i],base.v[2u*i+1u]);
 diff --git a/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp b/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp
-index 5425a64..98e553d 100644
+index 5425a64..77db464 100644
 --- a/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp
 +++ b/engine/src/shaders/vulkan/spk_zoom_bilinear_mirror.comp
 @@ -8,8 +8,17 @@ layout(std430, binding = 2) writeonly buffer Out { float dst[]; };
@@ -2782,7 +2951,7 @@ index 5425a64..98e553d 100644
  }
  
  // Pair layout is {low, high}. Use exact two-word integer arithmetic instead
-@@ -71,6 +80,15 @@ void sample_axis(uint o, uint in_len, uint out_len, out uint i0, out uint i1, ou
+@@ -71,11 +80,21 @@ void sample_axis(uint o, uint in_len, uint out_len, out uint i0, out uint i1, ou
      t = numerator / denominator;
  }
  
@@ -2798,6 +2967,14 @@ index 5425a64..98e553d 100644
  void main() {
      uint i = spk_global_index();
      uint SH = meta[0], SW = meta[1], OH = meta[2], OW = meta[3];
+-    if (i >= OH * OW) return;
+-    uint oy = i / OW, ox = i % OW;
++    uint abs_i = spk_pc.origin + i;
++    if (abs_i >= OH * OW) return;
++    uint oy = abs_i / OW, ox = abs_i % OW;
+     uint ya, yb, xa, xb; float ty, tx;
+     sample_axis(oy, SH, OH, ya, yb, ty);
+     sample_axis(ox, SW, OW, xa, xb, tx);
 diff --git a/engine/third_party/volk/volk.c b/engine/third_party/volk/volk.c
 index 6a86f10..ba62608 100644
 --- a/engine/third_party/volk/volk.c

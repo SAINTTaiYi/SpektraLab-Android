@@ -227,6 +227,27 @@ push constant 被后一块覆盖（改成每块单独提交，无变化）、矩
 
 验证：全部阶段一起分带，每带 4 / 16 / 64 行，哈希均为 `0b3c0685f4c262d7`。
 
+## cross_grid 的 8 个：源整块，输出分带
+
+`stride_sample`、`zoom_bilinear_mirror`、`geometry_resample_df`、`view_geometry`、
+`overscan_canvas` / `add_mask` / `film_present` / `light` 都是**跨网格取数**：按映射坐标
+从另一张网格里读，写入自己这一格。所以它们的处理和其它阶段不同：
+
+- 源参数**保持整块绑定**（`stride = 0`）
+- 只有输出分带
+- shader 里几何用 `origin + i`（`abs_i`），写回仍用 `i`
+
+未分带时 `origin = 0`，`abs_i` 就是 `i`，与旧行为完全一致。
+
+验证：全部阶段一起分带（含这 8 个），每带 4 / 16 / 64 行，哈希都是 `0b3c0685f4c262d7`。
+
+## 剩下的未分带阶段
+
+`iir_df_acc`（一个线程负责整列，线程数只有 width，**碰不到 2²⁴ 的墙**）、
+`reduce_max`（全局归约，不可切）、以及若干编码/打包阶段
+（`cctf_encode_matrix`、`to_rgba16`、`view_pack`、`view_pair`、`lut3d_trilinear`、
+`di_normalise`、`spectral_epilogue`、`lognormal_field`、`scene_latitude`、`cctf_decode`、`matmul3`）。
+
 ## 实施顺序
 
 1. `Arg` 增加 `(offset, range)`；`dispatch()` 绑定窗口；size 检查用 `range`。
