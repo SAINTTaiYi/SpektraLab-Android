@@ -1298,7 +1298,7 @@ index 3a51683..b7feb7c 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
-index 828ac50..fde6110 100644
+index 828ac50..79fbd8f 100644
 --- a/engine/src/pipeline/pipeline.cpp
 +++ b/engine/src/pipeline/pipeline.cpp
 @@ -1,4 +1,5 @@
@@ -1639,7 +1639,25 @@ index 828ac50..fde6110 100644
  }
  
  // ---------------------------------------------------------------------------
-@@ -2213,6 +2230,12 @@ bool Pipeline::run_stages_striped(const Stage* stages, size_t count, Chain& chai
+@@ -2150,6 +2167,17 @@ std::vector<StripSpan> Pipeline::strip_plan(uint32_t plane_h) const {
+ }
+ 
+ bool Pipeline::run_film(const Image& in, Image& out, Progress* progress, std::string& error) {
++    if (std::getenv("SPK_VK_LOG")) {
++        // What each film stage asks of a band boundary: halo rows, or a carried
++        // state that a row band cannot provide.
++        for (size_t i = 0; i < kFilmStageCount; ++i) {
++            const char* cls = class_name(kFilmStages[i].klass);
++            uint32_t halo = 0; bool carried = false;
++            if (kFilmStages[i].demand) { const Blur::Demand d = (this->*kFilmStages[i].demand)(); halo = d.halo; carried = d.carried; }
++            std::fprintf(stderr, "[film] %-22s %-14s halo=%u carried=%d\n",
++                         kFilmStages[i].name, cls, halo, int(carried));
++        }
++    }
+     if (!built_) { error = "pipeline was not built"; return false; }
+     progress_ = progress;
+     if (progress_) { progress_->total_nodes = node_count_; progress_->fired = 0; }
+@@ -2213,6 +2241,12 @@ bool Pipeline::run_stages_striped(const Stage* stages, size_t count, Chain& chai
              // or more strips with two F stages in one run.
              while (j < count && band_able[j]) { halo += halos[j]; ++j; }
              for (size_t k = i; k < j; ++k) report.stages[k].halo = halo;
