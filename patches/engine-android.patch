@@ -152,7 +152,7 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..51f5448 100644
+index 8d6b100..58a42b6 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
 @@ -20,8 +20,10 @@
@@ -432,7 +432,7 @@ index 8d6b100..51f5448 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +733,31 @@ public:
+@@ -623,11 +733,36 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -444,11 +444,15 @@ index 8d6b100..51f5448 100644
 +            const uint64_t bind_range = args[i].range ? args[i].range : uint64_t(b->bytes);
 +            if (bind_offset % 4 != 0 || bind_range == 0 ||
 +                bind_offset + bind_range > uint64_t(b->bytes)) {
-+                error = std::string(kernel) + ": window argument " + std::to_string(i) +
-+                        " is outside its buffer";
-                 return false;
-             }
--            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
++                char detail[256];
++                std::snprintf(detail, sizeof detail,
++                              ": window argument %zu [%llu, %llu) is outside its %llu-byte buffer",
++                              i, (unsigned long long)bind_offset,
++                              (unsigned long long)(bind_offset + bind_range),
++                              (unsigned long long)b->bytes);
++                error = std::string(kernel) + detail;
++                return false;
++            }
 +            if (bind_range > storage_range_limit_) {
 +                // Say both numbers: the caller chooses the frame size, and a
 +                // bare "exceeds the limit" leaves them guessing whether the
@@ -461,45 +465,61 @@ index 8d6b100..51f5448 100644
 +                              double(storage_range_limit_) / 1048576.0,
 +                              double(storage_range_limit_) / 12.0 / 1e6);
 +                error = std::string(kernel) + detail;
-+                return false;
-+            }
+                 return false;
+             }
+-            infos[i] = {b->handle, 0, VkDeviceSize(b->bytes)};
 +            infos[i] = {b->handle, VkDeviceSize(bind_offset), VkDeviceSize(bind_range)};
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,18 +797,95 @@ public:
+@@ -667,18 +802,104 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
+-        const bool submitted = submit_sync([&](VkCommandBuffer command) {
+-                device_barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+-                               VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+-                vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
+-                vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->layout,
+-                                        0, 1, &set, 0, nullptr);
+-                vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
+-            }, "Vulkan compute dispatch", error);
 +        const std::string op_label = std::string("Vulkan compute dispatch ") +
 +                                     (kernel ? kernel : "?");
 +        if (chunks > 1)
 +            spk_vk_log("dispatch-split %s threads=%zu groups=%zu chunks=%zu max_x=%zu",
 +                       kernel ? kernel : "?", n_threads, groups, chunks, max_x);
-         const bool submitted = submit_sync([&](VkCommandBuffer command) {
-                 device_barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-                 vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
-                 vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->layout,
-                                         0, 1, &set, 0, nullptr);
--                vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
--            }, "Vulkan compute dispatch", error);
-+                if (!chunk_safe) {
-+                    const uint32_t words[2] = {0u, origin};
-+                    vkCmdPushConstants(command, pipeline->layout, VK_SHADER_STAGE_COMPUTE_BIT,
-+                                       0, sizeof words, words);
-+                    vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
-+                } else {
-+                    for (size_t chunk = 0; chunk < chunks; ++chunk) {
-+                        const size_t first = chunk * max_x;
-+                        const uint32_t this_groups = uint32_t(std::min(groups - first, max_x));
-+                        const uint32_t words[2] = {uint32_t(first * spec->workgroup), origin};
-+                        vkCmdPushConstants(command, pipeline->layout, VK_SHADER_STAGE_COMPUTE_BIT,
-+                                           0, sizeof words, words);
-+                        vkCmdDispatch(command, this_groups, 1, 1);
-+                    }
-+                }
-+            }, op_label.c_str(), error);
++        // **One submit per chunk**, not one submit holding every chunk. This
++        // driver applies a command buffer's push constants as submit-time state:
++        // with the chunks recorded back to back, every dispatch ran with the
++        // *last* chunk's base. Above 16,777,216 elements -- the first count that
++        // needs a second chunk of more than one workgroup -- that silently
++        // replaced the head of the frame with the tail's values.
++        bool submitted = true;
++        auto record = [&](VkCommandBuffer command, uint32_t first_groups, uint32_t first_element) {
++            device_barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++                           VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
++            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->pipeline);
++            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->layout,
++                                    0, 1, &set, 0, nullptr);
++            const uint32_t words[2] = {first_element, origin};
++            vkCmdPushConstants(command, pipeline->layout, VK_SHADER_STAGE_COMPUTE_BIT,
++                               0, sizeof words, words);
++            if (!chunk_safe) vkCmdDispatch(command, uint32_t(groups_x), uint32_t(groups_y), 1);
++            else vkCmdDispatch(command, first_groups, 1, 1);
++        };
++        if (!chunk_safe) {
++            submitted = submit_sync([&](VkCommandBuffer command) { record(command, 0u, 0u); },
++                                    op_label.c_str(), error);
++        } else {
++            for (size_t chunk = 0; chunk < chunks && submitted; ++chunk) {
++                const size_t first = chunk * max_x;
++                const uint32_t this_groups = uint32_t(std::min(groups - first, max_x));
++                const uint32_t base = uint32_t(first * spec->workgroup);
++                submitted = submit_sync([&](VkCommandBuffer command) { record(command, this_groups, base); },
++                                        op_label.c_str(), error);
++            }
++        }
          vkDestroyDescriptorPool(device_, descriptor_pool, nullptr);
          return submitted;
      }
@@ -565,7 +585,7 @@ index 8d6b100..51f5448 100644
      bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
      void* texture(Buffer* buffer, uint32_t width, uint32_t height,
                    uint32_t row_stride_px, std::string& error) override {
-@@ -745,7 +952,7 @@ public:
+@@ -745,7 +966,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -574,7 +594,7 @@ index 8d6b100..51f5448 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +974,7 @@ private:
+@@ -767,7 +988,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -583,7 +603,7 @@ index 8d6b100..51f5448 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +986,7 @@ private:
+@@ -779,6 +1000,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -591,7 +611,7 @@ index 8d6b100..51f5448 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +1013,8 @@ private:
+@@ -805,6 +1027,8 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -600,7 +620,7 @@ index 8d6b100..51f5448 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -1015,7 +1225,7 @@ private:
+@@ -1015,7 +1239,7 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -609,7 +629,7 @@ index 8d6b100..51f5448 100644
                  "{\"vulkan_allocation\":\"%s\",\"bytes\":%zu,\"allocation_bytes\":%llu,"
                  "\"memory_type\":%u,\"memory_flags\":%u,\"heap\":%u}\n",
                  staging ? (readback ? "read_staging" : "upload_staging") : "compute",
-@@ -1073,10 +1283,24 @@ private:
+@@ -1073,10 +1297,24 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -634,7 +654,7 @@ index 8d6b100..51f5448 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
-@@ -1115,6 +1339,10 @@ private:
+@@ -1115,6 +1353,10 @@ private:
      VkPhysicalDeviceProperties properties_{};
      // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
      VkDeviceSize storage_range_limit_ = 0;
@@ -698,17 +718,18 @@ index af0a382..7c37595 100644
  // Experimental expanded-output policy for conventional three-colour Bayer
  // RAW only. As-shot WB is normalised by its largest multiplier (highlight=1)
 diff --git a/engine/src/pipeline/blur.cpp b/engine/src/pipeline/blur.cpp
-index 16014f3..4e0ffb2 100644
+index 16014f3..fd03887 100644
 --- a/engine/src/pipeline/blur.cpp
 +++ b/engine/src/pipeline/blur.cpp
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  #include "blur.hpp"
++#include "tiling.hpp"
  
 +#include <algorithm>
  #include <cmath>
  #include <cstring>
  
-@@ -125,18 +126,38 @@ bool Blur::iir(const Image& img, const double sigmas[3], const bool active[3],
+@@ -125,18 +127,38 @@ bool Blur::iir(const Image& img, const double sigmas[3], const bool active[3],
      //
      // The first pass is plain and the second carries the mixture's multiply-add,
      // which is also where the fused multiply-add landed in the transposed path.
@@ -759,6 +780,32 @@ index 16014f3..4e0ffb2 100644
      // What a `Swept` stage reports: this pass covers the plane once, as one
      // span, whatever the executor's plan says -- the plan is about bands and
      // this never makes one. Filled here rather than by the caller, so the
+@@ -281,10 +303,10 @@ bool Blur::lincomb(const Image& x, const Image& y, const double a[3], const doub
+     if (!ab || !bb) return false;
+     if (!alloc_like(x, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(x.elements())};
+-    return gpu_->dispatch("spk_lincomb3",
++    return dispatch_tiled(gpu_, "spk_lincomb3",
+                           {gpu::Arg::buf(x.buf), gpu::Arg::buf(y.buf), gpu::Arg::buf(ab),
+                            gpu::Arg::buf(bb), gpu::Arg::inline_bytes(n, 1), gpu::Arg::buf(out.buf)},
+-                          x.elements(), error);
++                          {4u, 4u, 0u, 0u, 0u, 4u}, x, x.elements(), error);
+ }
+ 
+ bool Blur::affine(const Image& x, const double s[3], const double t[3], Image& out, std::string& error) {
+@@ -295,10 +317,10 @@ bool Blur::affine(const Image& x, const double s[3], const double t[3], Image& o
+     if (!sb || !tb) return false;
+     if (!alloc_like(x, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(x.elements())};
+-    return gpu_->dispatch("spk_affine3",
++    return dispatch_tiled(gpu_, "spk_affine3",
+                           {gpu::Arg::buf(x.buf), gpu::Arg::buf(sb), gpu::Arg::buf(tb),
+                            gpu::Arg::inline_bytes(n, 1), gpu::Arg::buf(out.buf)},
+-                          x.elements(), error);
++                          {4u, 0u, 0u, 0u, 4u}, x, x.elements(), error);
+ }
+ 
+ }  // namespace spk
 diff --git a/engine/src/pipeline/engine.cpp b/engine/src/pipeline/engine.cpp
 index ee4ffb0..ee5f2ec 100644
 --- a/engine/src/pipeline/engine.cpp
@@ -876,69 +923,23 @@ index ee4ffb0..ee5f2ec 100644
          out->width = rgb.w;
          out->height = rgb.h;
 diff --git a/engine/src/pipeline/pipeline.cpp b/engine/src/pipeline/pipeline.cpp
-index 828ac50..192fd32 100644
+index 828ac50..34cbb47 100644
 --- a/engine/src/pipeline/pipeline.cpp
 +++ b/engine/src/pipeline/pipeline.cpp
-@@ -492,23 +492,81 @@ bool Pipeline::build(const Params& params, std::string& error) {
+@@ -1,4 +1,5 @@
+ #include "pipeline.hpp"
++#include "tiling.hpp"
+ #include "timer.hpp"
+ #include "halation_psf.hpp"
+ #if !defined(__APPLE__) || defined(SPK_VULKAN_BACKEND)
+@@ -492,23 +493,29 @@ bool Pipeline::build(const Params& params, std::string& error) {
  // small dispatch helpers
  // ---------------------------------------------------------------------------
  
 +bool Pipeline::dispatch_plane(const char* kernel, const std::vector<gpu::Arg>& args,
 +                              const std::vector<uint32_t>& strides, const Image& shape,
 +                              size_t elements, std::string& error) {
-+    std::vector<uint32_t> plan_strides(args.size(), 0u);
-+    uint32_t widest = 0;
-+    for (size_t i = 0; i < strides.size() && i < args.size(); ++i) {
-+        plan_strides[i] = strides[i];
-+        if (strides[i]) widest = std::max(widest, strides[i]);
-+    }
-+    // Two dispatch shapes are in use: one thread per pixel, and one per
-+    // element (three per pixel). A band is still whole rows either way.
-+    uint32_t columns = 0;
-+    if (shape.w && shape.h) {
-+        if (elements == shape.pixels()) columns = shape.w;
-+        else if (elements == shape.elements()) columns = shape.w * shape.c;
-+    }
-+    if (!widest || !columns)
-+        return gpu_->dispatch(kernel, args, elements, error);
-+
-+    static const uint32_t forced = [] {
-+        const char* v = std::getenv("SPK_FORCE_BAND_ROWS");
-+        return v ? uint32_t(std::atoi(v)) : 0u;
-+    }();
-+    if (forced) {
-+        const char* only = std::getenv("SPK_FORCE_BAND_ONLY");
-+        if (only && *only && std::strcmp(only, kernel) != 0)
-+            return gpu_->dispatch(kernel, args, elements, error);
-+    }
-+
-+    if (const char* dbg = std::getenv("SPK_TILE_DEBUG")) {
-+        if (*dbg == '1')
-+            std::fprintf(stderr, "[tile] %s elements=%zu w=%u h=%u c=%u columns=%u widest=%u\n",
-+                         kernel, elements, shape.w, shape.h, shape.c, columns, widest);
-+    }
-+    const uint64_t plane_bytes = uint64_t(elements) * widest;
-+    const uint64_t limit = gpu_->max_storage_buffer_range();
-+    if (!forced && plane_bytes <= limit)
-+        return gpu_->dispatch(kernel, args, elements, error);
-+
-+    uint32_t rows = shape.h;
-+    if (forced) {
-+        rows = std::min(forced, shape.h);
-+    } else {
-+        const uint64_t per_row = std::max<uint64_t>(1, uint64_t(columns) * widest);
-+        const uint64_t budget = limit * 3 / 4;   // leave headroom for the other planes
-+        rows = uint32_t(std::max<uint64_t>(1, budget / per_row));
-+        if (rows >= shape.h) return gpu_->dispatch(kernel, args, elements, error);
-+    }
-+    if (rows >= shape.h) return gpu_->dispatch(kernel, args, elements, error);
-+
-+    gpu::TilePlan plan;
-+    plan.rows = shape.h;
-+    plan.columns = columns;
-+    plan.band_rows = rows;
-+    plan.stride = plan_strides;
-+    return gpu_->dispatch_banded(kernel, args, elements, plan, error);
++    return dispatch_tiled(gpu_, kernel, args, strides, shape, elements, error);
 +}
 +
  bool Pipeline::curve_interp(const Image& x, const gpu::BufferRef& xa, const gpu::BufferRef& inv,
@@ -965,7 +966,7 @@ index 828ac50..192fd32 100644
  }
  
  bool Pipeline::spectral(const Image& cmy, const gpu::BufferRef& chd, const gpu::BufferRef& base,
-@@ -578,9 +636,9 @@ bool Pipeline::node_input_cast(const Image& in, Image& out, std::string& error)
+@@ -578,9 +585,9 @@ bool Pipeline::node_input_cast(const Image& in, Image& out, std::string& error)
      out.buf = gpu_->alloc(out.bytes(), error);
      if (!out.buf) return false;
      const uint32_t meta[2] = {uint32_t(in.pixels()), in.c};
@@ -977,7 +978,7 @@ index 828ac50..192fd32 100644
  }
  
  bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error) {
-@@ -588,9 +646,9 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
+@@ -588,9 +595,9 @@ bool Pipeline::node_decode_input(const Image& in, Image& out, std::string& error
      Timer t(this, "preprocess.decode_input");
      if (!alloc_like(in, out, error)) return false;
      const uint32_t meta[2] = {uint32_t(in.elements()), input_cctf_mode_};
@@ -989,7 +990,30 @@ index 828ac50..192fd32 100644
  }
  
  bool Pipeline::node_geometry(const Image& in, Image& out, std::string& error) {
-@@ -951,10 +1009,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
+@@ -894,16 +901,19 @@ bool Pipeline::node_upsample(const Image& in, Image& out, std::string& error) {
+     gpu::BufferRef b = gpu_->alloc(in.pixels() * sizeof(float), error);
+     if (!tc.buf || !b) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    if (!gpu_->dispatch("spk_tc_b",
++    // tc is two floats per pixel, b is three: their strides differ, and a
++    // window that assumes one size for both runs off the end of the smaller.
++    if (!dispatch_plane("spk_tc_b",
+                         {gpu::Arg::buf(in.buf), gpu::Arg::buf(baked_.tc_b_matrix),
+                          gpu::Arg::inline_bytes(n, 1), gpu::Arg::buf(tc.buf), gpu::Arg::buf(b)},
++                        {in.c * 4u, 0u, 0u, 8u, 4u}, in,
+                         in.pixels(), error)) return false;
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t meta[2] = {uint32_t(baked_.tc_lut_side), uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_lut2d_cubic",
++    return dispatch_plane("spk_lut2d_cubic",
+                           {gpu::Arg::buf(tc.buf), gpu::Arg::buf(b), gpu::Arg::buf(baked_.tc_lut),
+                            gpu::Arg::inline_bytes(meta, 2), gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {8u, 4u, 0u, 0u, in.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ bool Pipeline::node_exposure(const Image& in, Image& out, std::string& error) {
+@@ -951,10 +961,10 @@ bool Pipeline::node_boost(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1002,7 +1026,7 @@ index 828ac50..192fd32 100644
  }
  
  // **The headroom a digital frame clipped off, given back to the negative.** A
-@@ -992,10 +1050,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
+@@ -992,10 +1002,10 @@ bool Pipeline::node_headroom(const Image& in, Image& out, std::string& error) {
      if (!p_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.pixels())};
@@ -1015,7 +1039,7 @@ index 828ac50..192fd32 100644
  }
  
  // --- the sigmas, in one place, because a demand must agree with its node ----
-@@ -1272,10 +1330,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
+@@ -1272,10 +1282,10 @@ bool Pipeline::node_expose_log(const Image& in, Image& out, std::string& error)
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1028,7 +1052,7 @@ index 828ac50..192fd32 100644
  }
  
  // ---------------------------------------------------------------------------
-@@ -1297,11 +1355,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
+@@ -1297,11 +1307,12 @@ bool Pipeline::node_dir_couplers(const Image& cmy, const Image& log_raw, Image&
      if (!alloc_like(cmy, corr, error)) return false;
      const uint32_t pos[1] = {params_.film.info.is_positive() ? 1u : 0u};
      const uint32_t n[1] = {uint32_t(cmy.pixels())};
@@ -1042,7 +1066,7 @@ index 828ac50..192fd32 100644
                          cmy.pixels(), error)) return false;
  
      const std::vector<Blur::Component> diffusion = dir_coupler_diffusion();
-@@ -1393,11 +1452,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1393,11 +1404,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
              if (!alloc_like(in, grain, error)) return false;
              const uint32_t meta[4] = {uint32_t(k), uint32_t(in.pixels()),
                                        params_.film.info.is_positive() ? 1u : 0u, seed};
@@ -1056,7 +1080,7 @@ index 828ac50..192fd32 100644
                                  in.pixels(), error)) return false;
          } else {
              // The dye-cloud blur is per (sub-layer, channel), so each
-@@ -1412,11 +1472,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1412,11 +1424,12 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
                  if (!alloc_like(in, layer, error)) return false;
                  const uint32_t meta[5] = {uint32_t(k), uint32_t(in.pixels()),
                                            params_.film.info.is_positive() ? 1u : 0u, seed, sl};
@@ -1070,7 +1094,7 @@ index 828ac50..192fd32 100644
                                      in.pixels(), error)) return false;
                  double sigma[3];
                  for (int ch = 0; ch < 3; ++ch)
-@@ -1448,9 +1509,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1448,9 +1461,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          if (!lp_buf || !streams_buf) return false;
          if (!alloc_like(in, grain, error)) return false;
          const uint32_t meta[3] = {uint32_t(in.pixels()), uint32_t(nsub), seed};
@@ -1082,7 +1106,7 @@ index 828ac50..192fd32 100644
                              in.pixels(), error)) return false;
          double s[3], t0[3];
          fill3(s, 1.0 / double(nsub));
-@@ -1483,10 +1545,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
+@@ -1483,10 +1497,10 @@ bool Pipeline::grain_realise(const Image& in, Image& out, std::string& error) {
          Image multiplied;
          if (!alloc_like(grain, multiplied, error)) return false;
          const uint32_t n[1] = {uint32_t(grain.elements())};
@@ -1095,7 +1119,7 @@ index 828ac50..192fd32 100644
          grain = multiplied;
      }
      double s[3], t0[3];
-@@ -1620,10 +1682,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
+@@ -1620,10 +1634,10 @@ bool Pipeline::node_print_exposure(const Image& in, Image& out, std::string& err
      if (!k_buf) return false;
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1108,7 +1132,32 @@ index 828ac50..192fd32 100644
  }
  
  bool Pipeline::node_print_curves(const Image& in, Image& out, std::string& error) {
-@@ -1743,11 +1805,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
+@@ -1687,9 +1701,10 @@ bool Pipeline::node_digital_intermediate(const Image& in, Image& out, std::strin
+     if (!p_buf) return false;
+     if (!alloc_like(positive, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(positive.pixels())};
+-    return gpu_->dispatch("spk_di_encode",
++    return dispatch_plane("spk_di_encode",
+                           {gpu::Arg::buf(positive.buf), gpu::Arg::buf(p_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
++                          {positive.c * 4u, 0u, 0u, positive.c * 4u}, positive,
+                           positive.pixels(), error);
+ }
+ 
+@@ -1707,10 +1722,10 @@ bool Pipeline::node_bw_correction(const Image& in, Image& out, std::string& erro
+     if (!p_buf) return false;
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_bw_correct",
++    return dispatch_plane("spk_bw_correct",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(p_buf), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 0u, in.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
+@@ -1743,11 +1758,11 @@ bool Pipeline::node_glare(const Image& in, Image& out, std::string& error) {
      }
      if (!alloc_like(in, out, error)) return false;
      const uint32_t n[1] = {uint32_t(in.elements())};
@@ -1122,6 +1171,35 @@ index 828ac50..192fd32 100644
  }
  
  bool Pipeline::node_xyz_to_rgb(const Image& in, Image& out, std::string& error) {
+@@ -1763,11 +1778,11 @@ bool Pipeline::node_edr(const Image& in, Image& out, std::string& error) {
+     if (!baked_.edr_params || !baked_.edr_lut) { error = "EDR calibration is not available"; return false; }
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t n[1] = {uint32_t(in.pixels())};
+-    return gpu_->dispatch("spk_edr",
++    return dispatch_plane("spk_edr",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(baked_.edr_params),
+                            gpu::Arg::buf(baked_.edr_lut), gpu::Arg::inline_bytes(n, 1),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 0u, 0u, in.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& error) {
+@@ -1776,12 +1791,12 @@ bool Pipeline::node_gamut_compress(const Image& in, Image& out, std::string& err
+     if (!alloc_like(in, out, error)) return false;
+     const uint32_t meta[4] = {uint32_t(in.pixels()), uint32_t(baked_.cam16_nl),
+                               uint32_t(baked_.cam16_nh), baked_.cam16_lightness ? 1u : 0u};
+-    return gpu_->dispatch("spk_cam16ucs_compress",
++    return dispatch_plane("spk_cam16ucs_compress",
+                           {gpu::Arg::buf(in.buf), gpu::Arg::buf(baked_.cam16_m2x),
+                            gpu::Arg::buf(baked_.cam16_m2r), gpu::Arg::buf(baked_.cam16_cmax),
+                            gpu::Arg::buf(baked_.cam16_k), gpu::Arg::inline_bytes(meta, 4),
+                            gpu::Arg::buf(out.buf)},
+-                          in.pixels(), error);
++                          {in.c * 4u, 0u, 0u, 0u, 0u, 0u, in.c * 4u}, in, in.pixels(), error);
+ }
+ 
+ bool Pipeline::node_scanner_blur(const Image& in, Image& out, std::string& error) {
 diff --git a/engine/src/pipeline/pipeline.hpp b/engine/src/pipeline/pipeline.hpp
 index 5fd77be..1e4b75e 100644
 --- a/engine/src/pipeline/pipeline.hpp
