@@ -1,11 +1,14 @@
 {
-  "latest_version_code": 17,
-  "latest_version_name": "1.1.1",
-  "url": "https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest",
+  "latest_version_code": 21,
+  "latest_version_name": "1.2.2",
+  "url": "https://spektralab.workshop.skin/",
   "notes": [
-    "当前线上的稳定版。",
-    "1.2.x 正在验证，发布后会更新这条公告。"
+    "修好了选不到 RAW：索尼 ARW 等此前被文件选择器过滤掉了",
+    "修好了竖拍照片偶发被自动旋转：方向信息读取增加兜底",
+    "导入与导出按本机 GPU 上限分档，状态栏会写明是否缩过",
+    "所有错误都带错误码（E-1001 起），截图即可反馈",
+    "新增更新通道：启动时静默检查，标题长按可手动检查"
   ],
-  "updated_at": "2026-10-30T08:20:00Z",
+  "updated_at": "2026-10-30T09:10:00Z",
   "channel": "stable"
 }
