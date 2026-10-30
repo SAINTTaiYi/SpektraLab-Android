@@ -1,5 +1,5 @@
 diff --git a/engine/include/spektrafilm/spk_engine.h b/engine/include/spektrafilm/spk_engine.h
-index b0c2a45..8fcc0e2 100644
+index b0c2a45..168df2a 100644
 --- a/engine/include/spektrafilm/spk_engine.h
 +++ b/engine/include/spektrafilm/spk_engine.h
 @@ -130,6 +130,10 @@ typedef struct {
@@ -13,7 +13,22 @@ index b0c2a45..8fcc0e2 100644
  } spk_result;
  
  /* --- engine ----------------------------------------------------------- */
-@@ -391,6 +395,25 @@ void spk_string_free(char* s);
+@@ -245,6 +249,14 @@ spk_status spk_overscan_geometry(spk_session* session, char** out_json);
+ spk_status spk_reprint(spk_session* session, const char* tier, spk_result* out);
+ spk_status spk_render(spk_session* session, const char* tier, spk_result* out);
+ 
++/* The frame **before the film**: the decoded source at `tier`'s long edge,
++ * packed exactly the way `spk_render` packs its print -- working-space
++ * numbers, no transfer function. A caller that shows them as display-encoded
++ * gets the raw's own flat, dark look, which is what a "before" side of a
++ * comparison wants. The cached negative and print are not touched, and no
++ * film node runs. */
++spk_status spk_export_source(spk_session* session, const char* tier, spk_result* out);
++
+ /* --- the baked print+scan LUTs ----------------------------------------
+  *
+  * Three methods that used to live in Python and be refused here by name
+@@ -391,6 +403,25 @@ void spk_string_free(char* s);
   * nothing has failed. Valid until the next failed call on this thread. */
  const char* spk_last_error(spk_engine* engine);
  
@@ -1049,7 +1064,7 @@ index 16014f3..39633aa 100644
  
  }  // namespace spk
 diff --git a/engine/src/pipeline/engine.cpp b/engine/src/pipeline/engine.cpp
-index ee4ffb0..20fba33 100644
+index ee4ffb0..de5de9a 100644
 --- a/engine/src/pipeline/engine.cpp
 +++ b/engine/src/pipeline/engine.cpp
 @@ -57,6 +57,7 @@
@@ -1258,7 +1273,42 @@ index ee4ffb0..20fba33 100644
      gpu->end_frame();
  
      if (!ok) {
-@@ -2156,11 +2258,12 @@ spk_status spk_preview_stock_lut(spk_session* session, const char* print_stock,
+@@ -1304,6 +1406,34 @@ spk_status spk_render(spk_session* session, const char* tier, spk_result* out) {
+     return render_tier(session, tier, /*use_reprint=*/false, out);
+ }
+ 
++// --- the frame before the film ---------------------------------------------
++spk_status spk_export_source(spk_session* session, const char* tier_name, spk_result* out) {
++    if (!session || !out) { g_error = "session or result is null"; return SPK_ERR_INVALID_ARG; }
++    const Tier* tier = find_tier(tier_name);
++    if (!tier) {
++        g_error = std::string("unknown tier '") + (tier_name ? tier_name : "(null)") +
++                  "'; expected live, preview or full";
++        return SPK_ERR_INVALID_ARG;
++    }
++    std::lock_guard<std::mutex> guard(session->lock);
++    g_error.clear();
++    std::memset(out, 0, sizeof *out);
++
++    gpu::Gpu* gpu = session->engine->gpu;
++    gpu->begin_frame();
++    struct EndFrame { gpu::Gpu* gpu; ~EndFrame() { gpu->end_frame(); } } end{gpu};
++
++    Image source;
++    std::string error;
++    if (!tier_image(session, *tier, source, error)) { g_error = error; return SPK_ERR_GPU; }
++    if (!source.valid() || source.c != 3) { g_error = "source: no decoded image"; return SPK_ERR_USER; }
++    // No transfer function, on purpose: these are the working-space numbers as
++    // decoded, and a viewer that reads them as display-encoded sees exactly
++    // what a raw looks like before anything develops it -- flat, and dark.
++    if (!materialise(session, source, out, error)) { g_error = error; return SPK_ERR_GPU; }
++    return SPK_OK;
++}
++
+ }  // extern "C"
+ 
+ #if !defined(__APPLE__) || defined(SPK_VULKAN_BACKEND)
+@@ -2156,11 +2286,12 @@ spk_status spk_preview_stock_lut(spk_session* session, const char* print_stock,
          ok = static_cast<bool>(rgb.buf);
          if (ok) {
              const uint32_t meta[2] = {uint32_t(rgb.pixels()), lut->size};
@@ -1272,7 +1322,7 @@ index ee4ffb0..20fba33 100644
                                 rgb.pixels(), error) && gpu->flush(error);
          }
          apply_ms = std::chrono::duration<double, std::milli>(
-@@ -2225,11 +2328,11 @@ spk_status spk_export_di(spk_session* session, const char* print_stock, spk_resu
+@@ -2225,11 +2356,11 @@ spk_status spk_export_di(spk_session* session, const char* print_stock, spk_resu
      }
      if (ok) {
          const uint32_t n = uint32_t(di.elements());
@@ -1286,7 +1336,7 @@ index ee4ffb0..20fba33 100644
      }
      if (ok) ok = materialise(session, di, out, error);
      gpu->end_frame();
-@@ -2951,9 +3054,11 @@ void spk_result_free(spk_result* result) {
+@@ -2951,9 +3082,11 @@ void spk_result_free(spk_result* result) {
      if (!result || !result->texture) return;
      // The engine kept no reference to hand back, so this is the caller's own
      // +1 going away -- and with it the buffer `rgba16` pointed into.

@@ -132,6 +132,11 @@ public class SpektraLabEngine implements AutoCloseable {
             synchronized (RENDER_LOCK) { return nativeCopyArgbRange(dst, rowOffset, rowCount); }
         }
 
+        /** The decoded frame at `tier`, before the film. Keeps it alive for copyArgbRange. */
+        public int[] exportSource(String tier) {
+            synchronized (RENDER_LOCK) { return nativeExportSource(handle, tier); }
+        }
+
         public void renderEnd() {
             synchronized (RENDER_LOCK) { nativeRenderEnd(); }
         }
@@ -223,6 +228,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native int nativeGetLastRowStride();
     private static native int[] nativeGetLastRenderInfo();
     private static native int[] nativeRenderBegin(long sessionHandle, String tier);
+    private static native int[] nativeExportSource(long sessionHandle, String tier);
     private static native int nativeCopyArgbRange(int[] dst, int rowOffset, int rowCount);
     private static native void nativeRenderEnd();
     private static native int[] nativeExportJpeg(long handle, String path, int quality, int stripRows, String tier);
