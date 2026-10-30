@@ -98,6 +98,43 @@ shader 侧**已经就绪**：1.2.3 的 `spk_pc.base` 就是"本块第一个元�
 这样能保持与整幅渲染**逐字节相同**。另一条路是"高像素时改用 FIR"，
 实现简单但输出会变（不是 bit-exact），不作为默认。
 
+## 分块驱动（已落地，2026-10-30）
+
+`Gpu::dispatch_banded(kernel, args, n, TilePlan, error)`：
+
+```cpp
+struct TilePlan {
+    uint32_t rows = 0;        // 整帧行数
+    uint32_t columns = 0;     // 每行元素数（rows*columns 必须等于线程数）
+    uint32_t band_rows = 0;   // 每带行数，0 = 不分块
+    std::vector<uint32_t> stride;  // 每个参数的元素字节数，0 = 整块绑定
+};
+```
+
+每个带把窗口设到它写出的那些行，**push constant 的 base 在每个窗口内从 0 重新开始**，
+所以 shader 的 `spk_global_index()` 在本带内是从 0 数的——这正是窗口能工作的原因。
+
+### 对齐比想象中更严格
+
+`VkDescriptorBufferInfo.offset` 必须是 `minStorageBufferOffsetAlignment` 的倍数
+（本机实测 **64 B**，不是 4）。每行的字节步长是 `columns * stride`，所以不是每一行
+都能当带边界。驱动的做法是求各参数周期的**最小公倍数**当量子，再把带大小向上取整：
+
+| 宽度 | stride | 每行字节 | 量子（行） | 实际每带 |
+|---|---|---|---|---|
+| 64 | 16 / 12 | 1024 / 768 | 1 | 请求值 |
+| 65 | 16 / 12 | 1040 / 780 | 16 | 16 |
+| 63 | 16 / 12 | 1008 / 756 | 16 | 16 |
+| 100 | 16 / 12 | 1600 / 1200 | 4 | 4 |
+
+量子为 1 时请求 1 行就真的是 1 行；否则自动放大到最近的合法边界。
+
+### 验证
+
+`band_test`（spk-debug，直接用 `Gpu` 跑 `spk_take_rgb`）：
+1 行 / 8 行 / 32 行 / 64 行四种带大小，以及 63 / 64 / 65 / 100 四种宽度，
+输出与整幅**逐字节相同**。整管线渲染哈希仍是 `0b3c0685f4c262d7`。
+
 ## 实施顺序
 
 1. `Arg` 增加 `(offset, range)`；`dispatch()` 绑定窗口；size 检查用 `range`。

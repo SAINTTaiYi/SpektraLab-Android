@@ -29,10 +29,10 @@ index b0c2a45..343272b 100644
   * report: version, git-ish build stamp, the Metal math mode the kernels were
   * compiled with, and whether the fast-math probe agreed with it. */
 diff --git a/engine/src/gpu/gpu.hpp b/engine/src/gpu/gpu.hpp
-index b996193..474170e 100644
+index b996193..85d8f2a 100644
 --- a/engine/src/gpu/gpu.hpp
 +++ b/engine/src/gpu/gpu.hpp
-@@ -209,9 +209,23 @@ struct Arg {
+@@ -209,13 +209,48 @@ struct Arg {
      Buffer* buffer = nullptr;
      const void* bytes = nullptr;
      size_t size = 0;
@@ -56,7 +56,32 @@ index b996193..474170e 100644
      template <typename T>
      static Arg inline_bytes(const T* p, size_t count) { return Arg{nullptr, p, count * sizeof(T)}; }
  };
-@@ -230,6 +244,19 @@ public:
+ 
++// A row-banded dispatch: the same kernel over the same buffers, one band of
++// `band_rows` rows at a time, each band named through its own binding window.
++//
++// The output is bit-identical to a single whole-frame dispatch. A band's
++// arguments are windowed to exactly the rows it writes, and the shader's
++// push-constant base restarts at 0 inside each window, so spk_global_index()
++// addresses the band from its first element -- which is what makes a frame
++// larger than maxStorageBufferRange renderable at all.
++//
++// `stride[i]` is bytes per element for argument i; 0 means "not a per-element
++// buffer" (weights, metadata) and stays bound whole. A band may only start on
++// a row where `first_row * columns * stride` is a multiple of the device's
++// minStorageBufferOffsetAlignment for every windowed argument, so the backend
++// rounds the band size up until that holds.
++struct TilePlan {
++    uint32_t rows = 0;
++    uint32_t columns = 0;
++    uint32_t band_rows = 0;
++    std::vector<uint32_t> stride;
++};
++
+ class Gpu {
+ public:
+     virtual ~Gpu() = default;
+@@ -230,6 +265,19 @@ public:
  
      virtual std::string device_name() const = 0;
  
@@ -76,6 +101,20 @@ index b996193..474170e 100644
      // The fast-math probe. Returns false, with a message, when the kernels in
      // the loaded library were compiled with fast math -- which drifts `exp`
      // and fma contraction by up to 1.1e-5, past the float32 bar, silently
+@@ -377,6 +425,13 @@ public:
+ 
+     virtual bool dispatch(const char* kernel, const std::vector<Arg>& args,
+                           size_t n_threads, std::string& error) = 0;
++
++    // The banded form. Backends without windows fall back to one dispatch.
++    virtual bool dispatch_banded(const char* kernel, const std::vector<Arg>& args,
++                                 size_t n_threads, const TilePlan& plan, std::string& error) {
++        (void)plan;
++        return dispatch(kernel, args, n_threads, error);
++    }
+     virtual bool flush(std::string& error) = 0;
+ 
+     // A texture over `b`'s memory, RGBA16Unorm, `width` x `height`, rows
 diff --git a/engine/src/gpu/metal_gpu.cpp b/engine/src/gpu/metal_gpu.cpp
 index 48b0e10..342e4cc 100644
 --- a/engine/src/gpu/metal_gpu.cpp
@@ -105,18 +144,21 @@ index 48b0e10..342e4cc 100644
      }
  
 diff --git a/engine/src/gpu/vulkan_gpu.cpp b/engine/src/gpu/vulkan_gpu.cpp
-index 8d6b100..fedd727 100644
+index 8d6b100..4c14242 100644
 --- a/engine/src/gpu/vulkan_gpu.cpp
 +++ b/engine/src/gpu/vulkan_gpu.cpp
-@@ -20,6 +20,7 @@
+@@ -20,8 +20,10 @@
  #include <chrono>
  #include <cmath>
  #include <cstdint>
 +#include <cstdarg>
  #include <cstdio>
  #include <cstdlib>
++#include <numeric>
  #include <cstring>
-@@ -33,6 +34,31 @@
+ #include <fstream>
+ #include <limits>
+@@ -33,6 +35,31 @@
  
  namespace spk::gpu {
  
@@ -148,7 +190,7 @@ index 8d6b100..fedd727 100644
  struct Buffer {
      VkBuffer handle = VK_NULL_HANDLE;
      VkDeviceMemory memory = VK_NULL_HANDLE;
-@@ -53,59 +79,76 @@ std::string vk_error(const char* operation, VkResult result) {
+@@ -53,59 +80,76 @@ std::string vk_error(const char* operation, VkResult result) {
      return std::string(operation) + " failed (VkResult " + std::to_string(int(result)) + ")";
  }
  
@@ -274,10 +316,11 @@ index 8d6b100..fedd727 100644
  };
  
  const KernelSpec* find_kernel(const char* name) {
-@@ -253,6 +296,15 @@ public:
+@@ -253,6 +297,16 @@ public:
          }
          if (!physical_) { error = "no Vulkan compute queue"; return false; }
          storage_range_limit_ = properties_.limits.maxStorageBufferRange;
++        storage_offset_align_ = properties_.limits.minStorageBufferOffsetAlignment;
 +        // Diagnostic: pretend this device advertises a smaller binding range, so
 +        // the frame-size policy can be exercised on hardware that has a large
 +        // one (Adreno 825 says 2 GiB, where nothing ever hits the ceiling).
@@ -290,7 +333,7 @@ index 8d6b100..fedd727 100644
          if (properties_.limits.maxComputeWorkGroupInvocations < kWorkgroup ||
              properties_.limits.maxComputeWorkGroupSize[0] < kWorkgroup ||
              properties_.limits.maxPerStageDescriptorStorageBuffers < 8 ||
-@@ -301,6 +353,32 @@ public:
+@@ -301,6 +355,32 @@ public:
      }
  
      std::string device_name() const override { return properties_.deviceName; }
@@ -323,7 +366,7 @@ index 8d6b100..fedd727 100644
  
      bool check_math_mode(std::string& detail) override {
          if (!math_checked_) {
-@@ -603,12 +681,32 @@ public:
+@@ -603,12 +683,32 @@ public:
          // index with spk_global_index(). The surplus threads of the last row
          // fail the same bounds check the last partial workgroup always did.
          const size_t groups = (n_threads + spec->workgroup - 1) / spec->workgroup;
@@ -362,7 +405,7 @@ index 8d6b100..fedd727 100644
          }
          // Inline uploads submit transfers too. Resolve them before taking the
          // non-recursive queue/command-pool lock; their BufferRefs stay live
-@@ -623,11 +721,31 @@ public:
+@@ -623,11 +723,31 @@ public:
                  b = inline_buffers.back().get();
              }
              if (!b) { error = std::string(kernel) + ": empty argument " + std::to_string(i); return false; }
@@ -397,7 +440,7 @@ index 8d6b100..fedd727 100644
          }
  
          std::lock_guard<std::mutex> lock(dispatch_mutex_);
-@@ -667,14 +785,33 @@ public:
+@@ -667,18 +787,94 @@ public:
          }
          vkUpdateDescriptorSets(device_, uint32_t(writes.size()), writes.data(), 0, nullptr);
  
@@ -433,7 +476,68 @@ index 8d6b100..fedd727 100644
          vkDestroyDescriptorPool(device_, descriptor_pool, nullptr);
          return submitted;
      }
-@@ -745,7 +882,7 @@ public:
+ 
++    bool dispatch_banded(const char* kernel, const std::vector<Arg>& args, size_t n_threads,
++                         const TilePlan& plan, std::string& error) override {
++        if (plan.band_rows == 0 || plan.rows <= plan.band_rows)
++            return dispatch(kernel, args, n_threads, error);
++        if (!plan.rows || !plan.columns || size_t(plan.rows) * plan.columns != n_threads) {
++            error = std::string(kernel ? kernel : "dispatch") + ": tile plan does not cover the dispatch";
++            return false;
++        }
++        if (plan.stride.size() != args.size()) {
++            error = std::string(kernel ? kernel : "dispatch") + ": tile plan needs one stride per argument";
++            return false;
++        }
++        // Every windowed argument moves in steps of `columns * stride` bytes per
++        // row. A band may only start where all of those land on the device's
++        // offset alignment, so the quantum is the LCM of each argument's own
++        // period. On a 5208-wide frame with a 12 B/px plane and a 256 B
++        // alignment that is 8 rows: small enough that no extra texturing work
++        // appears, large enough that every band start is legal.
++        uint64_t quantum = 1;
++        for (size_t i = 0; i < args.size(); ++i) {
++            const uint32_t stride = plan.stride[i];
++            if (!stride) continue;
++            const uint64_t step = uint64_t(plan.columns) * stride;
++            const uint64_t align = storage_offset_align_ ? uint64_t(storage_offset_align_) : 1;
++            quantum = std::lcm(quantum, align / std::gcd(step, align));
++            if (quantum > plan.rows) {
++                error = std::string(kernel ? kernel : "dispatch") +
++                        ": no legal band boundary at this stride and alignment";
++                return false;
++            }
++        }
++        uint64_t rows_per_band = plan.band_rows;
++        if (rows_per_band < quantum) rows_per_band = quantum;
++        rows_per_band = (rows_per_band + quantum - 1) / quantum * quantum;
++
++        spk_vk_log("dispatch-banded %s rows=%u columns=%u band_rows=%llu quantum=%llu",
++                   kernel ? kernel : "?", plan.rows, plan.columns,
++                   (unsigned long long)rows_per_band, (unsigned long long)quantum);
++        for (uint64_t y0 = 0; y0 < plan.rows; y0 += rows_per_band) {
++            const uint32_t rows_here = uint32_t(std::min<uint64_t>(rows_per_band, plan.rows - y0));
++            std::vector<Arg> band(args);
++            for (size_t i = 0; i < args.size(); ++i) {
++                const uint32_t stride = plan.stride[i];
++                if (!stride) continue;
++                if (!args[i].buffer) {
++                    error = std::string(kernel ? kernel : "dispatch") + ": banded argument " +
++                            std::to_string(i) + " must be a buffer, not inline bytes";
++                    return false;
++                }
++                band[i].offset = y0 * plan.columns * stride;
++                band[i].range = uint64_t(rows_here) * plan.columns * stride;
++            }
++            if (!dispatch(kernel, band, size_t(rows_here) * plan.columns, error)) return false;
++        }
++        return true;
++    }
++
+     bool flush(std::string&) override { return true; }  // dispatch is synchronous for this milestone
+     void* texture(Buffer* buffer, uint32_t width, uint32_t height,
+                   uint32_t row_stride_px, std::string& error) override {
+@@ -745,7 +941,7 @@ public:
              destroy_buffer(&upload_staging_);
              destroy_buffer(&read_staging_);
              if (transfer_timings_ && staging_freed)
@@ -442,7 +546,7 @@ index 8d6b100..fedd727 100644
                      "\"upload_staging_bytes\":0,\"read_staging_bytes\":0}\n",
                      static_cast<unsigned long long>(staging_freed));
          }
-@@ -767,7 +904,7 @@ private:
+@@ -767,7 +963,7 @@ private:
          // Staging is owned by this backend, outside the existing compute-pool
          // ledger. Record its actual allocations separately rather than making
          // that public ledger silently double-count host and device storage.
@@ -451,7 +555,7 @@ index 8d6b100..fedd727 100644
              "{\"vulkan_transfer\":\"%s\",\"bytes\":%zu,\"elapsed_ms\":%.6f,"
              "\"upload_staging_bytes\":%llu,\"read_staging_bytes\":%llu}\n",
              operation, bytes, ms,
-@@ -779,6 +916,7 @@ private:
+@@ -779,6 +975,7 @@ private:
      // completion before any staging allocation or pooled buffer can be reused.
      template <typename Record>
      bool submit_sync(Record&& record, const char* operation, std::string& error) {
@@ -459,7 +563,7 @@ index 8d6b100..fedd727 100644
          VkCommandBufferAllocateInfo allocate_info{};
          allocate_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
          allocate_info.commandPool = command_pool_;
-@@ -805,6 +943,8 @@ private:
+@@ -805,6 +1002,8 @@ private:
              }
              vkFreeCommandBuffers(device_, command_pool_, 1, &command);
          }
@@ -468,7 +572,7 @@ index 8d6b100..fedd727 100644
          if (result != VK_SUCCESS) { error = vk_error(operation, result); return false; }
          return true;
      }
-@@ -1015,7 +1155,7 @@ private:
+@@ -1015,7 +1214,7 @@ private:
              return false;
          }
          if (transfer_timings_) {
@@ -477,7 +581,7 @@ index 8d6b100..fedd727 100644
                  "{\"vulkan_allocation\":\"%s\",\"bytes\":%zu,\"allocation_bytes\":%llu,"
                  "\"memory_type\":%u,\"memory_flags\":%u,\"heap\":%u}\n",
                  staging ? (readback ? "read_staging" : "upload_staging") : "compute",
-@@ -1073,10 +1213,20 @@ private:
+@@ -1073,10 +1272,20 @@ private:
          desc_create.pBindings = bindings.data();
          result = vkCreateDescriptorSetLayout(device_, &desc_create, nullptr, &p.descriptors);
          if (result == VK_SUCCESS) {
@@ -498,6 +602,16 @@ index 8d6b100..fedd727 100644
              result = vkCreatePipelineLayout(device_, &layout_create, nullptr, &p.layout);
          }
          if (result == VK_SUCCESS) {
+@@ -1115,6 +1324,9 @@ private:
+     VkPhysicalDeviceProperties properties_{};
+     // maxStorageBufferRange, unless probe_cpu_storage_range measured more.
+     VkDeviceSize storage_range_limit_ = 0;
++    // Windows must start on a multiple of this; a band boundary that is not
++    // aligned here is not a legal VkDescriptorBufferInfo.
++    VkDeviceSize storage_offset_align_ = 1;
+     // -1 unvalidated/rejected, 1 validated fused fma, 0 validated split.
+     int fused_fma_ = -1;
+     bool math_checked_ = false;
 diff --git a/engine/src/io/raw_decoder.cpp b/engine/src/io/raw_decoder.cpp
 index 1f55a69..f8ae0be 100644
 --- a/engine/src/io/raw_decoder.cpp
