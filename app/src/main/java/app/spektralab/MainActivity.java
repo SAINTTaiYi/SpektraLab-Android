@@ -13,12 +13,16 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
-import android.widget.SeekBar;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import app.spektralab.engine.SpektraLabEngine;
+import app.spektralab.ui.Chrome;
+import app.spektralab.ui.FilmNames;
+import app.spektralab.ui.ParamSheet;
+import app.spektralab.ui.Sheet;
+import app.spektralab.ui.SliderRow;
+import app.spektralab.ui.Tokens;
+import app.spektralab.ui.UiPicker;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,12 +52,9 @@ public class MainActivity extends Activity {
     private CompareView compare;
     /** What the import put on the stage: the frame before any film. */
     private Bitmap beforeBitmap;
-    private TextView statusText;
-    private ProgressBar progressBar;
-    private ProgressBar exportProgressBar;
-    private Spinner filmSpinner, printSpinner;
     private final List<String> filmIds = new ArrayList<>(), filmLabels = new ArrayList<>();
     private final List<String> filmTypes = new ArrayList<>();
+    private final List<String> filmTypeLabels = new ArrayList<>();
     private final List<String> printIds = new ArrayList<>(), printLabels = new ArrayList<>();
     private String filmStock = "kodak_portra_400";
     private String printStock = "kodak_portra_endura";
@@ -88,571 +89,492 @@ public class MainActivity extends Activity {
     }
 
     // ---------------------------------------------------------------------
-    // The interface.
-    //
-    // /sdcard/Download/SpektraLab/index.html is the reference. It is drawn at
-    // a 390 px viewport, so its CSS px are this app's dp, and every number
-    // below is quoted from it. Three deliberate departures:
-    //   * the page's 12 px outer frame is dropped -- a phone screen is the app,
-    //     not a sheet of paper floating on a page;
-    //   * the preview *fits* the frame into itself (FIT_CENTER) where the
-    //     page's last pass says `object-fit: cover`, which would crop away the
-    //     edge of the photograph the user is about to render;
-    //   * the ranges stay inside the engine's schema: grain stops at 2 (the
-    //     page says 4; params.cpp refuses anything over 2) and exposure starts
-    //     at 0.25 (below it the print is black and the schema's floor is 0.05).
+    // 界面：极简 · 暗房
+    //   一屏一个动作（选择照片 → 渲染胶片 → 导出），参数点「调色」拉开。
+    //   颜色/字号/间距在 ui/Tokens，零件在 ui/Chrome，弹层在 ui/Sheet。
+    //   规格：docs/redesign/05-minimal-spec.md
     // ---------------------------------------------------------------------
-    private static final int UI_BLUE       = 0xFF1C2AA5;   // --blue
-    private static final int UI_BLUE_LIGHT = 0xFF3B4BC0;   // --blue-light
-    private static final int UI_PAPER      = 0xFFF1F1EE;   // --paper
-    private static final int UI_GROUND     = 0xFFE3E3E0;   // --ground
-    private static final int UI_INK        = 0xFF171717;   // --ink
-    private static final int UI_MUTED      = 0xFF777772;   // --muted
-    private static final int UI_LINE       = 0xFFCECEC8;   // --line
-    private static final int UI_STAGE      = 0xFF172174;   // .preview-image
-
-    private Typeface tfDisplay;      // Inter 300 — numbers and the wordmark
-    private Typeface tfBody;         // Inter 400 — Latin labels
-    private Typeface tfHan;          // OPPO Sans — Chinese, and anything mixed
-    private View emptyState, rawState;
-    private TextView fileLabel, previewIndex, rawName, formatNote, busyLabel;
-    private SeekBar exposureBar, grainBar, halationBar, glareBar;
-    private LinearLayout opticsPanel;
+    // ---- 极简版界面（暗房）----
+    // 颜色/字号/间距只有一个来源：app.spektralab.ui.Tokens；零件在 ui/Chrome。
+    private View emptyState, rawState;                  // 舞台上的两种非照片状态
+    private TextView statusText;                        // 10sp 提示行：只在进度/错误时说话
+    private TextView rawName;                           // RAW 状态下的文件名
+    private TextView primaryAction;                     // 唯一的描边按钮＝「下一步」
+    private TextView actionSwap, actionTune;            // 换图 / 调色
+    private View footBar;                               // 底部动作区（空状态整块隐藏）
+    private TextView exportHint;                        // 「长按可选尺寸」的标识
+    private ProgressBar progressBar, exportProgressBar; // 舞台底边的 1dp 进度线
+    private UiPicker filmSpinner, printSpinner, formatSpinner, edgeSpinner;
+    private SliderRow exposureRow, grainRow, halationRow, glareRow;
+    private ParamSheet panel;                           // 「调节」弹层
+    /** 光学滑杆只在有帧可改时可用。 */
     private boolean opticsUnlocked = false;
+    /** 导出在飞：主按钮此时不可点。 */
+    private boolean exporting = false;
 
-    // RFC-032/031, the two things the phone build never exposed: the rebate the
-    // frame was cut from, and the date a point-and-shoot burned into it.
+    // RFC-032/031：片边与日期水印（引擎一直支持，旧界面藏在面板里）
     private boolean overscanOn = false;
     private String overscanFormat = "135";
     private boolean dateOn = false;
     private String dateText = null;
     private Square overscanMark, dateMark;
 
-    /** 片边: the ten carriers the engine's overscan knows. */
+    /** 片边：引擎 overscan 认识的十种片基。 */
     private static final String[] EDGE_LABELS = {
             "135 全画幅", "135 半格", "135 XPan", "645",
             "6×6", "6×7", "6×8", "6×9", "6×12", "6×17"};
     private static final String[] EDGE_IDS = {
             "135", "135_half", "135_xpan", "120_645",
             "120_6x6", "120_6x7", "120_6x8", "120_6x9", "120_6x12", "120_6x17"};
-    /** Each gate's long/short, from overscan.cpp's measured kFormats. The
-     *  engine refuses a rebate cut for a different shape (5 %), so the list the
-     *  user sees is filtered to the gates this frame actually is. */
+    /** 每个片门的长/短，取自 overscan.cpp 的 kFormats；引擎按 5% 容差拒绝别的形状。 */
     private static final double[] EDGE_RATIOS = {
             36.25 / 24.3, 24.0 / 18.0, 65.0 / 24.0, 56.0 / 41.5,
             1.0, 69.5 / 56.0, 76.0 / 56.0, 84.0 / 56.0, 112.0 / 56.0, 168.0 / 56.0};
-    private Spinner edgeSpinner;
-    private final List<String> edgeLabels = new ArrayList<>(), edgeIds = new ArrayList<>();
-    private Spinner formatSpinner;
-    private final View[] stepCells = new View[4];
-    private final View[] stepBars = new View[4];
-    private final View[] tabCells = new View[4];
-    private final View[] tabBars = new View[4];
-    private final TextView[] tabLabels = new TextView[4];
-    private final View[] panels = new View[4];
+    private final java.util.List<String> edgeLabels = new ArrayList<>(), edgeIds = new ArrayList<>();
 
-    private void loadUiFonts() {
-        try {
-            tfDisplay = Typeface.createFromAsset(getAssets(), "fonts/Inter-Light.ttf");
-            tfBody = Typeface.createFromAsset(getAssets(), "fonts/Inter-Regular.ttf");
-        } catch (Throwable t) {
-            DebugSink.text("font", "inter: " + t);
-            tfDisplay = Typeface.create("sans-serif-light", Typeface.NORMAL);
-            tfBody = Typeface.create("sans-serif", Typeface.NORMAL);
-        }
-        try {
-            tfHan = Typeface.createFromAsset(getAssets(), "fonts/OPPOSans.ttf");
-        } catch (Throwable t) {
-            DebugSink.text("font", "oppo: " + t);
-            tfHan = Typeface.create("sans-serif", Typeface.NORMAL);
-        }
-    }
+    /** 画幅：颗粒/光晕的物理尺度。 */
+    private static final String[] FORMAT_NAMES = {"135 全画幅 · 36mm", "半格 · 24mm", "XPan · 65mm",
+            "645 · 56mm", "6×6 · 56mm", "6×7 · 70mm", "6×9 · 84mm", "6×12 · 120mm", "6×17 · 170mm"};
+    private static final float[] FORMAT_MM = {36f, 24f, 65f, 56f, 56f, 70f, 84f, 120f, 170f};
 
-    /** The page is paper and blue now, so the bars have to stop being black. */
-    private void lightSystemBars() {
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.view.WindowInsetsController c = getWindow().getInsetsController();
-                if (c != null) {
-                    int mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                            | android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-                    c.setSystemBarsAppearance(mask, mask);
-                }
-            } else {
-                int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                if (android.os.Build.VERSION.SDK_INT >= 26) {
-                    flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                }
-                getWindow().getDecorView().setSystemUiVisibility(flags);
-            }
-        } catch (Throwable t) {
-            DebugSink.text("bars", String.valueOf(t));
-        }
-    }
-
-    private int dp(float v) {
-        return Math.round(v * getResources().getDisplayMetrics().density);
-    }
-
-    private TextView label(String s, float sp, int color, Typeface tf) {
-        TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp);
-        t.setTextColor(color);
-        if (tf != null) t.setTypeface(tf);
-        t.setIncludeFontPadding(false);
-        return t;
-    }
-
-    private View hairline(int color) {
-        View v = new View(this);
-        v.setBackgroundColor(color);
-        return v;
-    }
-
-    /** clamp(30px, 8.6vw, 39px) */
-    private float wordmarkSp() {
-        float w = getResources().getConfiguration().screenWidthDp;
-        return Math.max(30f, Math.min(39f, 0.086f * w));
-    }
-
-    /** clamp(35px, 10.5vw, 48px) */
-    private float emptyTitleSp() {
-        float w = getResources().getConfiguration().screenWidthDp;
-        return Math.max(35f, Math.min(48f, 0.105f * w));
-    }
-
-    private void applySystemInsets(final View root) {
-        root.setOnApplyWindowInsetsListener((v, insets) -> {
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(
-                        android.view.WindowInsets.Type.systemBars()
-                                | android.view.WindowInsets.Type.displayCutout());
-                v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            } else {
-                v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            }
-            return insets;
-        });
-    }
+    // =====================================================================
+    // 界面：一屏一个动作
+    //
+    //   空 → [选择照片] ; 有图 → [渲染胶片] ; 渲染完 → [导出]
+    //
+    // 参数不常驻屏幕：点「调色」拉开 ParamSheet。RAW 导入、全尺寸导出、
+    // 关于都走长按，不占界面。规格见 docs/redesign/05-minimal-spec.md。
+    // =====================================================================
 
     private void buildUi() {
-        loadUiFonts();
-        lightSystemBars();
+        Tokens.loadFonts(this);
+        Chrome.darkSystemBars(this);
 
         final android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-        root.setBackgroundColor(UI_GROUND);
-        applySystemInsets(root);
+        root.setBackgroundColor(Tokens.ROOT);
+        Chrome.applyInsets(root);
         setContentView(root);
 
-        LinearLayout app = new LinearLayout(this);
+        final LinearLayout app = new LinearLayout(this);
         app.setOrientation(LinearLayout.VERTICAL);
-        app.setBackgroundColor(UI_PAPER);
         root.addView(app, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
-        // ---- intro: padding 11/16/10, the wordmark in blue at weight 300 ----
-        LinearLayout intro = new LinearLayout(this);
-        intro.setOrientation(LinearLayout.VERTICAL);
-        intro.setPadding(dp(16), dp(11), dp(16), dp(10));
+        app.addView(buildStage(), new LinearLayout.LayoutParams(-1, 0, 1f));
+        footBar = buildFoot();
+        app.addView(footBar, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout wordRow = new LinearLayout(this);
-        wordRow.setOrientation(LinearLayout.HORIZONTAL);
-        wordRow.setGravity(android.view.Gravity.TOP);
+        buildPanel();
+        loadStockCatalog();
+        refreshEdgeFormats();
+        setStage(0, null);
+        refreshActions();
+    }
 
-        final float wordSp = wordmarkSp();
-        TextView word = label("SpektraLab", wordSp, UI_BLUE, tfDisplay);
-        word.setLetterSpacing(-0.07f);
-        word.setSingleLine(true);
-        // `margin-left: -0.055em`: the negative side bearing of the S, so the
-        // word optically aligns with the hairlines around it.
-        word.setTranslationX(-0.055f * wordSp * getResources().getDisplayMetrics().scaledDensity);
-        word.setOnLongClickListener(v -> { showAbout(); return true; });
-        wordRow.addView(word);
+    /** 舞台：纯黑，照片自身是唯一亮部。 */
+    private View buildStage() {
+        final android.widget.FrameLayout stage = new android.widget.FrameLayout(this);
+        stage.setBackgroundColor(Tokens.STAGE);
+        final int side = Tokens.dp(this, Tokens.PAGE_SIDE);
+        stage.setPadding(side, side, side, Tokens.dp(this, 12));
 
-        TextView version = label("v" + UpdateCheck.versionName(this), 7, UI_BLUE, tfBody);
-        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(-2, -2);
-        vlp.leftMargin = dp(7);
-        vlp.topMargin = dp(5);
-        wordRow.addView(version, vlp);
-        intro.addView(wordRow, new LinearLayout.LayoutParams(-1, -2));
-        app.addView(intro, new LinearLayout.LayoutParams(-1, -2));
-
-        // ---- workflow: 46 px, four cells, 1&4 blue, 2&3 blue-light --------
-        LinearLayout workflow = new LinearLayout(this);
-        workflow.setOrientation(LinearLayout.HORIZONTAL);
-        final String[] stepNames = {"导入", "换图", "渲染", "导出"};
-        for (int i = 0; i < 4; ++i) {
-            final int index = i;
-            android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            cell.setBackgroundColor(i == 0 || i == 3 ? UI_BLUE : UI_BLUE_LIGHT);
-
-            LinearLayout content = new LinearLayout(this);
-            content.setOrientation(LinearLayout.HORIZONTAL);
-            content.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            content.setPadding(dp(10), dp(8), dp(10), dp(8));
-
-            TextView number = label(String.format(java.util.Locale.US, "%02d", i + 1), 25, UI_PAPER, tfDisplay);
-            number.setLetterSpacing(-0.065f);
-            content.addView(number);
-
-            TextView name = label(stepNames[i], 8, UI_PAPER, tfHan);
-            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(-2, -2);
-            nlp.leftMargin = dp(7);
-            content.addView(name, nlp);
-
-            cell.addView(content, new android.widget.FrameLayout.LayoutParams(-1, -1));
-
-            View bar = new View(this);
-            bar.setBackgroundColor(UI_PAPER);
-            bar.setAlpha(0.75f);
-            bar.setVisibility(View.INVISIBLE);
-            cell.addView(bar, new android.widget.FrameLayout.LayoutParams(-1, dp(2), android.view.Gravity.BOTTOM));
-
-            cell.setOnClickListener(v -> onWorkflow(index));
-            if (i == 0) {
-                // Long-press keeps the three import routes the phone needs.
-                cell.setOnLongClickListener(v -> { showImportMenu(); return true; });
-            }
-            if (i == 3) {
-                // And 04's old shortcut: long-press exports the full frame.
-                cell.setOnLongClickListener(v -> { exportImage("full"); return true; });
-            }
-            workflow.addView(cell, new LinearLayout.LayoutParams(0, dp(46), 1f));
-            stepCells[i] = cell;
-            stepBars[i] = bar;
-        }
-        app.addView(workflow, new LinearLayout.LayoutParams(-1, dp(46)));
-
-        // ---- lab: preview (grows) + controls (178 px) ----------------------
-        LinearLayout lab = new LinearLayout(this);
-        lab.setOrientation(LinearLayout.VERTICAL);
-
-        LinearLayout preview = new LinearLayout(this);
-        preview.setOrientation(LinearLayout.VERTICAL);
-        preview.setBackgroundColor(UI_BLUE);
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        head.setPadding(dp(16), 0, dp(16), 0);
-        TextView headTitle = label("Image preview", 7, UI_PAPER, tfBody);
-        headTitle.setAllCaps(true);
-        headTitle.setLetterSpacing(0.05f);
-        head.addView(headTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        previewIndex = label("(Empty / 000)", 7, UI_PAPER, tfBody);
-        previewIndex.setAlpha(0.58f);
-        head.addView(previewIndex);
-        preview.addView(head, new LinearLayout.LayoutParams(-1, dp(25)));
-        preview.addView(hairline(0x2EFFFFFF), new LinearLayout.LayoutParams(-1, dp(1)));
-
-        // .preview-stage: the blue field, the frame guides, and the three
-        // things that can live on it (empty state / RAW name / the frame).
-        android.widget.FrameLayout stage = new android.widget.FrameLayout(this);
-        stage.setBackgroundColor(UI_BLUE);
-        stage.addView(new GuideView(this, dp(11)), new android.widget.FrameLayout.LayoutParams(-1, -1));
-
-        LinearLayout empty = new LinearLayout(this);
-        empty.setOrientation(LinearLayout.VERTICAL);
-        empty.setGravity(android.view.Gravity.CENTER);
-        empty.setPadding(dp(16), dp(16), dp(16), dp(16));
-
-        TextView emptyIndex = label("(001) / Source", 6, UI_PAPER, tfBody);
-        emptyIndex.setLetterSpacing(0.1f);
-        emptyIndex.setAlpha(0.6f);
-        empty.addView(emptyIndex, new LinearLayout.LayoutParams(-2, -2));
-
-        TextView emptyTitle = label("NO IMAGE", emptyTitleSp(), UI_PAPER, tfDisplay);
-        emptyTitle.setLetterSpacing(-0.065f);
-        LinearLayout.LayoutParams etlp = new LinearLayout.LayoutParams(-2, -2);
-        etlp.topMargin = dp(10);
-        empty.addView(emptyTitle, etlp);
-
-        TextView emptyCopy = label("Select a RAW or JPEG to begin", 6, UI_PAPER, tfBody);
-        emptyCopy.setAllCaps(true);
-        emptyCopy.setLetterSpacing(0.07f);
-        emptyCopy.setAlpha(0.65f);
-        LinearLayout.LayoutParams eclp = new LinearLayout.LayoutParams(-2, -2);
-        eclp.topMargin = dp(10);
-        eclp.bottomMargin = dp(16);
-        empty.addView(emptyCopy, eclp);
-
-        // The page leaves .load-button to the browser's own grey. On blue the
-        // same weight inverts better: paper fill, blue label.
-        LinearLayout load = new LinearLayout(this);
-        load.setOrientation(LinearLayout.HORIZONTAL);
-        load.setGravity(android.view.Gravity.CENTER);
-        load.setBackgroundColor(UI_PAPER);
-        load.setPadding(dp(18), 0, dp(18), 0);
-        load.setOnClickListener(v -> pickImage());
-        TextView loadText = label("Select image", 7, UI_BLUE, tfBody);
-        loadText.setAllCaps(true);
-        loadText.setLetterSpacing(0.04f);
-        load.addView(loadText);
-        // "↗" is in neither Inter nor OPPO Sans, and a tofu box is not an
-        // accent: this one is drawn.
-        ArrowView loadArrow = new ArrowView(this, UI_BLUE);
-        LinearLayout.LayoutParams lalp = new LinearLayout.LayoutParams(dp(14), dp(14));
-        lalp.leftMargin = dp(8);
-        load.addView(loadArrow, lalp);
-        empty.addView(load, new LinearLayout.LayoutParams(-2, dp(34)));
-
-        stage.addView(empty, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        emptyState = empty;
+        emptyState = buildEmpty();
+        stage.addView(emptyState, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
         compare = new CompareView(this);
         compare.setVisibility(View.GONE);
         stage.addView(compare, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout raw = new LinearLayout(this);
-        raw.setOrientation(LinearLayout.VERTICAL);
-        raw.setGravity(android.view.Gravity.CENTER);
-        raw.setPadding(dp(24), dp(16), dp(24), dp(16));
-        raw.setVisibility(View.GONE);
-        TextView rawTitle = label("RAW LOADED", 34, UI_PAPER, tfDisplay);
-        rawTitle.setLetterSpacing(-0.055f);
-        raw.addView(rawTitle, new LinearLayout.LayoutParams(-2, -2));
-        rawName = label("", 9, UI_PAPER, tfHan);
-        rawName.setAlpha(0.7f);
-        rawName.setLineSpacing(dp(4), 1.0f);
+        rawState = buildRawState();
+        rawState.setVisibility(View.GONE);
+        stage.addView(rawState, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+        // 渲染与导出共用这条 1dp 线，贴在舞台底边。
+        final android.widget.FrameLayout busy = new android.widget.FrameLayout(this);
+        progressBar = progressLine();
+        exportProgressBar = progressLine();
+        busy.addView(progressBar, new android.widget.FrameLayout.LayoutParams(
+                -1, Math.max(1, Tokens.dp(this, 1))));
+        busy.addView(exportProgressBar, new android.widget.FrameLayout.LayoutParams(
+                -1, Math.max(1, Tokens.dp(this, 1))));
+        final android.widget.FrameLayout.LayoutParams blp = new android.widget.FrameLayout.LayoutParams(
+                -1, Math.max(1, Tokens.dp(this, 1)), android.view.Gravity.BOTTOM);
+        stage.addView(busy, blp);
+        return stage;
+    }
+
+    private ProgressBar progressLine() {
+        final ProgressBar p = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        p.setIndeterminate(true);
+        p.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(Tokens.ACCENT));
+        p.setVisibility(View.GONE);
+        return p;
+    }
+
+    /** 空状态：词标 + 一句标题 + 一个按钮。全屏 4 个元素。 */
+    private View buildEmpty() {
+        final android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+
+        final TextView mark = Chrome.wordmark(this, "SpektraLab");
+        mark.setPadding(Tokens.dp(this, 4), Tokens.dp(this, 8), 0, 0);
+        mark.setOnLongClickListener(v -> { showAbout(); return true; });
+        box.addView(mark, new android.widget.FrameLayout.LayoutParams(-2, -2,
+                android.view.Gravity.TOP | android.view.Gravity.START));
+
+        final LinearLayout stack = new LinearLayout(this);
+        stack.setOrientation(LinearLayout.VERTICAL);
+        stack.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        stack.setPadding(Tokens.dp(this, 4), 0, Tokens.dp(this, 4), 0);
+
+        stack.addView(Chrome.title(this, "选择一张照片开始"),
+                new LinearLayout.LayoutParams(-1, -2));
+
+        final TextView sub = Chrome.hint(this, "RAW · JPEG · HEIC", false);
+        sub.setGravity(android.view.Gravity.CENTER);
+        final LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = Tokens.dp(this, 10);
+        stack.addView(sub, slp);
+
+        final TextView pick = Chrome.wideButton(this, "选择照片");
+        pick.setOnClickListener(v -> pickImage());
+        pick.setOnLongClickListener(v -> { showImportMenu(); return true; });
+        final LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                -1, Tokens.dp(this, 52));
+        plp.topMargin = Tokens.dp(this, 30);
+        stack.addView(pick, plp);
+
+        final TextView tip = Chrome.hint(this, "长按「选择照片」可导入 RAW", false);
+        tip.setGravity(android.view.Gravity.CENTER);
+        final LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, -2);
+        tlp.topMargin = Tokens.dp(this, 14);
+        stack.addView(tip, tlp);
+
+        // 高度必须 wrap_content，否则 gravity=CENTER 不生效（内容会从顶部开始堆）
+        stack.setTranslationY(-Tokens.dp(this, 26));
+        box.addView(stack, new android.widget.FrameLayout.LayoutParams(
+                -1, -2, android.view.Gravity.CENTER));
+        return box;
+    }
+
+    /** RAW 已解码、还没渲染：告诉用户下一步只有一个按钮。 */
+    private View buildRawState() {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(android.view.Gravity.CENTER);
+
+        box.addView(Chrome.title(this, "RAW LOADED"), new LinearLayout.LayoutParams(-1, -2));
+
+        rawName = Tokens.text(this, "", Tokens.SP_BODY, Tokens.TEXT_2, Tokens.han(), 0f, false);
         rawName.setGravity(android.view.Gravity.CENTER);
-        LinearLayout.LayoutParams rnlp = new LinearLayout.LayoutParams(-2, -2);
-        rnlp.topMargin = dp(13);
-        raw.addView(rawName, rnlp);
-        stage.addView(raw, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        rawState = raw;
+        rawName.setSingleLine(true);
+        rawName.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        final LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(-1, -2);
+        nlp.topMargin = Tokens.dp(this, 12);
+        box.addView(rawName, nlp);
 
-        // A render is 1-5 s and a 2 px rule is too quiet to carry it: this is
-        // the page's own vocabulary (a word in the middle of the blue field).
-        busyLabel = label("Rendering", 20, UI_PAPER, tfDisplay);
-        busyLabel.setAllCaps(true);
-        busyLabel.setLetterSpacing(0.12f);
-        busyLabel.setAlpha(0.9f);
-        busyLabel.setGravity(android.view.Gravity.CENTER);
-        busyLabel.setVisibility(View.GONE);
-        stage.addView(busyLabel, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        final TextView tip = Chrome.hint(this, "点「渲染胶片」得到胶片图", false);
+        tip.setGravity(android.view.Gravity.CENTER);
+        final LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, -2);
+        tlp.topMargin = Tokens.dp(this, 10);
+        box.addView(tip, tlp);
+        return box;
+    }
 
-        preview.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1f));
+    /** 底部：一行提示 + 换图/调色 + 主按钮。 */
+    private View buildFoot() {
+        final LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.VERTICAL);
+        foot.setPadding(Tokens.dp(this, Tokens.GUTTER), 0,
+                Tokens.dp(this, Tokens.GUTTER), Tokens.dp(this, 14));
 
-        // The two jobs the page leaves out (it has no renderer): a 2 px rule
-        // that appears in the panel while either one is running.
-        // A fixed 2 px slot, so the panel does not jump when a job starts; the
-        // two rules share it and are never both meaningful at once.
-        android.widget.FrameLayout busy = new android.widget.FrameLayout(this);
-        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setIndeterminate(true);
-        progressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(UI_PAPER));
-        progressBar.setVisibility(View.GONE);
-        busy.addView(progressBar, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        exportProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        exportProgressBar.setIndeterminate(true);
-        exportProgressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(UI_PAPER));
-        exportProgressBar.setVisibility(View.GONE);
-        busy.addView(exportProgressBar, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        preview.addView(busy, new LinearLayout.LayoutParams(-1, dp(2)));
+        statusText = Chrome.hint(this, "", false);
+        statusText.setMinHeight(Tokens.dp(this, 20));
+        statusText.setVisibility(View.INVISIBLE);
+        foot.addView(statusText, new LinearLayout.LayoutParams(-1, -2));
 
-        // .preview-foot: 23 px, 6 px, hairline over it.
-        preview.addView(hairline(0x2EFFFFFF), new LinearLayout.LayoutParams(-1, dp(1)));
-        LinearLayout foot = new LinearLayout(this);
-        foot.setOrientation(LinearLayout.HORIZONTAL);
-        foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        foot.setPadding(dp(16), 0, dp(16), 0);
-        fileLabel = label("No source selected", 7, UI_PAPER, tfBody);
-        fileLabel.setAlpha(0.68f);
-        fileLabel.setSingleLine(true);
-        fileLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        foot.addView(fileLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        statusText = label("Waiting for input", 7, UI_PAPER, tfBody);
-        statusText.setAllCaps(true);
-        statusText.setSingleLine(true);
-        statusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        statusText.setGravity(android.view.Gravity.END);
-        // Never let a full sentence squeeze the file name out of the foot.
-        statusText.setMaxWidth(Math.round(getResources().getConfiguration().screenWidthDp
-                * 0.62f * getResources().getDisplayMetrics().density));
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-2, -2);
-        slp.leftMargin = dp(14);
-        foot.addView(statusText, slp);
-        preview.addView(foot, new LinearLayout.LayoutParams(-1, dp(23)));
-        lab.addView(preview, new LinearLayout.LayoutParams(-1, 0, 1f));
+        final LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
-        // ---- controls: 178 px, padding 0/16/8 ------------------------------
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        controls.setPadding(dp(16), 0, dp(16), dp(8));
-        controls.setBackgroundColor(UI_PAPER);
+        actionSwap = Chrome.textAction(this, "换图");
+        actionSwap.setOnClickListener(v -> pickImage());
+        actionSwap.setOnLongClickListener(v -> { showImportMenu(); return true; });
+        bar.addView(actionSwap, new LinearLayout.LayoutParams(
+                -2, Tokens.dp(this, Tokens.TOUCH_MIN)));
 
-        LinearLayout controlHead = new LinearLayout(this);
-        controlHead.setOrientation(LinearLayout.HORIZONTAL);
-        controlHead.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView lookTitle = label("Look settings", 7, UI_INK, tfBody);
-        lookTitle.setAllCaps(true);
-        lookTitle.setLetterSpacing(0.05f);
-        controlHead.addView(lookTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView resetButton = label("Reset", 7, UI_MUTED, tfBody);
-        resetButton.setAllCaps(true);
-        resetButton.setLetterSpacing(0.04f);
-        resetButton.setPaintFlags(resetButton.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
-        resetButton.setPadding(0, dp(3), 0, dp(3));
-        resetButton.setOnClickListener(v -> resetLook());
-        controlHead.addView(resetButton);
-        controls.addView(controlHead, new LinearLayout.LayoutParams(-1, dp(26)));
-        controls.addView(hairline(UI_LINE), new LinearLayout.LayoutParams(-1, dp(1)));
+        actionTune = Chrome.textAction(this, "调色");
+        actionTune.setOnClickListener(v -> { if (panel != null) panel.show(); });
+        final LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                -2, Tokens.dp(this, Tokens.TOUCH_MIN));
+        alp.leftMargin = Tokens.dp(this, 16);
+        bar.addView(actionTune, alp);
 
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setOrientation(LinearLayout.HORIZONTAL);
-        final String[] tabNames = {"胶片", "光学", "画幅", "边框"};
-        for (int i = 0; i < tabNames.length; ++i) {
-            final int index = i;
-            android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            TextView number = label(String.format(java.util.Locale.US, "%02d", i + 1), 6, UI_MUTED, tfBody);
-            number.setAlpha(0.65f);
-            row.addView(number);
-            TextView name = label(tabNames[i], 8, UI_MUTED, tfHan);
-            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(-2, -2);
-            nlp.leftMargin = dp(6);
-            row.addView(name, nlp);
-            cell.addView(row, new android.widget.FrameLayout.LayoutParams(-1, -1));
-            View bar = new View(this);
-            bar.setBackgroundColor(UI_BLUE);
-            bar.setVisibility(View.INVISIBLE);
-            android.widget.FrameLayout.LayoutParams blp = new android.widget.FrameLayout.LayoutParams(
-                    -1, dp(2), android.view.Gravity.BOTTOM);
-            blp.rightMargin = dp(14);
-            cell.addView(bar, blp);
-            cell.setOnClickListener(v -> setTab(index));
-            tabs.addView(cell, new LinearLayout.LayoutParams(0, dp(29), 1f));
-            tabCells[i] = cell;
-            tabBars[i] = bar;
+        bar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+
+        primaryAction = Chrome.primaryButton(this, "选择照片", true);
+        primaryAction.setOnClickListener(v -> onPrimary());
+        primaryAction.setOnLongClickListener(v -> { onPrimaryLong(); return true; });
+        bar.addView(primaryAction, new LinearLayout.LayoutParams(
+                -2, Tokens.dp(this, Tokens.BTN_HEIGHT_SM)));
+
+        foot.addView(bar, new LinearLayout.LayoutParams(-1, Tokens.dp(this, Tokens.TOUCH_MIN)));
+
+        // 「长按导出」的可用性标识：只在有图已渲染时出现，不占常态空间
+        exportHint = Chrome.hint(this, "长按「导出」可选尺寸", false);
+        exportHint.setGravity(android.view.Gravity.END);
+        exportHint.setPadding(0, Tokens.dp(this, 2), 0, 0);
+        foot.addView(exportHint, new LinearLayout.LayoutParams(-1, -2));
+        return foot;
+    }
+
+    /** 主按钮＝下一步，用户不需要判断该点哪里。 */
+    private void onPrimary() {
+        if (rendering || exporting) return;
+        if (lastRenderedBitmap != null) exportImage("live");
+        else if (session != null) renderImage();
+        else pickImage();
+    }
+
+    /** 长按：RAW 导入 / 全尺寸导出 / 导入方式，都不占界面。 */
+    private void onPrimaryLong() {
+        if (lastRenderedBitmap != null) showExportDialog();
+        else if (session == null) pickRawFile();
+        else showImportMenu();
+    }
+
+    private void refreshActions() {
+        if (primaryAction == null) return;
+        final boolean hasSession = session != null;
+        final boolean rendered = lastRenderedBitmap != null;
+        if (rendering) {
+            Chrome.setPrimary(primaryAction, "渲染中…", false);
+        } else if (exporting) {
+            Chrome.setPrimary(primaryAction, "导出中…", false);
+        } else if (rendered) {
+            Chrome.setPrimary(primaryAction, "导出", true);
+        } else if (hasSession) {
+            Chrome.setPrimary(primaryAction, "渲染胶片", true);
+        } else {
+            Chrome.setPrimary(primaryAction, "选择照片", true);
         }
-        controls.addView(tabs, new LinearLayout.LayoutParams(-1, dp(29)));
-        controls.addView(hairline(UI_LINE), new LinearLayout.LayoutParams(-1, dp(1)));
+        actionSwap.setVisibility(rendered || hasSession ? View.VISIBLE : View.GONE);
+        actionTune.setVisibility(rendered ? View.VISIBLE : View.GONE);
 
-        android.widget.FrameLayout panelHolder = new android.widget.FrameLayout(this);
-        panelHolder.setPadding(0, dp(10), 0, 0);
-
-        // (01) film & paper: two selects, 11 px apart
-        LinearLayout filmPanel = new LinearLayout(this);
-        filmPanel.setOrientation(LinearLayout.VERTICAL);
-        filmSpinner = new Spinner(this);
-        filmPanel.addView(selectRow("胶片", filmSpinner), new LinearLayout.LayoutParams(-1, -2));
-        printSpinner = new Spinner(this);
-        LinearLayout.LayoutParams printLp = new LinearLayout.LayoutParams(-1, -2);
-        printLp.topMargin = dp(11);
-        filmPanel.addView(selectRow("相纸 / 拷贝片", printSpinner), printLp);
-        panelHolder.addView(filmPanel, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        panels[0] = filmPanel;
-
-        // (02) optics: four equal rows (grid-template-rows: repeat(4, 1fr))
-        opticsPanel = new LinearLayout(this);
-        opticsPanel.setOrientation(LinearLayout.VERTICAL);
-        // A disabled SeekBar swallows nothing, so a tap on a locked row lands
-        // here and can say why it did nothing.
-        opticsPanel.setOnClickListener(v -> {
-            if (!opticsUnlocked) {
-                Toast.makeText(this, session == null ? "先导入一张照片" : "先点 03 渲染一次，再调光学",
-                        Toast.LENGTH_SHORT).show();
+        // 空状态只留中间那一个按钮：底部动作区整块收起，避免两个「选择照片」同时出现
+        final boolean barNeeded = hasSession || rendered || rendering || exporting;
+        if (footBar != null) footBar.setVisibility(barNeeded ? View.VISIBLE : View.GONE);
+        if (exportHint != null) {
+            // 动作栏出现后高度固定：用 INVISIBLE 占位，避免"渲染完→导出"时底部跳一下
+            if (!barNeeded) {
+                exportHint.setVisibility(View.GONE);
+            } else {
+                exportHint.setVisibility(rendered && !rendering && !exporting
+                        ? View.VISIBLE : View.INVISIBLE);
             }
-        });
-        exposureBar = rangeRow(opticsPanel, "放大机曝光", 0.25f, 4.0f, printExposure, v -> printExposure = v);
-        grainBar = rangeRow(opticsPanel, "颗粒", 0.0f, 2.0f, grainAmount, v -> grainAmount = v);
-        halationBar = rangeRow(opticsPanel, "光晕", 0.0f, 4.0f, halationAmount, v -> halationAmount = v);
-        glareBar = rangeRow(opticsPanel, "眩光", 0.0f, 12.0f, glareAmount, v -> glareAmount = v);
-        panelHolder.addView(opticsPanel, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        panels[1] = opticsPanel;
+        }
+    }
 
-        // (03) physical scale: one select and the reference line
-        LinearLayout formatPanel = new LinearLayout(this);
-        formatPanel.setOrientation(LinearLayout.VERTICAL);
-        formatSpinner = new Spinner(this);
-        formatPanel.addView(selectRow("颗粒 / 光晕的物理尺度", formatSpinner), new LinearLayout.LayoutParams(-1, -2));
-        final String[] formatNames = {"135 全画幅 · 36mm", "半格 · 24mm", "XPan · 65mm", "645 · 56mm",
-                "6×6 · 56mm", "6×7 · 70mm", "6×9 · 84mm", "6×12 · 120mm", "6×17 · 170mm"};
-        final float[] formatMm = {36f, 24f, 65f, 56f, 56f, 70f, 84f, 120f, 170f};
-        formatSpinner.setAdapter(inkAdapter(java.util.Arrays.asList(formatNames)));
+    /** 一句提示：空字符串＝不显示（高度仍占位，布局不跳）。 */
+    private void say(CharSequence s, boolean danger) {
+        if (statusText == null) return;
+        statusText.setText(s == null ? "" : s);
+        statusText.setTextColor(danger ? Tokens.DANGER : Tokens.TEXT_3);
+        statusText.setVisibility((s == null || s.length() == 0) ? View.INVISIBLE : View.VISIBLE);
+    }
+
+    // ------------------------------------------------------------ 参数弹层
+
+    private void buildPanel() {
+        panel = new ParamSheet(this);
+
+        // (0) 胶片 & 相纸：中文名，型号保留原文
+        final LinearLayout films = new LinearLayout(this);
+        films.setOrientation(LinearLayout.VERTICAL);
+        filmSpinner = UiPicker.field(this, "胶片");
+        printSpinner = UiPicker.field(this, "相纸");
+        films.addView(filmSpinner.view(), new LinearLayout.LayoutParams(-1, -2));
+        films.addView(printSpinner.view(), new LinearLayout.LayoutParams(-1, -2));
+        panel.setGroup(0, films);
+
+        // (1) 光学：三条常用，眩光收在「更多参数」
+        final LinearLayout optics = new LinearLayout(this);
+        optics.setOrientation(LinearLayout.VERTICAL);
+        exposureRow = new SliderRow(this, "明暗", 0.25f, 4.0f, printExposure,
+                v -> printExposure = v, v -> { applyParams(); rerenderIfPossible(); });
+        grainRow = new SliderRow(this, "颗粒", 0.0f, 2.0f, grainAmount,
+                v -> grainAmount = v, v -> { applyParams(); rerenderIfPossible(); });
+        halationRow = new SliderRow(this, "光晕", 0.0f, 4.0f, halationAmount,
+                v -> halationAmount = v, v -> { applyParams(); rerenderIfPossible(); });
+        glareRow = new SliderRow(this, "眩光", 0.0f, 12.0f, glareAmount,
+                v -> glareAmount = v, v -> { applyParams(); rerenderIfPossible(); });
+        optics.addView(exposureRow, new LinearLayout.LayoutParams(-1, -2));
+        optics.addView(grainRow, new LinearLayout.LayoutParams(-1, -2));
+        optics.addView(halationRow, new LinearLayout.LayoutParams(-1, -2));
+        optics.addView(glareRow, new LinearLayout.LayoutParams(-1, -2));
+        glareRow.setVisibility(View.GONE);
+
+        final LinearLayout more = new LinearLayout(this);
+        more.setOrientation(LinearLayout.HORIZONTAL);
+        more.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        more.setPadding(Tokens.dp(this, Tokens.GUTTER), 0, Tokens.dp(this, Tokens.GUTTER), 0);
+        final TextView moreText = Tokens.text(this, "更多参数", 10f, Tokens.TEXT_3,
+                Tokens.han(), 0f, false);
+        more.addView(moreText, new LinearLayout.LayoutParams(0, -2, 1f));
+        final View moreChev = new Chrome.Glyph(this, Tokens.TEXT_3, Chrome.Glyph.CHEVRON_DOWN);
+        more.addView(moreChev, new LinearLayout.LayoutParams(
+                Tokens.dp(this, 12), Tokens.dp(this, 12)));
+        more.setOnClickListener(v -> {
+            final boolean show = glareRow.getVisibility() != View.VISIBLE;
+            glareRow.setVisibility(show ? View.VISIBLE : View.GONE);
+            moreChev.setRotation(show ? 180f : 0f);
+        });
+        optics.addView(more, new LinearLayout.LayoutParams(-1, Tokens.dp(this, 48)));
+        optics.addView(ParamSheet.hint(this, "数值可点：直接输入，或用 ± 按 0.01 微调"),
+                new LinearLayout.LayoutParams(-1, -2));
+        panel.setGroup(1, optics);
+
+        // (2) 画幅（颗粒/光晕的物理尺度）
+        final LinearLayout scale = new LinearLayout(this);
+        scale.setOrientation(LinearLayout.VERTICAL);
+        formatSpinner = UiPicker.field(this, "物理尺度");
+        formatSpinner.setItems(java.util.Arrays.asList(FORMAT_NAMES));
         formatSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                filmFormatMm = formatMm[position];
-                if (formatNote != null) formatNote.setText(formatNames[position]);
+            @Override public void onItemSelected(AdapterView<?> parent, View view,
+                                                 int position, long id) {
+                if (position < 0 || position >= FORMAT_MM.length) return;
+                filmFormatMm = FORMAT_MM[position];
                 applyParams();
-                if (uiReady && lastRenderedBitmap != null) renderImage();
+                rerenderIfPossible();
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
-        LinearLayout meta = new LinearLayout(this);
-        meta.setOrientation(LinearLayout.HORIZONTAL);
-        meta.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView metaLabel = label("Optical reference", 7, UI_MUTED, tfBody);
-        metaLabel.setAllCaps(true);
-        metaLabel.setLetterSpacing(0.025f);
-        meta.addView(metaLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        formatNote = label(formatNames[0], 7, UI_MUTED, tfHan);
-        meta.addView(formatNote);
-        LinearLayout.LayoutParams metaLp = new LinearLayout.LayoutParams(-1, -2);
-        metaLp.topMargin = dp(16);
-        formatPanel.addView(meta, metaLp);
-        panelHolder.addView(formatPanel, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        panels[2] = formatPanel;
+        scale.addView(formatSpinner.view(), new LinearLayout.LayoutParams(-1, -2));
+        final TextView note = Chrome.hint(this, "135 全画幅按 36mm 计算", false);
+        note.setPadding(Tokens.dp(this, Tokens.GUTTER), Tokens.dp(this, 12),
+                Tokens.dp(this, Tokens.GUTTER), Tokens.dp(this, 10));
+        scale.addView(note, new LinearLayout.LayoutParams(-1, -2));
+        panel.setGroup(2, scale);
 
-        // (04) 边框: the rebate and the date back. Both are SHOOT-scope state
-        // that the engine has carried all along (RFC-032 / RFC-031) and the
-        // phone build had no way to reach.
-        LinearLayout edgePanel = new LinearLayout(this);
-        edgePanel.setOrientation(LinearLayout.VERTICAL);
-        overscanMark = new Square(this, UI_BLUE, 0x66171717);
-        edgePanel.addView(toggleRow("片边（胶片边缘）", overscanMark, overscanOn, on -> {
-            if (on && edgeIds.isEmpty()) {
-                // The engine lays the rebate out for the gate's shape and
-                // refuses anything else, so say so instead of failing a render.
-                overscanMark.setLit(false);
-                Toast.makeText(this, "这张图的长宽比不对应任何片门", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            overscanOn = on;
-            onEdgeChanged();
-        }), new LinearLayout.LayoutParams(-1, dp(26)));
+        // (3) 更多：片边 / 片边格式 / 日期水印
+        final LinearLayout extra = new LinearLayout(this);
+        extra.setOrientation(LinearLayout.VERTICAL);
 
-        edgeSpinner = new Spinner(this);
-        LinearLayout.LayoutParams edgeLp = new LinearLayout.LayoutParams(-1, -2);
-        edgeLp.topMargin = dp(4);
-        edgePanel.addView(selectRow("片边格式", edgeSpinner), edgeLp);
+        overscanMark = new Square(this, Tokens.ACCENT, Tokens.HAIR_STRONG);
+        final LinearLayout overscanToggle = toggleRow("片边（胶片边缘）", overscanMark,
+                overscanOn, on -> {
+                    if (on && edgeIds.isEmpty()) {
+                        overscanMark.setLit(false);
+                        say("这张图的长宽比不对应任何片门", true);
+                        return;
+                    }
+                    overscanOn = on;
+                    onEdgeChanged();
+                });
+        extra.addView(overscanToggle, new LinearLayout.LayoutParams(
+                -1, Tokens.dp(this, 48)));
+
+        edgeSpinner = UiPicker.field(this, "片边格式");
         edgeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+            @Override public void onItemSelected(AdapterView<?> parent, View view,
+                                                 int position, long id) {
                 if (position < 0 || position >= edgeIds.size()) return;
                 overscanFormat = edgeIds.get(position);
-                if (uiReady && lastRenderedBitmap != null) renderImage();
+                rerenderIfPossible();
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
+        extra.addView(edgeSpinner.view(), new LinearLayout.LayoutParams(-1, -2));
 
-        dateMark = new Square(this, UI_BLUE, 0x66171717);
-        LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(-1, dp(26));
-        dateLp.topMargin = dp(4);
-        edgePanel.addView(toggleRow("日期水印", dateMark, dateOn, on -> {
+        dateMark = new Square(this, Tokens.ACCENT, Tokens.HAIR_STRONG);
+        final LinearLayout dateToggle = toggleRow("日期水印", dateMark, dateOn, on -> {
             dateOn = on;
             if (dateOn && dateText == null) dateText = imprintDate();
             onEdgeChanged();
-        }), dateLp);
+        });
+        extra.addView(dateToggle, new LinearLayout.LayoutParams(-1, Tokens.dp(this, 48)));
+        panel.setGroup(3, extra);
 
-        panelHolder.addView(edgePanel, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        panels[3] = edgePanel;
-
-        controls.addView(panelHolder, new LinearLayout.LayoutParams(-1, 0, 1f));
-        lab.addView(controls, new LinearLayout.LayoutParams(-1, dp(178)));
-        app.addView(lab, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        loadStockCatalog();
-        refreshEdgeFormats();
-        setTab(0);
-        setStep(0);
-        // Nothing to adjust yet: there is no frame until one is rendered.
-        setOpticsUnlocked(false);
+        panel.setOnReset(this::resetLook);
+        panel.setOnAbout(this::showAbout);
+        panel.setTab(1);
     }
 
-    /** Only the gates whose shape this frame is: the engine's own 5 % rule. */
+    private void rerenderIfPossible() {
+        if (uiReady && lastRenderedBitmap != null) renderImage();
+    }
+
+    /** 一行开关：左标签 12sp，右 18dp 方块，点行即切。 */
+    private LinearLayout toggleRow(String text, Square mark, boolean initial,
+                                   java.util.function.Consumer<Boolean> onChange) {
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(Tokens.dp(this, Tokens.GUTTER), 0, Tokens.dp(this, Tokens.GUTTER), 0);
+
+        final TextView label = Tokens.text(this, text, Tokens.SP_BODY, Tokens.TEXT_2,
+                Tokens.han(), 0f, false);
+        row.addView(label, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        mark.setLit(initial);
+        row.addView(mark, new LinearLayout.LayoutParams(
+                Tokens.dp(this, 18), Tokens.dp(this, 18)));
+
+        final boolean[] state = {initial};
+        row.setOnClickListener(v -> {
+            state[0] = !state[0];
+            mark.setLit(state[0]);
+            onChange.accept(state[0]);
+        });
+        return row;
+    }
+
+    /** 舞台上显示的是哪一层：空 / 照片（对比）/ RAW 名。 */
+    private void setStage(int mode, String name) {
+        if (emptyState == null) return;
+        if (mode == 0) compare.clear();
+        emptyState.setVisibility(mode == 0 ? View.VISIBLE : View.GONE);
+        compare.setVisibility(mode == 1 ? View.VISIBLE : View.GONE);
+        rawState.setVisibility(mode == 2 ? View.VISIBLE : View.GONE);
+        if (name != null && !name.isEmpty() && rawName != null) rawName.setText(name);
+    }
+
+    /** 光学滑杆只在有帧可改时可用。 */
+    private void setOpticsUnlocked(boolean unlocked) {
+        opticsUnlocked = unlocked;
+        final SliderRow[] rows = {exposureRow, grainRow, halationRow, glareRow};
+        for (SliderRow r : rows) if (r != null) r.setRowEnabled(unlocked);
+    }
+
+    /** 恢复默认：出厂配方 + 四条滑杆回中位。 */
+    private void resetLook() {
+        printExposure = 1.0f;
+        grainAmount = 1.0f;
+        halationAmount = 1.0f;
+        glareAmount = 3.0f;
+        if (exposureRow != null) exposureRow.setValue(printExposure);
+        if (grainRow != null) grainRow.setValue(grainAmount);
+        if (halationRow != null) halationRow.setValue(halationAmount);
+        if (glareRow != null) glareRow.setValue(glareAmount);
+
+        filmFormatMm = 36f;
+        if (formatSpinner != null) formatSpinner.setSelection(0, false);
+
+        final int film = filmIds.indexOf("kodak_portra_400");
+        if (film >= 0 && filmSpinner != null) {
+            filmStock = "kodak_portra_400";
+            filmSpinner.setSelection(film, false);
+        }
+        final int print = printIds.indexOf("kodak_portra_endura");
+        if (print >= 0 && printSpinner != null) {
+            printStock = "kodak_portra_endura";
+            printSpinner.setSelection(print, false);
+        }
+
+        applySessionParams();
+        if (lastRenderedBitmap != null) renderImage();
+        try { DebugSink.text("look", "reset"); } catch (Throwable ignored) { }
+    }
+
+    /** 只列出这张图真正对应的片门：引擎自己的 5% 规则。 */
     private void refreshEdgeFormats() {
         if (edgeSpinner == null) return;
         edgeLabels.clear();
@@ -669,7 +591,7 @@ public class MainActivity extends Activity {
             edgeIds.add(EDGE_IDS[i]);
             if (error < bestError) { bestError = error; best = edgeIds.size() - 1; }
         }
-        edgeSpinner.setAdapter(inkAdapter(edgeLabels));
+        edgeSpinner.setItems(edgeLabels);
         final int keep = edgeIds.indexOf(overscanFormat);
         edgeSpinner.setSelection(keep >= 0 ? keep : Math.max(0, best), false);
         if (!edgeIds.isEmpty()) overscanFormat = edgeIds.get(edgeSpinner.getSelectedItemPosition());
@@ -681,18 +603,17 @@ public class MainActivity extends Activity {
 
     private void onEdgeChanged() {
         applyParams();
-        if (uiReady && lastRenderedBitmap != null) renderImage();
+        rerenderIfPossible();
     }
 
-    /** The manufacturer's edge print: the stock's own catalogue name. */
+    /** 制造商印在片边上的字：这片胶卷自己的名字。 */
     private String edgeTextFor(String stock) {
         final int i = filmIds.indexOf(stock);
         final String name = (i >= 0 && i < filmLabels.size()) ? filmLabels.get(i) : "KODAK";
         return name.toUpperCase(java.util.Locale.US);
     }
 
-    /** "'26 10 31" — a date back's format, from the frame's own EXIF date when
-     *  the file has one, from today when it does not. */
+    /** "'26 10 31"：优先用画面自己的 EXIF 拍摄日期，没有就用今天。 */
     private String imprintDate() {
         if (dateText != null) return dateText;
         String text = null;
@@ -721,8 +642,7 @@ public class MainActivity extends Activity {
         return dateText;
     }
 
-    /** A 12 px square that fills when on: the page has no switch, and a filled
-     *  square is the same vocabulary the tabs use. */
+    /** 18dp 方块：off 是 1px 描边，on 是琥珀填充 + 深色勾。 */
     private static class Square extends View {
         private final android.graphics.Paint paint =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
@@ -748,169 +668,17 @@ public class MainActivity extends Activity {
                 paint.setStyle(android.graphics.Paint.Style.FILL);
                 paint.setColor(onColor);
                 canvas.drawRect(0, 0, w, h, paint);
+                paint.setStyle(android.graphics.Paint.Style.STROKE);
+                paint.setStrokeWidth(Math.max(1.5f, stroke * 1.5f));
+                paint.setColor(android.graphics.Color.TRANSPARENT);
+                paint.setColor(Tokens.TEXT_ON_ACCENT);
+                canvas.drawLine(w * 0.24f, h * 0.52f, w * 0.44f, h * 0.72f, paint);
+                canvas.drawLine(w * 0.44f, h * 0.72f, w * 0.78f, h * 0.30f, paint);
             } else {
                 paint.setStyle(android.graphics.Paint.Style.STROKE);
                 paint.setStrokeWidth(stroke);
                 paint.setColor(offColor);
                 canvas.drawRect(inset, inset, w - inset, h - inset, paint);
-            }
-        }
-    }
-
-    private View toggleRow(String labelText, Square mark, boolean initial,
-                           java.util.function.Consumer<Boolean> onChange) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.addView(label(labelText, 8, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        mark.setLit(initial);
-        row.addView(mark, new LinearLayout.LayoutParams(dp(12), dp(12)));
-        final boolean[] state = {initial};
-        row.setOnClickListener(v -> {
-            state[0] = !state[0];
-            mark.setLit(state[0]);
-            onChange.accept(state[0]);
-        });
-        return row;
-    }
-
-    /** .select-field: a 7 px muted label, then 24 px of row and a blue ↓. */
-    private View selectRow(String labelText, Spinner spinner) {
-        LinearLayout field = new LinearLayout(this);
-        field.setOrientation(LinearLayout.VERTICAL);
-        field.addView(label(labelText, 7, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
-
-        android.widget.FrameLayout wrap = new android.widget.FrameLayout(this);
-        spinner.setBackground(null);
-        spinner.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        spinner.setPadding(0, 0, dp(18), 0);
-        wrap.addView(spinner, new android.widget.FrameLayout.LayoutParams(-1, dp(24)));
-        TextView arrow = label("↓", 10, UI_BLUE, tfBody);
-        android.widget.FrameLayout.LayoutParams arrowLp = new android.widget.FrameLayout.LayoutParams(
-                -2, -2, android.view.Gravity.RIGHT | android.view.Gravity.BOTTOM);
-        arrowLp.bottomMargin = dp(5);
-        arrow.setClickable(false);
-        arrow.setFocusable(false);
-        wrap.addView(arrow, arrowLp);
-
-        LinearLayout.LayoutParams wrapLp = new LinearLayout.LayoutParams(-1, dp(26));
-        wrapLp.topMargin = dp(3);
-        field.addView(wrap, wrapLp);
-        return field;
-    }
-
-    /** .range-field: an 8 px head with the value in blue, then the 10 px bar. */
-    private SeekBar rangeRow(LinearLayout parent, String name, final float lo, final float hi,
-                             float initial, final java.util.function.Consumer<Float> apply) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        head.addView(label(name, 8, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView value = label(String.format(java.util.Locale.US, "%.2f", initial), 8, UI_BLUE, tfBody);
-        head.addView(value);
-        LinearLayout.LayoutParams headLp = new LinearLayout.LayoutParams(-1, -2);
-        headLp.bottomMargin = dp(2);
-        row.addView(head, headLp);
-
-        SeekBar bar = new SeekBar(this);
-        bar.setMax(1000);
-        bar.setProgress(Math.round((initial - lo) / (hi - lo) * 1000f));
-        styleRange(bar);
-        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-                float v = lo + (hi - lo) * progress / 1000f;
-                value.setText(String.format(java.util.Locale.US, "%.2f", v));
-                apply.accept(v);
-            }
-            @Override public void onStartTrackingTouch(SeekBar sb) { }
-            @Override public void onStopTrackingTouch(SeekBar sb) {
-                // The value only lived in a field until here: `apply` assigns
-                // it, nothing sent it. That is why dragging did nothing and
-                // re-picking the stock did everything (onStockChanged sends the
-                // whole set). Send on release: one JNI call per gesture, not
-                // one per hundredth of a stop.
-                applyParams();
-                if (uiReady && lastRenderedBitmap != null) renderImage();
-            }
-        });
-        row.addView(bar, new LinearLayout.LayoutParams(-1, dp(10)));
-        parent.addView(row, new LinearLayout.LayoutParams(-1, 0, 1f));
-        return bar;
-    }
-
-    /** 2 px track, square 9 px thumb: input[type=range] in the page. */
-    private void styleRange(SeekBar bar) {
-        final int thickness = dp(2);
-        final int inset = (dp(10) - thickness) / 2;
-        android.graphics.drawable.ShapeDrawable back = new android.graphics.drawable.ShapeDrawable(
-                new android.graphics.drawable.shapes.RectShape());
-        back.getPaint().setColor(UI_LINE);
-        android.graphics.drawable.ShapeDrawable fill = new android.graphics.drawable.ShapeDrawable(
-                new android.graphics.drawable.shapes.RectShape());
-        fill.getPaint().setColor(UI_BLUE);
-        android.graphics.drawable.ClipDrawable clip = new android.graphics.drawable.ClipDrawable(
-                fill, android.view.Gravity.LEFT, android.graphics.drawable.ClipDrawable.HORIZONTAL);
-        android.graphics.drawable.LayerDrawable layers = new android.graphics.drawable.LayerDrawable(
-                new android.graphics.drawable.Drawable[]{back, clip});
-        layers.setId(0, android.R.id.background);
-        layers.setId(1, android.R.id.progress);
-        // The insets are what make the track 2 px: a ShapeDrawable alone would
-        // paint its whole bounds.
-        layers.setLayerInset(0, 0, inset, 0, inset);
-        layers.setLayerInset(1, 0, inset, 0, inset);
-        bar.setProgressDrawable(layers);
-
-        android.graphics.drawable.ShapeDrawable thumb = new android.graphics.drawable.ShapeDrawable(
-                new android.graphics.drawable.shapes.RectShape());
-        thumb.getPaint().setColor(UI_BLUE);
-        thumb.setIntrinsicWidth(dp(9));
-        thumb.setIntrinsicHeight(dp(9));
-        bar.setThumb(thumb);
-        bar.setSplitTrack(false);
-        bar.setPadding(dp(5), 0, dp(5), 0);
-    }
-
-    /** Spinner rows in ink on paper, whatever the platform theme is doing. */
-    private ArrayAdapter<String> inkAdapter(final java.util.List<String> items) {
-        return new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
-            private View row(int position, boolean dropdown) {
-                String s = getItem(position);
-                TextView t = label(s == null ? "" : s, dropdown ? 13 : 9, UI_INK, tfHan);
-                t.setSingleLine(!dropdown);
-                t.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                if (dropdown) {
-                    t.setPadding(dp(16), dp(12), dp(16), dp(12));
-                    t.setBackgroundColor(UI_PAPER);
-                }
-                return t;
-            }
-            @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
-                return row(position, false);
-            }
-            @Override public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
-                return row(position, true);
-            }
-        };
-    }
-
-    private void setStep(int active) {
-        for (int i = 0; i < stepBars.length; ++i) {
-            stepBars[i].setVisibility(i == active ? View.VISIBLE : View.INVISIBLE);
-        }
-    }
-
-    private void setTab(int active) {
-        for (int i = 0; i < panels.length; ++i) {
-            panels[i].setVisibility(i == active ? View.VISIBLE : View.GONE);
-            tabBars[i].setVisibility(i == active ? View.VISIBLE : View.INVISIBLE);
-            android.view.ViewGroup row = (android.view.ViewGroup) tabCells[i];
-            row = (android.view.ViewGroup) row.getChildAt(0);
-            for (int j = 0; j < row.getChildCount(); ++j) {
-                ((TextView) row.getChildAt(j)).setTextColor(i == active ? UI_BLUE : UI_MUTED);
             }
         }
     }
@@ -939,60 +707,24 @@ public class MainActivity extends Activity {
         return new int[]{top, bottom};
     }
 
-    /** The optics sliders only mean something once there is a frame to change. */
-    private void setOpticsUnlocked(boolean unlocked) {
-        opticsUnlocked = unlocked;
-        if (opticsPanel == null) return;
-        opticsPanel.setAlpha(unlocked ? 1f : 0.38f);
-        SeekBar[] bars = {exposureBar, grainBar, halationBar, glareBar};
-        for (SeekBar bar : bars) if (bar != null) bar.setEnabled(unlocked);
-    }
 
-    /** Which of the three things on the stage is showing. */
-    private void setStage(int mode, String name) {
-        if (mode == 0) compare.clear();
-        emptyState.setVisibility(mode == 0 ? View.VISIBLE : View.GONE);
-        compare.setVisibility(mode == 1 ? View.VISIBLE : View.GONE);
-        rawState.setVisibility(mode == 2 ? View.VISIBLE : View.GONE);
-        previewIndex.setText(mode == 0 ? "(Empty / 000)" : "(Source / 001)");
-        if (name != null && !name.isEmpty()) {
-            fileLabel.setText(name);
-            rawName.setText(name);
-        }
-    }
 
-    /** The four cells are the old top bar: 01/02 open a picker, 03 renders, 04 exports. */
-    private void onWorkflow(int step) {
-        if (step == 0) {
-            pickImage();
-        } else if (step == 1) {
-            statusText.setText("选择要替换的照片…");
-            pickImage();
-        } else if (step == 2) {
-            renderImage();
-        } else {
-            showExportDialog();
-        }
-    }
 
     /** Long-press on 01: the three import routes, unchanged from 1.2.5. */
     private void showImportMenu() {
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("导入")
-                .setItems(new String[]{
-                        "从相册选择（照片 / JPEG）",
+        Sheet.list(this, "导入",
+                java.util.Arrays.asList("从相册选择（照片 / JPEG）",
                         "从文件选择（RAW / HEIC / 任意格式）",
-                        "按原始尺寸导入（可能失败）"},
-                        (d, which) -> {
-                            if (which == 0) {
-                                pickImage();
-                            } else if (which == 1) {
-                                pickRawFile();
-                            } else {
-                                confirmNativeImport();
-                            }
-                        })
-                .show();
+                        "按原始尺寸导入（可能失败）"),
+                0, which -> {
+                    if (which == 0) {
+                        pickImage();
+                    } else if (which == 1) {
+                        pickRawFile();
+                    } else {
+                        confirmNativeImport();
+                    }
+                });
     }
 
     /** 04: tiers, not a hard-coded sensor — the sizes come from the session and the device. */
@@ -1001,33 +733,16 @@ public class MainActivity extends Activity {
                 ? "全尺寸 " + sourceWidth + "×" + sourceHeight
                 : "全尺寸";
         final String fullNote = probe.isLimited()
-                ? "（本机上限约 " + String.format(java.util.Locale.US, "%.1f", maxImportPixels() / 1e6) + " MP，可能导出失败）"
+                ? "（本机上限约 " + String.format(java.util.Locale.US, "%.1f", maxImportPixels() / 1e6) + " MP，可能失败）"
                 : "（原图）";
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("导出 · " + probe.describe())
-                .setItems(new String[]{
-                        "预览 · 长边 2048（最快）",
-                        "预览 · 长边 3400",
-                        full + fullNote},
-                        (d, which) -> exportImage(which == 0 ? "live" : which == 1 ? "preview" : "full"))
-                .show();
+        Sheet.list(this, "导出 · " + probe.describe(),
+                java.util.Arrays.asList(
+                        "长边 2048（最快）",
+                        "长边 3400",
+                        full + fullNote),
+                0, which -> exportImage(which == 0 ? "live" : which == 1 ? "preview" : "full"));
     }
 
-    /** Reset: the page's four defaults and 135, then one render if there is a frame. */
-    private void resetLook() {
-        exposureBar.setProgress(Math.round((1.0f - 0.25f) / (4.0f - 0.25f) * 1000f));
-        grainBar.setProgress(500);
-        halationBar.setProgress(250);
-        glareBar.setProgress(250);
-        int film = filmIds.indexOf("kodak_portra_400");
-        if (film >= 0) filmSpinner.setSelection(film, false);
-        int print = printIds.indexOf("kodak_portra_endura");
-        if (print >= 0) printSpinner.setSelection(print, false);
-        formatSpinner.setSelection(0, false);
-        applySessionParams();
-        if (lastRenderedBitmap != null) renderImage();
-        DebugSink.text("look", "reset");
-    }
 
     /** .load-button's ↗, at 14 px: a stem and a head, nothing else. */
     private static class ArrowView extends View {
@@ -1127,13 +842,13 @@ public class MainActivity extends Activity {
         private void drawDivider(android.graphics.Canvas canvas, float x) {
             final float r = 6f * density, cy = getHeight() / 2f;
             paint.setStyle(android.graphics.Paint.Style.FILL);
-            paint.setColor(0xB3F1F1EE);
+            paint.setColor(0x66D9A55B);
             canvas.drawRect(x - 0.5f, 0f, x + 0.5f, getHeight(), paint);
-            paint.setColor(0xFFF1F1EE);
+            paint.setColor(Tokens.STAGE);
             canvas.drawRect(x - r, cy - r, x + r, cy + r, paint);
             paint.setStyle(android.graphics.Paint.Style.STROKE);
             paint.setStrokeWidth(Math.max(1f, density));
-            paint.setColor(0xFF1C2AA5);
+            paint.setColor(Tokens.ACCENT);
             canvas.drawRect(x - r, cy - r, x + r, cy + r, paint);
             paint.setStyle(android.graphics.Paint.Style.FILL);
         }
@@ -1222,35 +937,35 @@ public class MainActivity extends Activity {
         final String overDispatch =
                 "\n\n另：超过 1677 万像素（约 5000×3350）时，部分驱动会丢掉画面块，"
                 + "可能出现顶部未渲染的区域。";
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("按原始尺寸导入")
-                .setMessage((probe.isLimited()
-                        ? "本机可用内存与 GPU 上限合计约 " + String.format("%.1f", maxImportPixels() / 1e6)
-                          + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
-                        : "按原始尺寸导入（不做任何缩放）。") + overDispatch
-                        + "\n\n仍要继续吗？")
-                .setPositiveButton("继续", (d, w) -> { importAtNativeSize = true; pickRawFile(); })
-                .setNegativeButton("取消", null)
-                .show();
+        final String head = probe.isLimited()
+                ? "本机可用内存与 GPU 上限合计约 "
+                  + String.format(java.util.Locale.US, "%.1f", maxImportPixels() / 1e6)
+                  + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
+                : "按原始尺寸导入（不做任何缩放）。";
+        Sheet.confirm(this, "按原始尺寸导入", head + overDispatch, "继续", () -> {
+            importAtNativeSize = true;
+            pickRawFile();
+        });
     }
 
     /** Long-press on the title: version, update check, and where the code lives. */
     private void showAbout() {
         final String version = UpdateCheck.versionName(this) + "（" + UpdateCheck.versionCode(this) + "）";
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("SpektraLab Android " + version)
-                .setMessage(probe.describe()
-                        + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
-                        + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android")
-                .setPositiveButton("检查更新", (d, w) -> UpdateCheck.check(this, true))
-                .setNeutralButton("打开 GitHub", (d, w) -> {
-                    try {
-                        startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
-                    } catch (Throwable ignored) { }
-                })
-                .setNegativeButton("关闭", null)
-                .show();
+        final String body = probe.describe()
+                + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
+                + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android";
+        Sheet.listWithBody(this, "SpektraLab " + version, body,
+                java.util.Arrays.asList("检查更新", "打开 GitHub"),
+                which -> {
+                    if (which == 0) {
+                        UpdateCheck.check(this, true);
+                    } else {
+                        try {
+                            startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
+                        } catch (Throwable ignored) { }
+                    }
+                });
     }
 
     /** Reads assets/resources/stock_catalog.json (generated from the engine's profiles). */
@@ -1260,17 +975,15 @@ public class MainActivity extends Activity {
             int off = 0, n;
             while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
             org.json.JSONObject root = new org.json.JSONObject(new String(buf, java.nio.charset.StandardCharsets.UTF_8));
-            readStocks(root.optJSONArray("films"), filmIds, filmLabels, filmTypes);
-            readStocks(root.optJSONArray("prints"), printIds, printLabels, null);
+            readStocks(root.optJSONArray("films"), filmIds, filmLabels, filmTypes, filmTypeLabels, false);
+            readStocks(root.optJSONArray("prints"), printIds, printLabels, null, null, true);
         } catch (Throwable t) {
             android.util.Log.w("SpektraLab", "stock catalog: " + t);
         }
         if (filmIds.isEmpty()) { filmIds.add("kodak_portra_400"); filmLabels.add("Kodak Portra 400"); }
         if (printIds.isEmpty()) { printIds.add("kodak_portra_endura"); printLabels.add("Kodak Portra Endura"); }
 
-        ArrayAdapter<String> fa = inkAdapter(filmLabels);
-        fa.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        filmSpinner.setAdapter(fa);
+        filmSpinner.setItems(filmLabels, filmTypeLabels);
         filmSpinner.setSelection(Math.max(0, filmIds.indexOf(filmStock)), false);
         filmSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -1291,9 +1004,7 @@ public class MainActivity extends Activity {
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
 
-        ArrayAdapter<String> pa = inkAdapter(printLabels);
-        pa.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        printSpinner.setAdapter(pa);
+        printSpinner.setItems(printLabels, null);
         printSpinner.setSelection(Math.max(0, printIds.indexOf(printStock)), false);
         printSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -1306,7 +1017,7 @@ public class MainActivity extends Activity {
     }
 
     private static void readStocks(org.json.JSONArray array, List<String> ids, List<String> labels,
-                                   List<String> types) {
+                                   List<String> types, List<String> typeLabels, boolean paper) {
         if (array == null) return;
         for (int i = 0; i < array.length(); i++) {
             org.json.JSONObject o = array.optJSONObject(i);
@@ -1314,24 +1025,17 @@ public class MainActivity extends Activity {
             String id = o.optString("id");
             if (id.isEmpty()) continue;
             String name = o.optString("name", id);
-            StringBuilder label = new StringBuilder(name);
             String type = o.optString("type", "");
             String use = o.optString("use", "");
-            if ("positive".equals(type)) label.append(" · 反转");
-            else if ("negative".equals(type)) label.append(" · 负片");
-            if ("cine".equals(use)) label.append(" · 电影");
+            String stage = o.optString("stage", "");
             ids.add(id);
-            labels.add(label.toString());
+            // 列表显示中文名；型号保留原文（FilmNames 里有译名表 + 兜底推导）
+            labels.add(paper ? FilmNames.paper(id, name) : FilmNames.film(id, name));
             if (types != null) types.add(type);
+            if (typeLabels != null) typeLabels.add(FilmNames.typeLabel(stage, type, use));
         }
     }
 
-    private int getStatusBarHeight() {
-        int result = 0;
-        int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
-        if (resourceId > 0) result = getResources().getDimensionPixelSize(resourceId);
-        return result;
-    }
 
     /**
      * Tap: the gallery, which is where phone photos and JPEGs are.
@@ -1512,13 +1216,10 @@ public class MainActivity extends Activity {
                 // nothing to act on. A HEIC/HEIF this phone's decoder refuses is
                 // the common case, so the dialog carries the way out instead of
                 // describing it.
-                new android.app.AlertDialog.Builder(this)
-                        .setTitle("[E-1107] 这张图本机解不开")
-                        .setMessage("多半是 HEIC/HEIF 或 10-bit 的图（三星、iPhone 默认存这种）。\n"
-                                + "换「从文件选择」再试一次，读不到的话请先另存为 JPEG。")
-                        .setPositiveButton("从文件选择", (d, w) -> pickRawFile())
-                        .setNegativeButton("取消", null)
-                        .show();
+                Sheet.message(this, "[E-1107] 这张图本机解不开",
+                        "多半是 HEIC/HEIF 或 10-bit 的图（三星、iPhone 默认存这种）。\n"
+                                + "换「从文件选择」再试一次，读不到的话请先另存为 JPEG。",
+                        "从文件选择", this::pickRawFile);
                 return;
             }
             sourceBitmap = applyExifRotation(uri, sourceBitmap);
@@ -1574,16 +1275,15 @@ public class MainActivity extends Activity {
             compare.setBefore(beforeBitmap);
             sourceBitmap.recycle();
             sourceBitmap = null;
-            statusText.setText("Local preview");
+            say("点「渲染胶片」生成效果", false);
             setStage(1, getFileName(uri));
-            setStep(1);
-            
             // Create engine and session
             ensureEngine();
             if (session != null) session.close();
             session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
             applySessionParams();
             lastImportError = null;
+            refreshActions();
             // The frame on screen stays the *source*, unrendered, until 03 is
             // pressed: that is the flow the page describes, and it keeps a slow
             // render off the import path.
@@ -1777,7 +1477,7 @@ public class MainActivity extends Activity {
                 return;
             }
             
-            statusText.setText("Decoding RAW…");
+            say("正在解码 RAW", false);
             // The JPEG path drops the old frame before it decodes; this one did
             // not, so a RAW import left the *previous* photo on screen until a
             // render replaced it.
@@ -1863,8 +1563,7 @@ public class MainActivity extends Activity {
                             beforeBitmap = preview;
                             compare.setBefore(preview);
                             setStage(1, getFileName(uri));
-                            setStep(1);
-                            statusText.setText(cameraShot ? "Embedded preview" : "Raw preview");
+                            say(cameraShot ? "相机预览已载入" : "RAW 预览就绪", false);
                         });
                     }
 
@@ -1900,18 +1599,19 @@ public class MainActivity extends Activity {
 
                     runOnUiThread(() -> {
                         refreshEdgeFormats();
-                        setStep(1);
                         if (shrunk) {
                             Toast.makeText(this, "原图超出本机 GPU 单缓冲上限，已按 " + w + "x" + h + " 导入",
                                     Toast.LENGTH_LONG).show();
                         }
-                        statusText.setText("RAW metadata loaded");
+                        say("RAW 已载入，点「渲染胶片」", false);
+                        refreshActions();
                     });
                 } catch (Throwable t) {
                     final String said = describeImportFailure(t);
                     lastImportError = said;
                     runOnUiThread(() -> {
-                        statusText.setText("RAW加载失败 " + SpkError.shortForm(said));
+                        say("RAW 载入失败 " + SpkError.shortForm(said), true);
+                        refreshActions();
                         Toast.makeText(this, said, Toast.LENGTH_LONG).show();
                     });
                 }
@@ -2257,14 +1957,11 @@ public class MainActivity extends Activity {
         if (session == null) {
             try { DebugSink.text("render", "no session, lastImportError=" + lastImportError); }
             catch (Throwable ignored) { }
-            new android.app.AlertDialog.Builder(this)
-                    .setTitle("还没有可渲染的图像")
-                    .setMessage(lastImportError == null
-                            ? "先导入一张照片：点 01 导入，长按 01 可以选 RAW / HEIC 或按原始尺寸导入。"
-                            : "上次导入没有完成：\n\n" + lastImportError)
-                    .setPositiveButton("导入", (d, w) -> pickImage())
-                    .setNegativeButton("关闭", null)
-                    .show();
+            Sheet.message(this, "还没有可渲染的图像",
+                    lastImportError == null
+                            ? "先导入一张照片：点「选择照片」，长按它可以选 RAW / 按原始尺寸导入。"
+                            : "上次导入没有完成：\n\n" + lastImportError,
+                    "选择照片", this::pickImage);
             return;
         }
         if (rendering) {
@@ -2272,14 +1969,15 @@ public class MainActivity extends Activity {
             // double-tap: two renders would interleave on the session's single
             // native result buffer.
             try { DebugSink.text("render", "already rendering"); } catch (Throwable ignored) { }
-            statusText.setText("Rendering…");
+            say("渲染中", false);
             Toast.makeText(this, "正在渲染，请稍候…", Toast.LENGTH_SHORT).show();
             return;
         }
         rendering = true;
+        refreshActions();
         progressBar.setVisibility(View.VISIBLE);
-        busyLabel.setVisibility(View.VISIBLE);
-        statusText.setText("Rendering…");
+        refreshActions();
+        say("渲染中", false);
         try { DebugSink.text("render", "begin " + sourceWidth + "x" + sourceHeight); }
         catch (Throwable ignored) { }
 
@@ -2313,37 +2011,33 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     compare.setAfter(bmp);
                     setStage(1, null);
-                    setStep(2);
                     lastRenderedBitmap = bmp;
                     setOpticsUnlocked(true);
                     final int[] bands = blackBands(bmp);
-                    statusText.setText("Preview ready " + fw + "×" + fh);
+                    say("", false);
                     try {
                         DebugSink.text("bands", "render " + fw + "x" + fh
                                 + " black rows top=" + bands[0] + " bottom=" + bands[1]
                                 + " source=" + sourceWidth + "x" + sourceHeight);
                     } catch (Throwable ignored) { }
                     progressBar.setVisibility(View.GONE);
-                    busyLabel.setVisibility(View.GONE);
                     rendering = false;
+                    refreshActions();
                 });
             } catch (Throwable e) {
                 try { session.renderEnd(); } catch (Throwable ignored) {}
                 final String msg = e.getClass().getSimpleName() + ": " + e.getMessage();
                 runOnUiThread(() -> {
-                    statusText.setText("渲染失败 " + SpkError.shortForm(msg));
+                    say("渲染失败 " + SpkError.shortForm(msg), true);
                     progressBar.setVisibility(View.GONE);
-                    busyLabel.setVisibility(View.GONE);
                     rendering = false;
+                    refreshActions();
                     // The foot is one 7 sp line: a failure has to be readable,
                     // and it has to arrive with enough context to be reported.
-                    new android.app.AlertDialog.Builder(this)
-                            .setTitle("渲染失败")
-                            .setMessage(SpkError.format(msg)
-                                    + "\n\n" + sourceWidth + "×" + sourceHeight
-                                    + "\n" + probe.describe())
-                            .setPositiveButton("知道了", null)
-                            .show();
+                    Sheet.message(this, "渲染失败",
+                            SpkError.format(msg) + "\n\n" + sourceWidth + "×" + sourceHeight
+                                    + "\n" + probe.describe(),
+                            "知道了", null);
                 });
                 // E-1001 is "a plane is bigger than one binding may name", and
                 // the only cure is a smaller session. The import cap already
@@ -2370,17 +2064,13 @@ public class MainActivity extends Activity {
         if (byMemory > 0) target = Math.min(target, byMemory);
         target = Math.max(1_000_000L, Math.min(target, 100_000_000L));
         final long picking = target;
-        runOnUiThread(() -> new android.app.AlertDialog.Builder(this)
-                .setTitle("这张图超出本机的单缓冲上限")
-                .setMessage("按约 " + String.format("%.1f", picking / 1e6)
-                        + " MP 重新导入并渲染？画面会小一些，但能出图。")
-                .setPositiveButton("重试", (d, w) -> {
+        runOnUiThread(() -> Sheet.confirm(this, "这张图超出本机的单缓冲上限",
+                "按约 " + String.format(java.util.Locale.US, "%.1f", picking / 1e6)
+                        + " MP 重新导入并渲染？画面会小一些，但能出图。", "重试", () -> {
                     pendingCapPixels = (int) picking;
                     loadImage(sourceUri);
                     if (session != null) renderImage();
-                })
-                .setNegativeButton("取消", null)
-                .show());
+                }));
     }
 
     private void exportImage() {
@@ -2471,9 +2161,10 @@ public class MainActivity extends Activity {
             java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ".jpg");
             try {
                 runOnUiThread(() -> {
-                    statusText.setText("导出中：准备全尺寸渲染（分条）...");
+                    say("导出中：准备渲染", false);
+                    exporting = true;
+                    refreshActions();
                     exportProgressBar.setVisibility(View.VISIBLE);
-                    setStep(3);
                 });
                 // **No spk_set_params here.** The engine treats the *presence* of
                 // film_stock/print_stock in a delta as a stock change and rebuilds
@@ -2493,7 +2184,7 @@ public class MainActivity extends Activity {
                     @Override public void run() {
                         if (!spinning.get()) return;
                         long el = (System.currentTimeMillis() - t0) / 1000;
-                        statusText.setText("导出中（" + tier + "）：渲染中 " + el + " 秒...");
+                        say("导出中：渲染 " + el + " 秒", false);
                         ticker.postDelayed(this, 1000);
                     }
                 };
@@ -2513,7 +2204,7 @@ public class MainActivity extends Activity {
                 }
 
                 final int fw = w, fh = h;
-                runOnUiThread(() -> statusText.setText("导出中：写入相册 " + fw + "x" + fh + "..."));
+                runOnUiThread(() -> say("导出中：写入相册 " + fw + "x" + fh, false));
                 String fileName = "SpektraLab_" + System.currentTimeMillis() + ".jpg";
                 android.content.ContentValues values = new android.content.ContentValues();
                 values.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName);
@@ -2558,12 +2249,10 @@ public class MainActivity extends Activity {
                     // Dimensions and file size together: "3.3 MB" alone reads as
                     // a bug when the frame is 16 MP, and the reason is worth
                     // saying out loud rather than guessing at later.
-                    Toast.makeText(this, "已保存 " + fw + "x" + fh + " · " + sizeLabel,
-                            Toast.LENGTH_LONG).show();
-                    statusText.setText("已导出 " + fw + "x" + fh + " · " + sizeLabel
-                        + "（" + secs + " 秒，其中渲染 " + (fRender / 1000.0) + " 秒）");
+                    say("已导出 " + fw + "x" + fh + " · " + sizeLabel, false);
                     exportProgressBar.setVisibility(View.GONE);
-                    setStep(2);
+                    exporting = false;
+                    refreshActions();
                 });
             } catch (Throwable e) {
                 final String msg = e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -2571,10 +2260,11 @@ public class MainActivity extends Activity {
                 uploadExportProgress(tmp);
                 uploadVkLog();
                 runOnUiThread(() -> {
-                    statusText.setText("导出失败 " + SpkError.shortForm(msg));
-                    Toast.makeText(this, SpkError.format(msg), Toast.LENGTH_LONG).show();
+                    say("导出失败 " + SpkError.shortForm(msg), true);
+                    Sheet.message(this, "导出失败", SpkError.format(msg), "知道了", null);
                     exportProgressBar.setVisibility(View.GONE);
-                    setStep(2);
+                    exporting = false;
+                    refreshActions();
                 });
             } finally {
                 if (tmp.exists()) tmp.delete();

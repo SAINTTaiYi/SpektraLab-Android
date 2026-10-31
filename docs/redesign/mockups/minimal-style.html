@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SpektraLab · 极简版样式参考（v2）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --root:#0A0A0B; --stage:#000; --surface:#111112; --raised:#191A1C;
+    --hair:rgba(255,255,255,.08); --hair-strong:rgba(255,255,255,.14); --track:rgba(255,255,255,.10);
+    --t1:#EDECE8; --t2:#A0A099; --t3:#82827A; --accent:#D9A55B; --danger:#E08A76;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#050506;color:var(--t1);padding:34px 40px 24px;width:1300px;
+       font-family:'Inter','Noto Sans SC',system-ui,-apple-system,'Segoe UI',sans-serif}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:18px;border-bottom:1px solid var(--hair)}
+  h1{font-size:22px;font-weight:300}
+  h1 span{font-size:11px;color:var(--t3);letter-spacing:.16em;text-transform:uppercase;margin-left:14px;vertical-align:3px}
+  .meta{font-size:10px;color:var(--t3);letter-spacing:.10em;text-transform:uppercase;text-align:right;line-height:1.7}
+  h2{font-size:10px;font-weight:400;color:var(--t3);letter-spacing:.16em;text-transform:uppercase;
+     margin:24px 0 10px;display:flex;align-items:center;gap:12px}
+  h2:after{content:"";flex:1;height:1px;background:var(--hair)}
+
+  /* 色板：一行式 */
+  .strip{display:flex;border:1px solid var(--hair);border-radius:2px;overflow:hidden}
+  .sw{flex:1;border-right:1px solid var(--hair)}
+  .sw:last-child{border-right:0}
+  .sw .chip{height:52px}
+  .sw .b{padding:8px 10px 9px}
+  .sw .n{font-size:10px;color:var(--t1)}
+  .sw .h{font-size:9px;color:var(--t3);letter-spacing:.04em;margin-top:2px;font-variant-numeric:tabular-nums}
+
+  /* 字阶 */
+  .type{display:grid;grid-template-columns:110px 1fr 40px;gap:14px;align-items:baseline;
+        padding:9px 0;border-bottom:1px solid var(--hair)}
+  .type .k{font-size:10px;color:var(--t3);letter-spacing:.04em}
+  .type .sz{font-size:10px;color:var(--t3);text-align:right;font-variant-numeric:tabular-nums}
+  .t24{font-size:24px;font-weight:300;letter-spacing:.02em}
+  .t13{font-size:13px;color:var(--accent)}
+  .t12{font-size:12px;color:var(--t2)}
+  .t10{font-size:10px;color:var(--t3);letter-spacing:.02em}
+
+  /* 组件 */
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .card{border:1px solid var(--hair);border-radius:2px;overflow:hidden;background:var(--root)}
+  .card .lab{font-size:10px;color:var(--t3);letter-spacing:.06em;padding:7px 12px;background:var(--surface);
+             border-bottom:1px solid var(--hair);display:flex;justify-content:space-between}
+  .card .lab em{font-style:normal;color:var(--t3);font-variant-numeric:tabular-nums}
+  .demo{padding:16px 20px}
+  .demo.tight{padding:0}
+
+  .btn{height:48px;border:1px solid var(--accent);border-radius:2px;display:flex;align-items:center;
+       justify-content:center;font-size:13px;color:var(--accent)}
+  .btn.sm{height:44px;padding:0 20px;display:inline-flex;font-size:13px}
+  .btn.press{border-color:#B98A45;color:#B98A45}
+  .btn.off{border-color:var(--hair-strong);color:var(--t3)}
+  .t2acc{font-size:12px;color:var(--t2);height:44px;display:flex;align-items:center}
+
+  .tabs{height:40px;display:flex;border-bottom:1px solid var(--hair)}
+  .tab{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--t3);position:relative}
+  .tab.on{color:var(--t1)}
+  .tab.on:after{content:"";position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:24px;height:2px;background:var(--accent)}
+
+  .slider{height:56px;display:flex;flex-direction:column;justify-content:center;padding:0 20px;border-bottom:1px solid var(--hair)}
+  .slider .h{display:flex;justify-content:space-between;align-items:baseline;height:20px}
+  .slider .k{font-size:12px;color:var(--t2)}
+  .slider .v{font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums}
+  .track{position:relative;height:36px;display:flex;align-items:center}
+  .rail{position:absolute;left:0;right:0;height:2px;background:var(--track)}
+  .fill{position:absolute;left:0;height:2px;background:var(--accent)}
+  .thumb{position:absolute;width:12px;height:12px;border-radius:50%;background:#EDECE8;border:1px solid var(--accent);transform:translateX(-6px)}
+
+  .field{height:56px;display:flex;align-items:center;padding:0 20px;border-bottom:1px solid var(--hair)}
+  .field .k{font-size:12px;color:var(--t2);flex:1}
+  .field .v{font-size:14px;color:var(--t1)}
+  .chev{width:12px;height:12px;position:relative;margin-left:8px;flex:none}
+  .chev:before{content:"";position:absolute;left:1px;top:4px;width:9px;height:1px;background:var(--t3);transform:rotate(45deg);transform-origin:left center}
+  .chev:after{content:"";position:absolute;right:1px;top:4px;width:9px;height:1px;background:var(--t3);transform:rotate(-45deg);transform-origin:right center}
+
+  .line{height:20px;display:flex;align-items:center;font-size:10px;color:var(--t3)}
+  .line.err{color:var(--danger)}
+  .line .detail{color:var(--accent);margin-left:10px}
+
+  /* 密度对照 */
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .m{border:1px solid var(--hair);border-radius:2px;padding:12px 14px}
+  .m .a{font-size:10px;color:var(--t3);letter-spacing:.04em}
+  .m .n{font-size:24px;font-weight:300;margin-top:6px;font-variant-numeric:tabular-nums}
+  .m .n s{font-size:12px;color:var(--t3);text-decoration:none;margin-left:6px}
+
+  /* 使用路径 */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .step{border-top:1px solid var(--hair);padding-top:12px}
+  .step .i{font-size:10px;color:var(--accent);letter-spacing:.08em}
+  .step .w{font-size:14px;margin-top:8px}
+  .step .d{font-size:10px;color:var(--t3);margin-top:6px;line-height:1.6}
+  .note{margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);font-size:10px;color:var(--t3);line-height:1.8}
+
+  /* 词标候选 */
+  .wm{display:flex;align-items:baseline;gap:22px;padding:12px 0;border-bottom:1px solid var(--hair)}
+  .wm .w{width:230px;flex:none;font-size:13px;font-weight:400;letter-spacing:.06em}
+  .wm .wn{flex:1;font-size:11px;color:var(--t3);letter-spacing:.02em}
+  .wm .wc{font-size:10px;color:var(--t3);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<div class="head">
+  <h1>极简版样式参考<span>Minimal v2 · Darkroom</span></h1>
+  <div class="meta">390 × 844 dp · 2026-10-31<br>一屏一个动作，其余拉开才出现</div>
+</div>
+
+<h2>01 色板（沿用暗房 token，只留一条色带）</h2>
+<div class="strip">
+  <div class="sw"><div class="chip" style="background:#0A0A0B"></div><div class="b"><div class="n">bg.root</div><div class="h">#0A0A0B</div></div></div>
+  <div class="sw"><div class="chip" style="background:#000"></div><div class="b"><div class="n">bg.stage</div><div class="h">#000000</div></div></div>
+  <div class="sw"><div class="chip" style="background:#191A1C"></div><div class="b"><div class="n">bg.raised</div><div class="h">#191A1C</div></div></div>
+  <div class="sw"><div class="chip" style="background:#EDECE8"></div><div class="b"><div class="n">text.1</div><div class="h">#EDECE8</div></div></div>
+  <div class="sw"><div class="chip" style="background:#82827A"></div><div class="b"><div class="n">text.3</div><div class="h">#82827A</div></div></div>
+  <div class="sw"><div class="chip" style="background:#D9A55B"></div><div class="b"><div class="n">accent</div><div class="h">#D9A55B</div></div></div>
+  <div class="sw"><div class="chip" style="background:#E08A76"></div><div class="b"><div class="n">danger</div><div class="h">#E08A76</div></div></div>
+  <div class="sw"><div class="chip" style="background:rgba(255,255,255,.08);border-left:1px solid var(--hair)"></div><div class="b"><div class="n">line.hair</div><div class="h">#14FFFFFF</div></div></div>
+</div>
+
+<h2>02 字阶（只剩 4 档）</h2>
+<div>
+  <div class="type"><span class="k">title</span><span class="t24">选择一张照片开始</span><span class="sz">24</span></div>
+  <div class="type"><span class="k">action</span><span class="t13">选择照片 · 渲染胶片 · 导出</span><span class="sz">13</span></div>
+  <div class="type"><span class="k">body</span><span class="t12">换图 · 调色 · 明暗 · 颗粒 · 光晕</span><span class="sz">12</span></div>
+  <div class="type"><span class="k">hint</span><span class="t10">长按「选择照片」可导入 RAW</span><span class="sz">10</span></div>
+</div>
+
+<h2>03 组件（只有这 6 种）</h2>
+<div class="cards">
+
+  <div class="card">
+    <div class="lab"><span>主按钮 · 常态 / 按压 / 禁用</span><em>44–48dp</em></div>
+    <div class="demo" style="display:flex;flex-direction:column;gap:10px">
+      <span class="btn">选择照片</span>
+      <span class="btn press sm">渲染胶片</span>
+      <span class="btn off sm">渲染中…</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>文字动作 · 不带框</span><em>44dp 命中</em></div>
+    <div class="demo" style="display:flex;justify-content:space-between;align-items:center">
+      <span class="t2acc">换图</span>
+      <span class="t2acc">调色</span>
+      <span class="t2acc">完成</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>标签组 · 4 组只在弹层里</span><em>40dp</em></div>
+    <div class="demo tight"><div class="tabs">
+      <div class="tab">胶片</div><div class="tab on">光学</div><div class="tab">画幅</div><div class="tab">更多</div>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>滑杆行 · 松手才生效</span><em>56dp</em></div>
+    <div class="demo tight"><div class="slider">
+      <div class="h"><span class="k">颗粒</span><span class="v">1.00</span></div>
+      <div class="track"><div class="rail"></div><div class="fill" style="width:50%"></div><div class="thumb" style="left:50%"></div></div>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>列表行 · 点开选值</span><em>56dp</em></div>
+    <div class="demo tight"><div class="field">
+      <span class="k">胶片</span><span class="v">Portra 400</span><span class="chev"></span>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>提示行 · 只在需要时出现</span><em>20dp</em></div>
+    <div class="demo tight" style="padding:6px 20px 10px">
+      <div class="line">点「渲染胶片」生成效果</div>
+      <div class="line">导出中 · 写入相册</div>
+      <div class="line err">渲染失败 [E-1201]<span class="detail">详情</span></div>
+    </div>
+  </div>
+
+</div>
+
+<h2>04 信息密度：从"工具面板"到"一张照片"</h2>
+<div class="metrics">
+  <div class="m"><div class="a">首屏可点元素</div><div class="n">2<s>原 18</s></div></div>
+  <div class="m"><div class="a">同屏文字节点</div><div class="n">5<s>原 40+</s></div></div>
+  <div class="m"><div class="a">字号档位</div><div class="n">4<s>原 11</s></div></div>
+  <div class="m"><div class="a">同屏色块</div><div class="n">1<s>原 6</s></div></div>
+</div>
+
+<h2>05 使用路径（不需要说明书的 3 步）</h2>
+<div class="steps">
+  <div class="step"><div class="i">STEP 01</div><div class="w">选照片</div>
+    <div class="d">全屏只有一个按钮；RAW 走长按，不占界面。</div></div>
+  <div class="step"><div class="i">STEP 02</div><div class="w">渲染胶片</div>
+    <div class="d">主按钮就是下一步；渲染完自动变成「导出」。</div></div>
+  <div class="step"><div class="i">STEP 03</div><div class="w">要调才拉开</div>
+    <div class="d">「调色」拉出弹层，一次一组，默认只露 3 条滑杆。</div></div>
+</div>
+
+<h2>06 词标 SpektraLab（已定：与主按钮同色同字号 13sp）</h2>
+<div>
+  <div class="wm"><span class="w" style="color:#D9A55B">SpektraLab</span><span class="wn">① accent 安全灯琥珀 · #D9A55B —— 已采用</span><span class="wc">9.0 : 1</span></div>
+  <div class="wm"><span class="w" style="color:#EDECE8">SpektraLab</span><span class="wn">② text.1 微暖白 · #EDECE8</span><span class="wc">16.5 : 1</span></div>
+  <div class="wm"><span class="w" style="color:#6E7BD8">SpektraLab</span><span class="wn">③ 品牌蓝去饱和 · #6E7BD8</span><span class="wc">5.2 : 1</span></div>
+  <div class="wm"><span class="w" style="color:#82827A">SpektraLab</span><span class="wn">④ text.3 原方案 · #82827A</span><span class="wc">5.1 : 1</span></div>
+</div>
+
+<div class="note">
+  保留能力不变：三入口导入、换图、渲染守卫、长按对比与拖动分割、四组参数（胶片/光学/画幅/更多）、片边与日期水印、三档导出、恢复默认、关于与更新。
+  变化只有一件事：<b style="font-weight:400;color:#D9A55B">不用的东西不出现在屏幕上</b>。
+</div>
+
+</body>
+</html>

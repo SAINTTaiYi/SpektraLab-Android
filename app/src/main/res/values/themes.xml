@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#FFE3E3E0</item>
-        <item name="android:statusBarColor">#FFE3E3E0</item>
-        <item name="android:navigationBarColor">#FFE3E3E0</item>
+    <!-- 暗房：窗口底色 #0A0A0B，系统栏同色，图标转亮。
+         界面自绘（无 XML 布局），这里只负责启动窗口与系统栏，避免亮色闪一下。 -->
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF0A0A0B</item>
+        <item name="android:colorBackground">#FF0A0A0B</item>
+        <item name="android:statusBarColor">#FF0A0A0B</item>
+        <item name="android:navigationBarColor">#FF0A0A0B</item>
+        <item name="android:colorAccent">#FFD9A55B</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>
