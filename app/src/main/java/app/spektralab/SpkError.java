@@ -63,6 +63,7 @@ public final class SpkError {
         int code = codeOf(raw);
         if (code == 0) code = 9000;
         if (code == 9000 && isNativeLoadFailure(raw)) return "[E-9000] 引擎库没有加载成功";
+        if (code == 1010) return "[E-1010] 画布超过单帧上限（约 42 MP）";
         return "[E-" + code + "] " + explain(code);
     }
 
@@ -83,6 +84,10 @@ public final class SpkError {
             // advice is the same as 1001's rather than "internal error", which
             // tells the user nothing and the developer less.
             case 1009: return "图形后端调用失败（大图多为显存不足）：可关掉片边、或按较小尺寸重新导入后重试";
+            // The rebate's canvas, which is a frame of its own: a source that
+            // fits can still lay out a canvas that cannot be rendered.
+            case 1010: return "开了片边之后，画布超过了安卓端冲洗引擎的单帧上限（约 42 MP）："
+                             + "请关掉片边，或按更小的尺寸重新导入";
             // 11xx — the file
             case 1101: return "RAW 打开失败：格式或压缩方式不受支持";
             case 1102: return "RAW 解包失败：文件可能损坏或未下载完整";
