@@ -1,6 +1,14 @@
+app/src/main/java/app/spektralab/MainActivity.java
 app/src/main/java/app/spektralab/DebugSink.java
 app/src/main/java/app/spektralab/DeviceProbe.java
-app/src/main/java/app/spektralab/MainActivity.java
 app/src/main/java/app/spektralab/SpkError.java
 app/src/main/java/app/spektralab/UpdateCheck.java
 app/src/main/java/app/spektralab/engine/SpektraLabEngine.java
+app/src/main/java/app/spektralab/ui/Chrome.java
+app/src/main/java/app/spektralab/ui/FilmNames.java
+app/src/main/java/app/spektralab/ui/NumberSheet.java
+app/src/main/java/app/spektralab/ui/ParamSheet.java
+app/src/main/java/app/spektralab/ui/Sheet.java
+app/src/main/java/app/spektralab/ui/SliderRow.java
+app/src/main/java/app/spektralab/ui/Tokens.java
+app/src/main/java/app/spektralab/ui/UiPicker.java
