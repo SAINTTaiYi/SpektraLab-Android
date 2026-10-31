@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SpektraLab · 极简版（v2）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --root:#0A0A0B; --stage:#000; --surface:#111112; --raised:#191A1C;
+    --hair:rgba(255,255,255,.08); --hair-strong:rgba(255,255,255,.14); --track:rgba(255,255,255,.10);
+    --t1:#EDECE8; --t2:#A0A099; --t3:#82827A;
+    --accent:#D9A55B; --danger:#E08A76;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#050506;color:var(--t1);padding:28px 24px 20px;
+       font-family:'Inter','Noto Sans SC',system-ui,-apple-system,'Segoe UI',sans-serif}
+  h1{font-size:13px;font-weight:400;letter-spacing:.14em;color:#82827A;text-transform:uppercase;margin-bottom:18px}
+  .row{display:flex;gap:24px;align-items:flex-start}
+  .col{display:flex;flex-direction:column;gap:10px}
+  .cap{font-size:11px;color:#82827A;letter-spacing:.02em}
+
+  .phone{width:390px;height:844px;background:var(--root);position:relative;
+    border:1px solid rgba(255,255,255,.10);overflow:hidden;display:flex;flex-direction:column}
+  .sysbar{height:24px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 20px;font-size:10px;color:var(--t3);letter-spacing:.04em;flex:none}
+  .navbar{height:41px;display:flex;align-items:center;justify-content:center;flex:none}
+  .navbar i{display:block;width:96px;height:3px;border-radius:2px;background:rgba(255,255,255,.20)}
+  .sheet{height:auto}
+
+  .brand{position:absolute;left:20px;top:32px;font-size:13px;color:var(--accent);letter-spacing:.06em}
+
+  /* 空状态 */
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;padding:0 20px}
+  .t24{font-size:24px;font-weight:300;letter-spacing:.02em}
+  .sub{font-size:12px;color:var(--t3);margin-top:10px;letter-spacing:.04em}
+  .hint{font-size:10px;color:var(--t3);margin-top:14px;text-align:center;line-height:1.6}
+
+  .btn{height:48px;border:1px solid var(--accent);border-radius:2px;display:flex;
+       align-items:center;justify-content:center;font-size:13px;color:var(--accent)}
+  .btn.wide{width:100%;margin-top:28px}
+  .btn.small{height:44px;padding:0 20px;font-size:13px}
+
+  /* 照片 */
+  .photo-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:16px 16px 12px}
+  .photo{width:100%;height:100%;position:relative;overflow:hidden;background:
+      radial-gradient(120% 80% at 70% 15%, rgba(255,214,170,.55), rgba(255,214,170,0) 55%),
+      linear-gradient(#c9a888 0%, #b08a6c 38%, #6b5a4e 58%, #2b2a25 74%, #1a1916 100%)}
+  .photo:before{content:"";position:absolute;left:-6%;right:-6%;bottom:0;height:44%;
+      background:radial-gradient(60% 100% at 30% 100%, #3a3a2f, #1c1c17 70%);
+      clip-path:polygon(0 62%,18% 44%,36% 56%,54% 34%,74% 50%,88% 40%,100% 52%,100% 100%,0 100%)}
+  .photo:after{content:"";position:absolute;inset:0;opacity:.14;mix-blend-mode:overlay;
+      background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='0.5'/></svg>")}
+
+  /* 底部动作区 */
+  .foot{padding:0 20px 14px;flex:none}
+  .foot .line{font-size:10px;color:var(--t3);padding:0 2px 8px;letter-spacing:.02em}
+  .foot .line.err{color:var(--danger)}
+  .bar{display:flex;align-items:center;justify-content:space-between}
+  .t2acc{font-size:12px;color:var(--t2);height:44px;display:flex;align-items:center;padding:0 4px}
+
+  /* 胶片列表弹层 */
+  .lsheet{position:absolute;left:0;right:0;bottom:0;background:var(--raised);border-radius:14px 14px 0 0;display:flex;flex-direction:column;padding-bottom:41px}
+  .lhead{height:52px;display:flex;align-items:center;padding:0 20px}
+  .lhead .t{font-size:20px;font-weight:300;flex:1}
+  .lrow{height:56px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .lrow .n{font-size:15px;color:var(--t1);flex:1}
+  .lrow .ty{font-size:10px;color:var(--t3);margin-left:12px}
+  .lrow.on .n{color:var(--accent)}
+  .lrow.on .ty{color:var(--accent)}
+  .lrow .ck{width:11px;height:11px;position:relative;margin-left:12px}
+  .lrow .ck:after{content:"";position:absolute;left:1px;top:0;width:5px;height:9px;border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(40deg)}
+  .lfoot{height:56px;display:flex;align-items:center;justify-content:flex-end;padding:0 20px;border-top:1px solid var(--hair);font-size:12px;color:var(--t1)}
+  /* 弹层 */
+  .scrim{position:absolute;inset:0;background:rgba(0,0,0,.6)}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:var(--raised);
+         border-radius:14px 14px 0 0;display:flex;flex-direction:column}
+  .handle{width:40px;height:2px;border-radius:1px;background:rgba(255,255,255,.20);margin:10px auto 0;flex:none}
+  .sheet-head{height:52px;display:flex;align-items:center;padding:0 20px;flex:none}
+  .sheet-head .t{font-size:20px;font-weight:300;flex:1}
+  .sheet-head .done{font-size:10px;color:var(--t3);letter-spacing:.08em;height:44px;display:flex;align-items:center}
+  .tabs{height:40px;display:flex;border-bottom:1px solid var(--hair);flex:none}
+  .tab{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--t3);position:relative}
+  .tab.on{color:var(--t1)}
+  .tab.on:after{content:"";position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+                width:24px;height:2px;background:var(--accent)}
+  .body{flex:1;overflow:hidden}
+
+  .slider{height:56px;display:flex;flex-direction:column;justify-content:center;padding:0 20px;border-bottom:1px solid var(--hair)}
+  .slider .h{display:flex;align-items:baseline;justify-content:space-between;height:20px}
+  .slider .k{font-size:12px;color:var(--t2)}
+  .slider .v{font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .track{position:relative;height:36px;display:flex;align-items:center}
+  .rail{position:absolute;left:0;right:0;height:2px;background:var(--track)}
+  .fill{position:absolute;left:0;height:2px;background:var(--accent)}
+  .thumb{position:absolute;width:12px;height:12px;border-radius:50%;background:#EDECE8;border:1px solid var(--accent);transform:translateX(-6px)}
+
+  .more{height:48px;display:flex;align-items:center;padding:0 20px;font-size:12px;color:var(--t3)}
+  .more .chev{width:12px;height:12px;position:relative;margin-left:8px}
+  .chev:before{content:"";position:absolute;left:1px;top:4px;width:9px;height:1px;background:var(--t3);transform:rotate(45deg);transform-origin:left center}
+  .chev:after{content:"";position:absolute;right:1px;top:4px;width:9px;height:1px;background:var(--t3);transform:rotate(-45deg);transform-origin:right center}
+  .sheet-foot{height:56px;display:flex;align-items:center;justify-content:space-between;
+              padding:0 20px;border-top:1px solid var(--hair);flex:none}
+  .reset{font-size:10px;color:var(--t3);letter-spacing:.06em;height:44px;display:flex;align-items:center}
+  .count{font-size:10px;color:var(--t3)}
+</style>
+</head>
+<body>
+<h1>SpektraLab · Minimal v2 · 390 × 844 dp</h1>
+<div class="row">
+
+  <!-- ① 空 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <span class="brand">SpektraLab</span>
+      <div class="empty">
+        <div class="t24">选择一张照片开始</div>
+        <div class="sub">RAW · JPEG · HEIC</div>
+        <div class="btn wide">选择照片</div>
+        <div class="hint">长按「选择照片」可导入 RAW</div>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">① 空状态 · 全屏 4 个元素 · 只有一个动作</div>
+  </div>
+
+  <!-- ② 有图未渲染 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="photo-wrap"><div class="photo"></div></div>
+      <div class="foot">
+        <div class="line">点「渲染胶片」生成效果</div>
+        <div class="bar">
+          <span class="t2acc">换图</span>
+          <span class="btn small">渲染胶片</span>
+        </div>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">② 导入后 · 底部只有两个入口 · 一句提示</div>
+  </div>
+
+  <!-- ③ 已渲染 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="photo-wrap"><div class="photo"></div></div>
+      <div class="foot">
+        <div class="bar">
+          <span style="display:flex;gap:22px"><span class="t2acc">换图</span><span class="t2acc">调色</span></span>
+          <span class="btn small">导出</span>
+        </div>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">③ 渲染完成 · 主按钮自动变成下一步「导出」</div>
+  </div>
+
+  <!-- ④ 参数弹层 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="photo-wrap"><div class="photo"></div></div>
+      <div class="foot">
+        <div class="bar">
+          <span style="display:flex;gap:22px"><span class="t2acc">换图</span><span class="t2acc">调色</span></span>
+          <span class="btn small">导出</span>
+        </div>
+      </div>
+      <div class="scrim"></div>
+      <div class="sheet">
+        <div class="handle"></div>
+        <div class="sheet-head"><span class="t">调节</span><span class="done">完成</span></div>
+        <div class="tabs">
+          <div class="tab">胶片</div>
+          <div class="tab on">光学</div>
+          <div class="tab">画幅</div>
+          <div class="tab">更多</div>
+        </div>
+        <div class="body">
+          <div class="slider">
+            <div class="h"><span class="k">明暗</span><span class="v">1.00</span></div>
+            <div class="track"><div class="rail"></div><div class="fill" style="width:20%"></div><div class="thumb" style="left:20%"></div></div>
+          </div>
+          <div class="slider">
+            <div class="h"><span class="k">颗粒</span><span class="v">1.00</span></div>
+            <div class="track"><div class="rail"></div><div class="fill" style="width:50%"></div><div class="thumb" style="left:50%"></div></div>
+          </div>
+          <div class="slider">
+            <div class="h"><span class="k">光晕</span><span class="v">1.00</span></div>
+            <div class="track"><div class="rail"></div><div class="fill" style="width:25%"></div><div class="thumb" style="left:25%"></div></div>
+          </div>
+          <div class="more"><span>更多参数</span><span class="chev"></span></div>
+        </div>
+        <div class="sheet-foot"><span class="reset">恢复默认</span><span class="done" style="color:var(--t1)">完成</span></div>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">④ 参数 · 拉开才出现 · 一屏一组 · 默认只露 3 条</div>
+  </div>
+
+  <!-- ⑤ 胶片列表（中文名） -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="photo-wrap"><div class="photo"></div></div>
+      <div class="foot">
+        <div class="bar">
+          <span style="display:flex;gap:22px"><span class="t2acc">换图</span><span class="t2acc">调色</span></span>
+          <span class="btn small">导出</span>
+        </div>
+      </div>
+      <div class="scrim"></div>
+      <div class="lsheet">
+        <div class="handle"></div>
+        <div class="lhead"><span class="t">胶片</span><span class="done">完成</span></div>
+        <div class="lrow on"><span class="n">柯达 波特拉 400</span><span class="ty">负片</span><span class="ck"></span></div>
+        <div class="lrow"><span class="n">柯达 波特拉 800</span><span class="ty">负片</span></div>
+        <div class="lrow"><span class="n">柯达 埃克塔 100</span><span class="ty">负片</span></div>
+        <div class="lrow"><span class="n">柯达 金胶卷 200</span><span class="ty">负片</span></div>
+        <div class="lrow"><span class="n">富士 400H</span><span class="ty">负片</span></div>
+        <div class="lrow"><span class="n">富士 C200</span><span class="ty">负片</span></div>
+        <div class="lrow"><span class="n">富士 维尔维亚 100</span><span class="ty">反转</span></div>
+        <div class="lrow"><span class="n">柯达 柯达克罗姆 64</span><span class="ty">反转</span></div>
+        <div class="lrow"><span class="n">柯达 威胜3 500T</span><span class="ty">电影</span></div>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">⑤ 胶片列表 · 中文名 + 类型 · 型号保留原文</div>
+  </div>
+
+</div>
+</body>
+</html>

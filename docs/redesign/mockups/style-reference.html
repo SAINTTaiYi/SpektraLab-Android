@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SpektraLab · 样式参考 / Style Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --root:#0A0A0B; --stage:#000; --surface:#111112; --raised:#191A1C;
+    --hair:rgba(255,255,255,.08); --hair-strong:rgba(255,255,255,.14); --track:rgba(255,255,255,.10);
+    --t1:#EDECE8; --t2:#A0A099; --t3:#82827A;
+    --accent:#D9A55B; --accent-press:#B98A45; --danger:#E08A76;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#050506;color:var(--t1);padding:36px 40px 28px;
+    font-family:'Inter','Noto Sans SC',system-ui,-apple-system,'Segoe UI',sans-serif;
+    width:1340px}
+  h1{font-size:22px;font-weight:300;letter-spacing:.01em}
+  h1 span{font-size:11px;color:var(--t3);letter-spacing:.16em;text-transform:uppercase;margin-left:14px;vertical-align:3px}
+  .meta{font-size:10px;color:var(--t3);letter-spacing:.10em;text-transform:uppercase;text-align:right;line-height:1.7}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:20px;border-bottom:1px solid var(--hair)}
+  h2{font-size:10px;font-weight:400;color:var(--t3);letter-spacing:.16em;text-transform:uppercase;
+     margin:26px 0 12px;display:flex;align-items:center;gap:12px}
+  h2:after{content:"";flex:1;height:1px;background:var(--hair)}
+
+  /* ---------- 色板 ---------- */
+  .swatches{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+  .sw{border:1px solid var(--hair);border-radius:2px;overflow:hidden;background:var(--surface)}
+  .sw .chip{height:64px;border-bottom:1px solid var(--hair)}
+  .sw .body{padding:9px 10px 10px}
+  .sw .n{font-size:11px;color:var(--t1)}
+  .sw .h{font-size:10px;color:var(--t3);letter-spacing:.05em;margin-top:3px;font-variant-numeric:tabular-nums}
+  .sw .u{font-size:10px;color:var(--t2);margin-top:6px;line-height:1.4}
+  .sw .c{font-size:10px;color:var(--accent);margin-top:5px;font-variant-numeric:tabular-nums}
+
+  /* ---------- 字阶 ---------- */
+  .cols{display:grid;grid-template-columns:1.25fr 1fr;gap:32px}
+  .type-row{display:flex;align-items:baseline;gap:16px;padding:9px 0;border-bottom:1px solid var(--hair)}
+  .type-row .tag{width:86px;flex:none;font-size:10px;color:var(--t3);letter-spacing:.04em}
+  .type-row .sample{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .type-row .sz{width:44px;text-align:right;flex:none;font-size:10px;color:var(--t3);font-variant-numeric:tabular-nums}
+  .d28{font-size:28px;font-weight:300;letter-spacing:.02em}
+  .d20{font-size:20px;font-weight:300}
+  .d15{font-size:15px;font-weight:300;letter-spacing:.01em}
+  .d13{font-size:13px;font-weight:300;color:var(--accent);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .d12{font-size:12px}
+  .d10{font-size:10px;letter-spacing:.10em;color:var(--t3);text-transform:uppercase}
+
+  .rules{font-size:11px;color:var(--t2);line-height:1.85}
+  .rules b{color:var(--t1);font-weight:400}
+  .rules code{color:var(--accent);font-size:10px}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:6px 14px;font-size:11px;color:var(--t2);margin-top:10px}
+  .kv .k{color:var(--t3);letter-spacing:.04em}
+  .bar{border:1px solid rgba(255,255,255,.16);background:rgba(217,165,91,.22);border-radius:1px;display:inline-block;vertical-align:middle;margin-right:8px}
+  .b4{width:4px;height:14px}.b8{width:8px;height:14px}.b12{width:12px;height:14px}.b16{width:16px;height:14px}
+  .b24{width:24px;height:14px}.b32{width:32px;height:14px}
+  .r0{width:22px;height:14px;border:1px solid var(--hair-strong);border-radius:0}
+  .r2{width:22px;height:14px;border:1px solid var(--hair-strong);border-radius:2px}
+  .r14{width:22px;height:14px;border:1px solid var(--hair-strong);border-radius:6px 6px 0 0}
+
+  /* ---------- 组件 ---------- */
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .card{border:1px solid var(--hair);border-radius:2px;background:var(--root);overflow:hidden}
+  .card > .lab{font-size:10px;color:var(--t3);letter-spacing:.06em;padding:7px 12px;
+               border-bottom:1px solid var(--hair);background:var(--surface);display:flex;justify-content:space-between}
+  .card > .lab em{font-style:normal;color:var(--t3);font-variant-numeric:tabular-nums}
+  .demo{padding:0}
+
+  .actions{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;border-top:1px solid var(--hair)}
+  .txt{font-size:12px;color:var(--t2);height:44px;display:flex;align-items:center}
+  .right{display:flex;align-items:center;gap:16px}
+  .vline{width:1px;height:16px;background:var(--hair)}
+  .cta{height:44px;padding:0 20px;border:1px solid var(--accent);border-radius:2px;display:flex;align-items:center;font-size:12px;color:var(--accent)}
+  .cta.off{border-color:var(--hair-strong);color:var(--t3)}
+
+  .segments{height:40px;display:flex;align-items:stretch}
+  .seg{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--t3);position:relative}
+  .seg.on{color:var(--t1)}
+  .seg.on:after{content:"";position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:24px;height:2px;background:var(--accent)}
+
+  .field{height:48px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .field .k{font-size:12px;color:var(--t2);flex:1}
+  .field .v{font-size:15px;color:var(--t1);letter-spacing:.01em}
+  .chev{width:12px;height:12px;position:relative;margin-left:8px;flex:none}
+  .chev:before{content:"";position:absolute;left:1px;top:4px;width:9px;height:1px;background:var(--t3);transform:rotate(45deg);transform-origin:left center}
+  .chev:after{content:"";position:absolute;right:1px;top:4px;width:9px;height:1px;background:var(--t3);transform:rotate(-45deg);transform-origin:right center}
+
+  .slider{height:56px;display:flex;flex-direction:column;justify-content:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .slider .h{display:flex;align-items:baseline;justify-content:space-between;height:20px}
+  .slider .k{font-size:12px;color:var(--t2)}
+  .slider .v{font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+  .track{position:relative;height:36px;display:flex;align-items:center}
+  .rail{position:absolute;left:0;right:0;height:2px;background:var(--track)}
+  .fill{position:absolute;left:0;height:2px;background:var(--accent)}
+  .thumb{position:absolute;width:12px;height:12px;border-radius:50%;background:#EDECE8;border:1px solid var(--accent);transform:translateX(-6px)}
+
+  .toggle{height:48px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .toggle .k{font-size:12px;color:var(--t2);flex:1}
+  .box{width:18px;height:18px;border:1px solid var(--hair-strong);border-radius:2px;position:relative}
+  .box.on{background:var(--accent);border-color:var(--accent)}
+  .box.on:after{content:"";position:absolute;left:5px;top:1px;width:5px;height:9px;border-right:1.5px solid #0A0A0B;border-bottom:1.5px solid #0A0A0B;transform:rotate(40deg)}
+
+  .statusline{height:20px;display:flex;align-items:center;justify-content:flex-end;padding:0 20px;font-size:10px;color:var(--t2)}
+  .statusline .detail{color:var(--accent);margin-left:12px}
+  .statusline.danger{color:var(--danger)}
+
+  .recipe{height:44px;display:flex;align-items:center;padding:0 20px;gap:12px;background:var(--surface);border-top:1px solid var(--hair)}
+  .recipe .r{font-size:12px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .reset{font-size:10px;color:var(--t3);letter-spacing:.06em}
+
+  .ghost{height:44px;padding:0 16px;border:1px solid var(--hair-strong);border-radius:2px;
+         display:inline-flex;align-items:center;gap:8px;font-size:12px;margin:18px 20px}
+  .arrow{width:12px;height:12px;position:relative}
+  .arrow:before{content:"";position:absolute;left:0;bottom:0;width:15px;height:1px;background:currentColor;transform:rotate(-45deg);transform-origin:left bottom}
+  .arrow:after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;border-top:1px solid currentColor;border-right:1px solid currentColor}
+
+  .sheet{background:var(--raised);border-radius:14px 14px 0 0;padding-top:10px}
+  .handle{width:40px;height:2px;border-radius:1px;background:rgba(255,255,255,.20);margin:0 auto}
+  .st{font-size:20px;font-weight:300;padding:14px 20px 6px}
+  .srow{height:56px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair);font-size:15px}
+  .srow.on{color:var(--accent)}
+  .srow .sp{flex:1}
+  .check{width:11px;height:11px;position:relative}
+  .check:after{content:"";position:absolute;left:1px;top:0;width:5px;height:9px;border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(40deg)}
+
+  /* ---------- 对照 ---------- */
+  .compare{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .cmp{border:1px solid var(--hair);border-radius:2px;overflow:hidden}
+  .cmp .pair{display:flex;height:64px}
+  .cmp .half{flex:1;display:flex;align-items:center;justify-content:center;font-size:10px;letter-spacing:.04em}
+  .cmp .foot{padding:9px 12px;font-size:10px;color:var(--t3);line-height:1.5;background:var(--surface)}
+  .old{background:#1C2AA5;color:#F1F1EE}
+  .oldpaper{background:#F1F1EE;color:#1C2AA5}
+  .newstage{background:#000;color:#82827A}
+  .newsurface{background:#111112;color:#D9A55B}
+  .foot-note{margin-top:26px;padding-top:14px;border-top:1px solid var(--hair);font-size:10px;color:var(--t3);letter-spacing:.02em;line-height:1.8}
+</style>
+</head>
+<body>
+
+<div class="head">
+  <div>
+    <h1>SpektraLab<span>Style Reference · Darkroom</span></h1>
+  </div>
+  <div class="meta">v1.3 设计基线 · 390×844 dp<br>2026-10-31 · 样式参考稿（未改代码）</div>
+</div>
+
+<h2>01 色板 Palette</h2>
+<div class="swatches">
+  <div class="sw"><div class="chip" style="background:#0A0A0B"></div><div class="body">
+    <div class="n">bg.root</div><div class="h">#0A0A0B</div><div class="u">根底 / 顶栏 / 系统栏</div></div></div>
+  <div class="sw"><div class="chip" style="background:#000"></div><div class="body">
+    <div class="n">bg.stage</div><div class="h">#000000</div><div class="u">预览舞台（纯黑判读底）</div></div></div>
+  <div class="sw"><div class="chip" style="background:#111112"></div><div class="body">
+    <div class="n">bg.surface</div><div class="h">#111112</div><div class="u">参数面板 / 配方行</div></div></div>
+  <div class="sw"><div class="chip" style="background:#191A1C"></div><div class="body">
+    <div class="n">bg.raised</div><div class="h">#191A1C</div><div class="u">底部弹层 / 选择器</div></div></div>
+  <div class="sw"><div class="chip" style="background:#EDECE8"></div><div class="body">
+    <div class="n">text.1</div><div class="h">#EDECE8</div><div class="u">主文本（微暖白）</div><div class="c">16.5 : 1</div></div></div>
+
+  <div class="sw"><div class="chip" style="background:#A0A099"></div><div class="body">
+    <div class="n">text.2</div><div class="h">#A0A099</div><div class="u">次级文本 / 说明</div><div class="c">6.9 : 1</div></div></div>
+  <div class="sw"><div class="chip" style="background:#82827A"></div><div class="body">
+    <div class="n">text.3</div><div class="h">#82827A</div><div class="u">微标 / 未激活（仅 ≥10sp）</div><div class="c">4.8 : 1</div></div></div>
+  <div class="sw"><div class="chip" style="background:#D9A55B"></div><div class="body">
+    <div class="n">accent</div><div class="h">#D9A55B</div><div class="u">当前值 / 激活线 / 主 CTA</div><div class="c">8.4 : 1</div></div></div>
+  <div class="sw"><div class="chip" style="background:#B98A45"></div><div class="body">
+    <div class="n">accent.press</div><div class="h">#B98A45</div><div class="u">按压态</div><div class="c">5.6 : 1</div></div></div>
+  <div class="sw"><div class="chip" style="background:#E08A76"></div><div class="body">
+    <div class="n">danger</div><div class="h">#E08A76</div><div class="u">错误码 / 失败状态</div><div class="c">7.4 : 1</div></div></div>
+
+  <div class="sw"><div class="chip" style="background:rgba(255,255,255,.08);border:1px solid var(--hair)"></div><div class="body">
+    <div class="n">line.hair</div><div class="h">#14FFFFFF · 8%</div><div class="u">分区分割线</div></div></div>
+  <div class="sw"><div class="chip" style="background:rgba(255,255,255,.14)"></div><div class="body">
+    <div class="n">line.strong</div><div class="h">#24FFFFFF · 14%</div><div class="u">控件描边 / ghost 边</div></div></div>
+  <div class="sw"><div class="chip" style="background:rgba(255,255,255,.10)"></div><div class="body">
+    <div class="n">line.track</div><div class="h">#1AFFFFFF · 10%</div><div class="u">滑杆轨道</div></div></div>
+  <div class="sw"><div class="chip" style="background:rgba(217,165,91,.12)"></div><div class="body">
+    <div class="n">accent.tint</div><div class="h">#1FD9A55B · 12%</div><div class="u">选中行底（极少用）</div></div></div>
+  <div class="sw"><div class="chip" style="background:#6E7BD8"></div><div class="body">
+    <div class="n">accent.alt</div><div class="h">#6E7BD8</div><div class="u">保留品牌蓝时的替换值</div><div class="c">6.2 : 1</div></div></div>
+</div>
+
+<h2>02 字阶 Type scale</h2>
+<div class="cols">
+  <div>
+    <div class="type-row"><span class="tag">display</span><span class="sample d28">NO IMAGE · RAW LOADED</span><span class="sz">28</span></div>
+    <div class="type-row"><span class="tag">title</span><span class="sample d20">SpektraLab · 导出</span><span class="sz">20</span></div>
+    <div class="type-row"><span class="tag">value</span><span class="sample d15">Kodak Portra 400 · 负片</span><span class="sz">15</span></div>
+    <div class="type-row"><span class="tag">accent value</span><span class="sample d13">1.00　3.00　2048 × 1365</span><span class="sz">13</span></div>
+    <div class="type-row"><span class="tag">body</span><span class="sample d12">选择一张 RAW 或 JPEG 开始 · 颗粒与光晕按 135 全画幅 36mm 计算</span><span class="sz">12</span></div>
+    <div class="type-row"><span class="tag">micro</span><span class="sample d10">(001) · 135 · 3:2 · IMAGE PREVIEW</span><span class="sz">10</span></div>
+    <div class="foot-note">Inter 300 负责数字与大字；Inter 400 负责英文微标（仅英文才加字距/大写）；OPPO Sans 负责中文。数字一律 <code>tnum</code> 等宽，滑杆值不抖动。</div>
+  </div>
+  <div>
+    <div class="rules">
+      <b>下限</b> 正文 12sp、微标 10sp，工程内不得出现 6/7/8/9sp。<br>
+      <b>字距</b> 取消负字距（旧版 −0.065em 会让小字粘连）；仅 display 用 +0.02em。<br>
+      <b>中文</b> 不全大写、不加字距。<br>
+      <b>层级</b> 只靠字号 + 颜色两档（16.5:1 / 6.9:1），不用加粗堆叠。
+    </div>
+    <div class="kv" style="margin-top:20px">
+      <span class="k">4 / 8 / 12</span><span><i class="bar b4"></i><i class="bar b8"></i><i class="bar b12"></i></span>
+      <span class="k">16 / 24 / 32</span><span><i class="bar b16"></i><i class="bar b24"></i><i class="bar b32"></i></span>
+      <span class="k">圆角</span><span><i class="bar r0"></i>0 默认　<i class="bar r2"></i>2 按钮/开关　<i class="bar r14"></i>14 弹层上角</span>
+      <span class="k">行高</span><span>顶栏 48 · 配方行 44 · 下拉行 48 · 滑杆行 56 · 动作栏 56 · 命中 ≥44</span>
+    </div>
+  </div>
+</div>
+
+<h2>03 组件 Components（1:1 实际尺寸）</h2>
+<div class="cards">
+
+  <div class="card">
+    <div class="lab"><span>动作栏 · 可点</span><em>56dp</em></div>
+    <div class="demo"><div class="actions">
+      <span class="txt">导入</span>
+      <span class="right"><span class="txt">导出</span><span class="vline"></span><span class="cta">渲染</span></span>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>动作栏 · 无照片（禁用）</span><em>56dp</em></div>
+    <div class="demo"><div class="actions">
+      <span class="txt">导入</span>
+      <span class="right"><span class="txt">导出</span><span class="vline"></span><span class="cta off">渲染</span></span>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>分段控件 · 无序号</span><em>40dp</em></div>
+    <div class="demo" style="background:var(--surface)"><div class="segments">
+      <div class="seg">胶片</div><div class="seg on">光学</div><div class="seg">画幅</div><div class="seg">边角</div>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>值选择行 Value row</span><em>48dp</em></div>
+    <div class="demo" style="background:var(--surface)"><div class="field">
+      <span class="k">胶片</span><span class="v">Kodak Portra 400</span><span class="chev"></span>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>滑杆行 Slider · 松手才提交</span><em>56dp</em></div>
+    <div class="demo" style="background:var(--surface)"><div class="slider">
+      <div class="h"><span class="k">颗粒</span><span class="v">1.00</span></div>
+      <div class="track"><div class="rail"></div><div class="fill" style="width:50%"></div><div class="thumb" style="left:50%"></div></div>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>开关行 Toggle · on / off</span><em>48dp</em></div>
+    <div class="demo" style="background:var(--surface)">
+      <div class="toggle"><span class="k">日期水印</span><span class="box on"></span></div>
+      <div class="toggle"><span class="k">片边（胶片边缘）</span><span class="box"></span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>状态行 · 正常 / 失败</span><em>20dp</em></div>
+    <div class="demo">
+      <div class="statusline">预览就绪 2048 × 1365</div>
+      <div class="statusline danger">渲染失败 [E-1201]<span class="detail">详情</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>配方行（收起态面板头）</span><em>44dp</em></div>
+    <div class="demo"><div class="recipe">
+      <span class="r">Portra 400 · Endura · 135</span><span class="chev"></span>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>Ghost 按钮 · 唯一入口</span><em>44dp</em></div>
+    <div class="demo" style="display:flex;align-items:center;min-height:96px">
+      <span class="ghost"><span>选择照片</span><span class="arrow"></span></span>
+    </div>
+  </div>
+
+  <div class="card" style="grid-column:span 2">
+    <div class="lab"><span>底部弹层 Sheet · 替换 AlertDialog / Spinner 下拉</span><em>ramp 14 / row 56</em></div>
+    <div class="demo"><div class="sheet">
+      <div class="handle"></div>
+      <div class="st">导出 · SM8735 · 上限约 45.0 MP</div>
+      <div class="srow on"><span>长边 2048（最快）</span><span class="sp"></span><span class="check"></span></div>
+      <div class="srow"><span>长边 3400</span></div>
+    </div></div>
+  </div>
+
+  <div class="card">
+    <div class="lab"><span>允许 / 禁止</span><em>do / don't</em></div>
+    <div class="demo" style="padding:14px 20px;font-size:11px;line-height:1.9;color:var(--t2)">
+      <span style="color:#D9A55B">✓</span> 8% 细线分区、20dp 边距<br>
+      <span style="color:#D9A55B">✓</span> 琥珀只给"当前值"<br>
+      <span style="color:#D9A55B">✓</span> 全屏只有一个描边按钮<br>
+      <span style="color:#E08A76">✕</span> 彩色整块当背景<br>
+      <span style="color:#E08A76">✕</span> 字号 &lt; 10sp / 命中 &lt; 44dp<br>
+      <span style="color:#E08A76">✕</span> 全大写中文
+    </div>
+  </div>
+
+</div>
+
+<h2>04 与现状对照 Before → After</h2>
+<div class="compare">
+  <div class="cmp">
+    <div class="pair"><div class="half old">#1C2AA5 蓝场</div><div class="half newstage">#000000 舞台</div></div>
+    <div class="foot">预览场：从"品牌色海报"改到"纯黑判读底"，照片成为唯一亮部。</div>
+  </div>
+  <div class="cmp">
+    <div class="pair"><div class="half oldpaper">#F1F1EE 纸白</div><div class="half newsurface">#111112 面板</div></div>
+    <div class="foot">面板：暗房里不开顶灯。层级交给间距与 8% 细线，不再用两种底色拼接。</div>
+  </div>
+  <div class="cmp">
+    <div class="pair"><div class="half old" style="font-size:7px">7sp 状态文案</div><div class="half newsurface" style="font-size:12px">12sp 状态文案</div></div>
+    <div class="foot">字号：全屏最小 10sp，正文 12sp；71 处 6–8sp 全部上移。</div>
+  </div>
+</div>
+
+<div class="foot-note">
+  样式参考稿：颜色、字号、行高、描边、圆角均可 1:1 落到 <code>ui/Tokens.java</code>；效果图见 <code>mockups/redesign.png</code>，规格见 <code>02-design-system.md</code>。
+  本页仅为视觉基线，未涉及任何行为改动。
+</div>
+
+</body>
+</html>

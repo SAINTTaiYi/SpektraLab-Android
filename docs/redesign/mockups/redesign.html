@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>SpektraLab · 暗房界面重构（390dp 效果图）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --root:#0A0A0B; --stage:#000; --surface:#111112; --raised:#191A1C;
+    --hair:rgba(255,255,255,.08); --hair-strong:rgba(255,255,255,.14); --track:rgba(255,255,255,.10);
+    --t1:#EDECE8; --t2:#A0A099; --t3:#82827A;
+    --accent:#D9A55B; --accent-press:#B98A45; --danger:#E08A76;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#050506;color:var(--t1);
+    font-family:'Inter','Noto Sans SC',system-ui,-apple-system,'Segoe UI',sans-serif;
+    padding:28px 24px 20px;
+  }
+  h1{font-size:13px;font-weight:400;letter-spacing:.14em;color:var(--t3);text-transform:uppercase;margin-bottom:18px}
+  .row{display:flex;gap:24px;align-items:flex-start}
+  .col{display:flex;flex-direction:column;gap:10px}
+  .cap{font-size:11px;color:var(--t3);letter-spacing:.02em}
+
+  .phone{
+    width:390px;height:844px;background:var(--root);position:relative;
+    border:1px solid rgba(255,255,255,.10);overflow:hidden;
+    display:flex;flex-direction:column;
+  }
+  /* ---- 系统栏 ---- */
+  .sysbar{height:24px;display:flex;align-items:center;justify-content:space-between;
+          padding:0 20px;font-size:10px;color:var(--t3);letter-spacing:.04em}
+  .navbar{height:41px;display:flex;align-items:center;justify-content:center}
+  .navbar i{display:block;width:96px;height:3px;border-radius:2px;background:rgba(255,255,255,.22)}
+
+  /* ---- 顶栏 ---- */
+  .topbar{height:48px;display:flex;align-items:baseline;padding:0 20px;flex:none}
+  .wordmark{font-size:20px;font-weight:300;letter-spacing:0}
+  .ver{font-size:10px;color:var(--t3);margin-left:8px;letter-spacing:.04em}
+
+  /* ---- 舞台 ---- */
+  .stage{flex:1;background:var(--stage);position:relative;overflow:hidden}
+  .stage.empty{display:flex;align-items:center;justify-content:center;flex-direction:column}
+  .guides{position:absolute;inset:9%;border:1px solid rgba(255,255,255,.06)}
+  .guides:before,.guides:after{content:"";position:absolute;background:rgba(255,255,255,.05)}
+  .guides:before{left:50%;top:0;bottom:0;width:1px}
+  .guides:after{top:50%;left:0;right:0;height:1px}
+  .corner{position:absolute;width:11px;height:11px;border-color:rgba(255,255,255,.24);border-style:solid}
+  .c1{left:9%;top:9%;border-width:1px 0 0 1px}
+  .c2{right:9%;top:9%;border-width:1px 1px 0 0}
+  .c3{left:9%;bottom:9%;border-width:0 0 1px 1px}
+  .c4{right:9%;bottom:9%;border-width:0 1px 1px 0}
+
+  .empty-stack{text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px}
+  .idx{font-size:10px;letter-spacing:.10em;color:var(--t3)}
+  .display{font-size:28px;font-weight:300;letter-spacing:.02em}
+  .copy{font-size:12px;color:var(--t2);margin-top:2px}
+  .ghost{margin-top:10px;height:44px;padding:0 16px;border:1px solid var(--hair-strong);
+         border-radius:2px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t1)}
+  .arrow{width:12px;height:12px;position:relative}
+  .arrow:before{content:"";position:absolute;left:0;bottom:0;width:15px;height:1px;
+                background:currentColor;transform:rotate(-45deg);transform-origin:left bottom}
+  .arrow:after{content:"";position:absolute;right:0;top:0;width:6px;height:6px;
+               border-top:1px solid currentColor;border-right:1px solid currentColor}
+
+  /* ---- 照片（玻璃拟态风景，只用于效果图对比） ---- */
+  .photo{position:absolute;inset:12px;background:
+      radial-gradient(120% 80% at 70% 15%, rgba(255,214,170,.55), rgba(255,214,170,0) 55%),
+      linear-gradient(#c9a888 0%, #b08a6c 38%, #6b5a4e 58%, #2b2a25 74%, #1a1916 100%);
+      overflow:hidden}
+  .photo:before{content:"";position:absolute;left:-6%;right:-6%;bottom:0;height:44%;
+      background:linear-gradient(transparent, rgba(0,0,0,.55)),
+      radial-gradient(60% 100% at 30% 100%, #3a3a2f, #1c1c17 70%);
+      clip-path:polygon(0 62%,18% 44%,36% 56%,54% 34%,74% 50%,88% 40%,100% 52%,100% 100%,0 100%)}
+  .photo:after{content:"";position:absolute;inset:0;opacity:.16;mix-blend-mode:overlay;
+      background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/></filter><rect width='120' height='120' filter='url(%23n)' opacity='0.5'/></svg>")}
+  .tag{position:absolute;font-size:10px;color:var(--t3);letter-spacing:.04em}
+  .tag.name{left:16px;bottom:36px;font-size:12px;color:var(--t2);letter-spacing:0}
+  .tag.dim{right:16px;top:14px}
+  .tag.hint{left:16px;bottom:17px;font-size:10px;color:var(--t3)}
+  .overlay-line{position:absolute;left:0;right:0;bottom:0;height:1px;background:
+      linear-gradient(90deg,transparent,rgba(217,165,91,.55),transparent)}
+
+  /* ---- 状态行 ---- */
+  .statusline{height:20px;display:flex;align-items:center;justify-content:flex-end;
+              padding:0 20px;font-size:10px;color:var(--t2);background:var(--root);flex:none}
+  .statusline .detail{color:var(--accent);margin-left:12px}
+  .statusline.danger{color:var(--danger)}
+
+  /* ---- 面板 ---- */
+  .panel{background:var(--surface);border-top:1px solid var(--hair);flex:none}
+  .panel-head{height:44px;display:flex;align-items:center;padding:0 20px;gap:12px}
+  .recipe{font-size:12px;color:var(--t1);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chev{width:12px;height:12px;position:relative;flex:none}
+  .chev:before{content:"";position:absolute;left:1px;top:4px;width:9px;height:1px;background:var(--t3);
+               transform:rotate(45deg);transform-origin:left center}
+  .chev:after{content:"";position:absolute;right:1px;top:4px;width:9px;height:1px;background:var(--t3);
+               transform:rotate(-45deg);transform-origin:right center}
+  .chev.up{transform:rotate(180deg)}
+  .reset{font-size:10px;color:var(--t3);letter-spacing:.06em;height:44px;display:flex;align-items:center}
+
+  .segments{height:40px;display:flex;align-items:stretch;border-top:1px solid var(--hair)}
+  .seg{flex:1;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--t3);position:relative}
+  .seg.on{color:var(--t1)}
+  .seg.on:after{content:"";position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+                width:24px;height:2px;background:var(--accent)}
+
+  .field{height:48px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .field .k{font-size:12px;color:var(--t2);flex:1}
+  .field .v{font-size:15px;color:var(--t1);letter-spacing:.01em;max-width:200px;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .field .chev{margin-left:8px}
+
+  .slider{height:56px;display:flex;flex-direction:column;justify-content:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .slider .head{display:flex;align-items:baseline;justify-content:space-between;height:20px}
+  .slider .k{font-size:12px;color:var(--t2)}
+  .slider .v{font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums;letter-spacing:.02em;min-width:48px;text-align:right}
+  .track{position:relative;height:36px;display:flex;align-items:center}
+  .rail{position:absolute;left:0;right:0;height:2px;background:var(--track)}
+  .fill{position:absolute;left:0;height:2px;background:var(--accent)}
+  .thumb{position:absolute;width:12px;height:12px;border-radius:50%;background:#EDECE8;
+         border:1px solid var(--accent);transform:translateX(-6px)}
+
+  .note{font-size:10px;color:var(--t3);line-height:1.5;padding:10px 20px 12px;border-top:1px solid var(--hair)}
+  .footer{height:40px;display:flex;align-items:center;justify-content:space-between;
+          padding:0 20px;border-top:1px solid var(--hair);font-size:10px;color:var(--t3);letter-spacing:.04em}
+
+  .toggle{height:48px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair)}
+  .toggle .k{font-size:12px;color:var(--t2);flex:1}
+  .box{width:18px;height:18px;border:1px solid var(--hair-strong);border-radius:2px;position:relative}
+  .box.on{background:var(--accent);border-color:var(--accent)}
+  .box.on:after{content:"";position:absolute;left:5px;top:1px;width:5px;height:9px;
+                border-right:1.5px solid #0A0A0B;border-bottom:1.5px solid #0A0A0B;transform:rotate(40deg)}
+
+  /* ---- 操作栏 ---- */
+  .actions{height:56px;display:flex;align-items:center;justify-content:space-between;
+           padding:0 20px;background:var(--root);border-top:1px solid var(--hair);flex:none}
+  .txt{font-size:12px;color:var(--t2);height:44px;display:flex;align-items:center}
+  .right{display:flex;align-items:center;gap:16px}
+  .vline{width:1px;height:16px;background:var(--hair)}
+  .cta{height:44px;padding:0 20px;border:1px solid var(--accent);border-radius:2px;
+       display:flex;align-items:center;font-size:12px;color:var(--accent)}
+  .cta.off{border-color:var(--hair-strong);color:var(--t3)}
+
+  /* ---- 弹层 ---- */
+  .scrim{position:absolute;inset:0;background:rgba(0,0,0,.6)}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:var(--raised);
+         border-radius:14px 14px 0 0;padding-bottom:41px}
+  .handle{width:40px;height:2px;border-radius:1px;background:rgba(255,255,255,.20);margin:10px auto 0}
+  .sheet-title{font-size:20px;font-weight:300;padding:16px 20px 8px}
+  .sheet-row{height:56px;display:flex;align-items:center;padding:0 20px;border-top:1px solid var(--hair);font-size:15px}
+  .sheet-row.on{color:var(--accent)}
+  .sheet-row .spacer{flex:1}
+  .check{width:11px;height:11px;position:relative}
+  .check:after{content:"";position:absolute;left:1px;top:0;width:5px;height:9px;
+               border-right:1.5px solid var(--accent);border-bottom:1.5px solid var(--accent);transform:rotate(40deg)}
+  .sheet-foot{height:56px;display:flex;align-items:center;justify-content:flex-end;gap:24px;
+              padding:0 20px;border-top:1px solid var(--hair);font-size:12px}
+  .sheet-foot .cancel{color:var(--t2)}
+  .sheet-foot .go{color:var(--accent)}
+  .dim-note{font-size:12px;color:var(--t2);line-height:1.5;padding:4px 20px 16px}
+</style>
+</head>
+<body>
+<h1>SpektraLab · Darkroom · 390 × 844 dp</h1>
+<div class="row">
+
+  <!-- 1 · 空状态 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="topbar"><span class="wordmark">SpektraLab</span><span class="ver">v1.2.6</span></div>
+      <div class="stage empty">
+        <div class="guides"></div>
+        <div class="corner c1"></div><div class="corner c2"></div>
+        <div class="corner c3"></div><div class="corner c4"></div>
+        <div class="empty-stack">
+          <div class="idx">(001)</div>
+          <div class="display">NO IMAGE</div>
+          <div class="copy">选择一张 RAW 或 JPEG 开始</div>
+          <div class="ghost"><span>选择照片</span><span class="arrow"></span></div>
+        </div>
+      </div>
+      <div class="statusline"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="recipe">Portra 400 · Endura · 135</span>
+          <span class="chev"></span>
+        </div>
+      </div>
+      <div class="actions">
+        <span class="txt">导入</span>
+        <span class="right">
+          <span class="txt">导出</span>
+          <span class="vline"></span>
+          <span class="cta off">渲染</span>
+        </span>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">① 空状态 · 舞台 79% 高，唯一动作是「选择照片」</div>
+  </div>
+
+  <!-- 2 · 已渲染（收起） -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="topbar"><span class="wordmark">SpektraLab</span><span class="ver">v1.2.6</span></div>
+      <div class="stage">
+        <div class="photo"></div>
+        <div class="tag name">GK5_0148.RW2</div>
+        <div class="tag dim">135 · 3:2</div>
+        <div class="tag hint">长按看原片 · 拖动分割</div>
+      </div>
+      <div class="statusline">预览就绪 2048 × 1365</div>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="recipe">Portra 400 · Endura · 135</span>
+          <span class="chev"></span>
+        </div>
+      </div>
+      <div class="actions">
+        <span class="txt">导入</span>
+        <span class="right">
+          <span class="txt">导出</span>
+          <span class="vline"></span>
+          <span class="cta">渲染</span>
+        </span>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">② 已渲染 · 收起态 · 照片是唯一亮部，琥珀只出现在主 CTA</div>
+  </div>
+
+  <!-- 3 · 面板展开 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="topbar"><span class="wordmark">SpektraLab</span><span class="ver">v1.2.6</span></div>
+      <div class="stage">
+        <div class="photo"></div>
+        <div class="tag name">GK5_0148.RW2</div>
+        <div class="tag dim">135 · 3:2</div>
+      </div>
+      <div class="statusline">预览就绪 2048 × 1365</div>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="recipe">Portra 400 · Endura · 135</span>
+          <span class="reset">重置</span>
+          <span class="chev up"></span>
+        </div>
+        <div class="segments">
+          <div class="seg">胶片</div>
+          <div class="seg on">光学</div>
+          <div class="seg">画幅</div>
+          <div class="seg">边角</div>
+        </div>
+        <div class="slider">
+          <div class="head"><span class="k">放大机曝光</span><span class="v">1.00</span></div>
+          <div class="track"><div class="rail"></div><div class="fill" style="width:20%"></div><div class="thumb" style="left:20%"></div></div>
+        </div>
+        <div class="slider">
+          <div class="head"><span class="k">颗粒</span><span class="v">1.00</span></div>
+          <div class="track"><div class="rail"></div><div class="fill" style="width:50%"></div><div class="thumb" style="left:50%"></div></div>
+        </div>
+        <div class="slider">
+          <div class="head"><span class="k">光晕</span><span class="v">1.00</span></div>
+          <div class="track"><div class="rail"></div><div class="fill" style="width:25%"></div><div class="thumb" style="left:25%"></div></div>
+        </div>
+        <div class="slider">
+          <div class="head"><span class="k">眩光</span><span class="v">3.00</span></div>
+          <div class="track"><div class="rail"></div><div class="fill" style="width:25%"></div><div class="thumb" style="left:25%"></div></div>
+        </div>
+        <div class="note">颗粒与光晕按 135 全画幅 36mm 计算</div>
+      </div>
+      <div class="actions">
+        <span class="txt">导入</span>
+        <span class="right">
+          <span class="txt">导出</span>
+          <span class="vline"></span>
+          <span class="cta">渲染</span>
+        </span>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">③ 面板展开 · 分段无序号 · 滑杆值等宽右对齐</div>
+  </div>
+
+  <!-- 4 · 弹层 -->
+  <div class="col">
+    <div class="phone">
+      <div class="sysbar"><span>9:41</span><span>· · ·</span></div>
+      <div class="topbar"><span class="wordmark">SpektraLab</span><span class="ver">v1.2.6</span></div>
+      <div class="stage">
+        <div class="photo"></div>
+      </div>
+      <div class="statusline">预览就绪 2048 × 1365</div>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="recipe">Portra 400 · Endura · 135</span>
+          <span class="chev"></span>
+        </div>
+      </div>
+      <div class="actions">
+        <span class="txt">导入</span>
+        <span class="right">
+          <span class="txt">导出</span>
+          <span class="vline"></span>
+          <span class="cta">渲染</span>
+        </span>
+      </div>
+      <div class="scrim"></div>
+      <div class="sheet">
+        <div class="handle"></div>
+        <div class="sheet-title">导出 · SM8735 · 上限约 45.0 MP</div>
+        <div class="sheet-row on"><span>长边 2048（最快）</span><span class="spacer"></span><span class="check"></span></div>
+        <div class="sheet-row"><span>长边 3400</span></div>
+        <div class="sheet-row"><span>全尺寸 4096 × 2731</span></div>
+        <div class="sheet-foot"><span class="cancel">取消</span></div>
+      </div>
+      <div class="navbar"><i></i></div>
+    </div>
+    <div class="cap">④ 弹层 · 替换平台 AlertDialog 与 Spinner 下拉</div>
+  </div>
+
+</div>
+</body>
+</html>
