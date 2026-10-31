@@ -1943,8 +1943,18 @@ public class MainActivity extends Activity {
                                 rawView.setPixels(px, 0, rw, 0, 0, rw, rh);
                             }
                         }
-                        try { DebugSink.text("raw-view", rawView == null ? "export: empty"
-                                : "export " + rawView.getWidth() + "x" + rawView.getHeight()); }
+                        try {
+                            int probePixel = 0;
+                            if (rawView != null) {
+                                int[] one = new int[1];
+                                rawView.getPixels(one, 0, 1, Math.max(0, rawView.getWidth() / 2),
+                                                  Math.max(0, rawView.getHeight() / 2), 1, 1);
+                                probePixel = one[0];
+                            }
+                            DebugSink.text("raw-view", rawView == null ? "export: empty"
+                                    : "export " + rawView.getWidth() + "x" + rawView.getHeight()
+                                      + " mid=" + Integer.toHexString(probePixel));
+                        }
                         catch (Throwable ignored) { }
                     } catch (Throwable t) {
                         try { DebugSink.text("raw-view", "export failed: " + t); } catch (Throwable ignored) { }
@@ -2351,6 +2361,13 @@ public class MainActivity extends Activity {
      */
     private void applyParams() {
         if (session == null) return;
+        // Every delta, with the frame it is being sent for: the engine treats a
+        // stock change as a rebuild, and a render that follows one has to be
+        // read next to the delta that caused it.
+        try {
+            DebugSink.text("params", "render=" + rendering + " film=" + filmStock + " print=" + printStock
+                    + " overscan=" + overscanOn + " date=" + dateOn + " fmt=" + filmFormatMm);
+        } catch (Throwable ignored) { }
         session.setParams(String.format(
             "{\"output_color_space\":\"sRGB\",\"preview_long_edge\":2048,"
             + "\"print_exposure\":%.2f,\"grain_amount\":%.3f,\"halation_amount\":%.3f,"
@@ -2422,6 +2439,10 @@ public class MainActivity extends Activity {
                 }
                 bmp.setPixels(pixels, 0, w, 0, 0, w, h);
                 session.renderEnd();
+                // The engine's log for this render. When a frame comes back as
+                // one flat colour there is nothing else to read: it says which
+                // tier was built, how big, and what each dispatch covered.
+                uploadVkLog();
 
                 final int fw = w, fh = h;
                 try {
@@ -2431,7 +2452,9 @@ public class MainActivity extends Activity {
                     java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
                     bmp.compress(Bitmap.CompressFormat.JPEG, 85, bo);
                     DebugSink.text("preview", "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
-                            + " copy=" + copied + " jpegBytes=" + bo.size());
+                            + " copy=" + copied + " first=" + Integer.toHexString(pixels[0])
+                            + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2])
+                            + " jpegBytes=" + bo.size());
                     DebugSink.bytes("preview", "p.jpg", bo.toByteArray(), "image/jpeg");
                     DebugSink.text("preview-timing", "jpeg_ms=" + (System.currentTimeMillis() - t0));
                 } catch (Throwable ignored) {}
