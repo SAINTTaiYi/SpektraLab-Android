@@ -1690,7 +1690,7 @@ public class MainActivity extends Activity {
             // render off the import path.
         } catch (Throwable t) {
             lastImportError = describeImportFailure(t);
-            Toast.makeText(this, lastImportError, Toast.LENGTH_LONG).show();
+            showErrorDialog("导入失败", lastImportError);
             try { DebugSink.text("import-failed", lastImportError); } catch (Throwable ignored) { }
         }
     }
@@ -2092,16 +2092,54 @@ public class MainActivity extends Activity {
                     lastImportError = said;
                     runOnUiThread(() -> {
                         statusText.setText("RAW加载失败 " + SpkError.shortForm(said));
-                        Toast.makeText(this, said, Toast.LENGTH_LONG).show();
+                        showErrorDialog("RAW 加载失败", said);
                     });
                 }
             }).start();
         } catch (Throwable t) {
             lastImportError = describeImportFailure(t);
-            Toast.makeText(this, "RAW加载失败: " + lastImportError, Toast.LENGTH_LONG).show();
+            showErrorDialog("RAW 加载失败", lastImportError);
         }
     }
     
+    /**
+     * A failure the user has to be able to read and copy.
+     *
+     * <p>A Toast is two lines on most phones and ends in an ellipsis, which is
+     * exactly how the E-9000 detail disappeared for two releases: the message
+     * carried the whole dlopen chain and the screen showed "……so …". This one
+     * scrolls, can be selected, and copies itself in one tap -- an error the
+     * user cannot forward is an error nobody can fix.
+     */
+    private void showErrorDialog(String title, String body) {
+        if (body == null || body.isEmpty()) body = "[E-0000] 未知错误";
+        final String text = body;
+        runOnUiThread(() -> {
+            final float d = getResources().getDisplayMetrics().density;
+            final TextView tv = new TextView(this);
+            tv.setText(text);
+            tv.setTextIsSelectable(true);
+            tv.setTextSize(13);
+            tv.setPadding((int) (18 * d), (int) (14 * d), (int) (18 * d), (int) (14 * d));
+            final android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            sv.addView(tv);
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setView(sv)
+                    .setPositiveButton("复制", (dlg, w) -> {
+                        try {
+                            android.content.ClipboardManager cm =
+                                    (android.content.ClipboardManager)
+                                            getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("SpektraLab", text));
+                            Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show();
+                        } catch (Throwable ignored) { }
+                    })
+                    .setNegativeButton("关闭", null)
+                    .show();
+        });
+    }
+
     private int extractInt(String json, String key) {
         int idx = json.indexOf(key);
         if (idx < 0) return 0;

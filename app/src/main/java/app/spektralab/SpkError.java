@@ -45,8 +45,8 @@ public final class SpkError {
      * SpektraLabEngine.ensureLoaded), so this only has to name it.
      */
     private static final String NATIVE_LOAD =
-            "引擎库没有加载成功（libspektrafilm_engine.so）——多数是安装时 so 没被解出来，"
-            + "从官网重新下载覆盖安装一次通常就好；仍然不行请把这条截图发给我";
+            "引擎库没有加载成功（libspektrafilm_engine.so）。这是安装包里的原生库没有就位，"
+            + "不是你操作的问题——重装没用；请点「复制」把下面这段完整发给我，我按名字就能定位";
 
     private static final String NO_VULKAN =
             "这台手机没有可用的 Vulkan 驱动，SpektraLab 的渲染全在 GPU 上，没有它跑不起来；"

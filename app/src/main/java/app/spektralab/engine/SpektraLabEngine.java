@@ -33,19 +33,28 @@ public class SpektraLabEngine implements AutoCloseable {
     /**
      * Loads the engine, and the objects it is linked against, once.
      *
-     * <p>`libraw.so` names `libjpeg.so.8` and `libz.so.1` as DT_NEEDED. The
-     * plain loader resolves those by searching the app's library directory,
-     * and a few OEM linkers only search it for names that end in `.so` --
-     * these two deliberately do not (they keep their upstream sonames, which
-     * is what libraw was built against). Loading each object by absolute path
-     * first registers it in the namespace under its own soname, so the
-     * dependency resolves whether or not that search works.
+     * <p>`libraw.so` names `libjpeg_8.so` and `libz_1.so` as DT_NEEDED. Those
+     * two are jpeg-turbo and zlib, whose real sonames are `libjpeg.so.8` and
+     * `libz.so.1` -- names an APK is not allowed to carry. The package
+     * installer only extracts entries under `lib/` whose file name ends in
+     * `.so` (NativeLibraryHelper checks exactly that), so shipped under their
+     * upstream names they are silently left out of the install. Every library
+     * that needs them then dies with `dlopen failed: library "libjpeg.so.8"
+     * not found`, and the engine never loads. That was E-9000 on every device
+     * whose installer is strict about it -- the reference device's is not,
+     * which is why it took a user's screenshot to see it.
+     *
+     * <p>They are renamed at package time and the DT_NEEDED of everything that
+     * names them is rewritten to match (app/build/build-libs.sh), so every
+     * installed name is a plain `lib*.so`. Loading each one by absolute path
+     * first still earns its keep: it puts the object in the namespace under its
+     * soname before the engine asks for it, and it names the one that failed.
      */
     private static synchronized void ensureLoaded() {
         if (nativeLoaded) return;
         if (nativeLoadError != null) throw new RuntimeException(nativeLoadError);
         final String[] bundled = {
-                "libc++_shared.so", "libjpeg.so.8", "libz.so.1",
+                "libc++_shared.so", "libjpeg_8.so", "libz_1.so",
                 "liblcms2.so", "libraw.so", "libraw_r.so",
         };
         final StringBuilder tried = new StringBuilder();
