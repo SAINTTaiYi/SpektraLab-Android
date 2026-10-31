@@ -1718,13 +1718,16 @@ public class MainActivity extends Activity {
         if (engine == null) {
             vkLogFile().delete();
             engine = SpektraLabEngine.create(getResourcesDir(), vkLogFile().getAbsolutePath());
-            uploadCapabilities();
-            // The probe is what turns "some devices fail" into a number this
-            // build can act on: binding range -> pixels -> the import cap and
-            // the export tiers below.
+            // **The probe comes first, and nothing may stop it.** It used to sit
+            // after `uploadCapabilities()`, so a throw in any of the uploads left
+            // `probe` at its `parse("{}")` default -- `? · 无单缓冲上限` -- and the
+            // next call skipped this whole block because `engine` was already
+            // set. That is a device reporting 128 MiB letting a 14.8 MP frame
+            // in, and the render dying on a binding range.
             probe = DeviceProbe.parse(engine.deviceProfile());
             try { DebugSink.text("device-profile", probe.describe() + "\n" + engine.deviceProfile()); }
             catch (Throwable ignored) { }
+            try { uploadCapabilities(); } catch (Throwable ignored) { }
         }
         return engine;
     }
@@ -1751,17 +1754,48 @@ public class MainActivity extends Activity {
         }
     }
 
-    private int maxImportPixels() {
+    /**
+     * Pixels of **source** this device will render, from three ceilings.
+     *
+     * The binding ceiling comes from the engine itself (`spk_max_plane_bytes`,
+     * a direct call) and only falls back to the parsed profile -- because the
+     * profile is JSON and the JSON can fail to parse, and a failed parse used to
+     * read as "no limit". A device whose driver reports the Vulkan minimum
+     * (128 MiB = 11.2 MP) then accepted a 14.8 MP import and died at render.
+     *
+     * `withRebate` divides by the film canvas's growth: the ceiling applies to
+     * the **canvas**, not to the source, and the canvas is wider than the frame
+     * by the film's own width and by the margin along it. Measured from the
+     * engine's gate table (`overscan.cpp`, kFormats) and confirmed against real
+     * renders:
+     *
+     *     135        1.51   (4700x3133 -> 4914x4538)
+     *     135 half   1.53
+     *     120 645    1.18   (1952x2604 -> 2116x2833, measured)
+     *     120 6x9    1.13
+     *     135 XPan   1.50
+     *
+     * 1.6 covers the worst of them with margin. A frame that lands a little
+     * small is a picture; one that lands over the limit is a dead end.
+     */
+    private int maxImportPixels(boolean withRebate) {
         try { ensureEngine(); } catch (Throwable ignored) { }
-        // Three ceilings, and the smallest wins: what one binding can name,
-        // what the phone has free right now, and a hard cap so a device with
-        // 24 GB does not accept a 300 MP frame nobody meant to open.
-        final long byBinding = probe.maxPixelsByBinding();
+        long byBinding = Long.MAX_VALUE;
+        try {
+            final int byNative = engine == null ? 0 : engine.maxFramePixels();
+            if (byNative > 0) byBinding = byNative;
+        } catch (Throwable ignored) { }
+        if (byBinding == Long.MAX_VALUE) byBinding = probe.maxPixelsByBinding();
         final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
         // The hard cap is measured, not chosen: 42.7 MP renders here, 44.8 MP
         // takes the device down, and the pool's peak is 6.3 planes (76 B/px).
-        final long px = Math.min(Math.min(byBinding, byMemory), DeviceProbe.HARD_PIXEL_CAP);
+        long px = Math.min(Math.min(byBinding, byMemory), DeviceProbe.HARD_PIXEL_CAP);
+        if (withRebate) px = (long) (px / 1.6);
         return (int) Math.min(Math.max(px, 1_000_000L), Integer.MAX_VALUE);
+    }
+
+    private int maxImportPixels() {
+        return maxImportPixels(overscanOn);
     }
 
     /**
@@ -2509,7 +2543,11 @@ public class MainActivity extends Activity {
                 // came in past it -- a native-size import, or a build that had
                 // no cap. Offering the retry beats printing a code and leaving
                 // the user to find the long-press menu.
-                if (SpkError.codeOf(msg) == 1001) offerSmallerImport();
+                // 1001 is the binding range by name; 1009 is a Vulkan call that
+                // failed without naming one, which on a frame this size is the
+                // same ceiling. Both have the same cure.
+                final int code = SpkError.codeOf(msg);
+                if (code == 1001 || code == 1009) offerSmallerImport();
             }
         }).start();
     }
@@ -2521,11 +2559,12 @@ public class MainActivity extends Activity {
     private void offerSmallerImport() {
         if (sourceUri == null || e1001Offered) return;
         e1001Offered = true;
-        long target = probe.maxPixelsByBinding();
-        if (target == Long.MAX_VALUE) target = DeviceProbe.DISPATCH_PIXEL_CAP;
+        // The same ceiling the import uses, at 75 % of it. When the probe had
+        // failed this used to fall back to the dispatch cap -- 16.5 MP -- which
+        // on a 128 MiB device is still three times too big, so the retry failed
+        // the same way and the offer was a dead end.
+        long target = maxImportPixels();
         target = (long) (target * 0.75);
-        final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
-        if (byMemory > 0) target = Math.min(target, byMemory);
         target = Math.max(1_000_000L, Math.min(target, 100_000_000L));
         final long picking = target;
         runOnUiThread(() -> new android.app.AlertDialog.Builder(this)
@@ -2734,6 +2773,8 @@ public class MainActivity extends Activity {
                     exportProgressBar.setVisibility(View.GONE);
                     setStep(2);
                 });
+                final int code = SpkError.codeOf(msg);
+                if (code == 1001 || code == 1009) offerSmallerImport();
             } finally {
                 if (tmp.exists()) tmp.delete();
             }

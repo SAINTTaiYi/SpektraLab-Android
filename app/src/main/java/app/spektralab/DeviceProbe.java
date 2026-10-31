@@ -45,19 +45,40 @@ public final class DeviceProbe {
     public final long maxStorageBufferRange;   // 0 = no per-binding limit
     public final long heapDeviceLocal;
     public final int maxWorkgroupCount;
+    /**
+     * False when the profile could not be read at all.
+     *
+     * **This is the flag that matters.** A probe that failed used to be
+     * indistinguishable from a device with no per-binding limit: both said
+     * `maxStorageBufferRange = 0`, and `maxPixelsByBinding()` answered
+     * `Long.MAX_VALUE` for both. On a phone whose driver really does report the
+     * Vulkan minimum (128 MiB, i.e. 11.2 MP) that let a 14.8 MP import through,
+     * and the render then died on `spk_sep_fir_acc: buffer argument 0 needs
+     * 168.9 MiB, this device allows 128.0 MiB`. The user's screen said
+     * `? · 无单缓冲上限`, which is this flag missing.
+     */
+    public final boolean valid;
 
     private DeviceProbe(String backend, String device, long range, long heap, int workgroups) {
+        this(backend, device, range, heap, workgroups, true);
+    }
+
+    private DeviceProbe(String backend, String device, long range, long heap, int workgroups,
+                        boolean valid) {
         this.backend = backend;
         this.device = device;
         this.maxStorageBufferRange = range;
         this.heapDeviceLocal = heap;
         this.maxWorkgroupCount = workgroups;
+        this.valid = valid;
     }
 
     /** Never throws: an unreadable profile is a device that claims no limits. */
     public static DeviceProbe parse(String json) {
         try {
+            if (json == null || json.length() < 3) return new DeviceProbe("?", "?", 0, 0, 0, false);
             JSONObject o = new JSONObject(json);
+            if (!o.has("max_storage_buffer_range")) return new DeviceProbe("?", "?", 0, 0, 0, false);
             return new DeviceProbe(
                     o.optString("backend", "?"),
                     o.optString("device", "?"),
@@ -65,7 +86,7 @@ public final class DeviceProbe {
                     o.optLong("heap_device_local", 0),
                     o.optInt("max_workgroup_count", 0));
         } catch (Throwable t) {
-            return new DeviceProbe("?", "?", 0, 0, 0);
+            return new DeviceProbe("?", "?", 0, 0, 0, false);
         }
     }
 
@@ -99,8 +120,13 @@ public final class DeviceProbe {
         return Math.min(maxPixelsByBinding(), HARD_PIXEL_CAP);
     }
 
-    /** True when this device cannot take the frame size this build was tuned for. */
+    /**
+     * True when this device cannot take the frame size this build was tuned for
+     * -- or when the profile could not be read, which must warn rather than
+     * reassure. "Unknown" used to land on the reassuring side.
+     */
     public boolean isLimited() {
+        if (!valid) return true;
         return maxStorageBufferRange > 0 && maxPixelsByBinding() < DISPATCH_PIXEL_CAP;
     }
 
@@ -111,6 +137,7 @@ public final class DeviceProbe {
 
     /** One line for the status bar. */
     public String describe() {
+        if (!valid) return "设备信息读取失败";
         StringBuilder sb = new StringBuilder(device == null || device.isEmpty() ? "GPU" : device);
         if (maxStorageBufferRange > 0) {
             sb.append(" · 单缓冲 ").append(Math.round(maxStorageBufferRange / 1048576.0)).append(" MiB");

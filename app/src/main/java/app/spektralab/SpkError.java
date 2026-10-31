@@ -77,7 +77,12 @@ public final class SpkError {
             case 1006: return "本机驱动能力低于本程序的最低要求";
             case 1007: return "该效果在当前图形后端上尚未实现";
             case 1008: return "图形资源创建失败";
-            case 1009: return "图形后端内部错误";
+            // 1009 is what the engine reports when a Vulkan call itself failed
+            // and the message did not name a limit. On a big frame that is
+            // nearly always the device refusing to allocate the planes, so the
+            // advice is the same as 1001's rather than "internal error", which
+            // tells the user nothing and the developer less.
+            case 1009: return "图形后端调用失败（大图多为显存不足）：可关掉片边、或按较小尺寸重新导入后重试";
             // 11xx — the file
             case 1101: return "RAW 打开失败：格式或压缩方式不受支持";
             case 1102: return "RAW 解包失败：文件可能损坏或未下载完整";
