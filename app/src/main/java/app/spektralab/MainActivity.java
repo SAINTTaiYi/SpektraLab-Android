@@ -100,7 +100,9 @@ public class MainActivity extends Activity {
     private TextView statusText;                        // 10sp 提示行：只在进度/错误时说话
     private TextView rawName;                           // RAW 状态下的文件名
     private TextView primaryAction;                     // 唯一的描边按钮＝「下一步」
-    private TextView actionSwap, actionTune;            // 换图 / 调色
+    private TextView actionSwap, actionTune, actionOriginal; // 换图 / 调色 / 原片
+    /** true = 舞台正在显示原片（「原片」按钮按下的状态）。 */
+    private boolean showingOriginal = false;
     private View footBar;                               // 底部动作区（空状态整块隐藏）
     private TextView exportHint;                        // 「长按可选尺寸」的标识
     private ProgressBar progressBar, exportProgressBar; // 舞台底边的 1dp 进度线
@@ -308,6 +310,14 @@ public class MainActivity extends Activity {
         alp.leftMargin = Tokens.dp(this, 16);
         bar.addView(actionTune, alp);
 
+        actionOriginal = Chrome.textAction(this, "原片");
+        actionOriginal.setContentDescription("切换原片与成片");
+        actionOriginal.setOnClickListener(v -> toggleOriginal());
+        final LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(
+                -2, Tokens.dp(this, Tokens.TOUCH_MIN));
+        olp.leftMargin = Tokens.dp(this, 16);
+        bar.addView(actionOriginal, olp);
+
         bar.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
 
         primaryAction = Chrome.primaryButton(this, "选择照片", true);
@@ -324,6 +334,14 @@ public class MainActivity extends Activity {
         exportHint.setPadding(0, Tokens.dp(this, 2), 0, 0);
         foot.addView(exportHint, new LinearLayout.LayoutParams(-1, -2));
         return foot;
+    }
+
+    /** 「原片 / 成片」：整幅切换，按钮本身随状态变成琥珀色。 */
+    private void toggleOriginal() {
+        if (lastRenderedBitmap == null || compare == null) return;
+        showingOriginal = !showingOriginal;
+        compare.showBeforeOnly(showingOriginal);
+        refreshActions();
     }
 
     /** 主按钮＝下一步，用户不需要判断该点哪里。 */
@@ -355,6 +373,15 @@ public class MainActivity extends Activity {
             Chrome.setPrimary(primaryAction, "渲染胶片", true);
         } else {
             Chrome.setPrimary(primaryAction, "选择照片", true);
+        }
+        // 没有成片时「原片」无意义；切回成片时同时复位舞台
+        if (!rendered && showingOriginal) {
+            showingOriginal = false;
+            if (compare != null) compare.showBeforeOnly(false);
+        }
+        if (actionOriginal != null) {
+            actionOriginal.setVisibility(rendered ? View.VISIBLE : View.GONE);
+            actionOriginal.setTextColor(showingOriginal ? Tokens.ACCENT : Tokens.TEXT_2);
         }
         actionSwap.setVisibility(rendered || hasSession ? View.VISIBLE : View.GONE);
         actionTune.setVisibility(rendered ? View.VISIBLE : View.GONE);
@@ -784,6 +811,8 @@ public class MainActivity extends Activity {
         private final float density;
         private Bitmap before, after;
         private boolean holding, dragging;
+        /** true = 整幅只显示原片（由「原片」按钮控制），手势此时不参与。 */
+        private boolean showBeforeOnly;
         private float split, downX, downY;
 
         private final Runnable press = new Runnable() {
@@ -801,11 +830,20 @@ public class MainActivity extends Activity {
         }
 
         void setBefore(Bitmap b) { before = b; invalidate(); }
+
+        /** 「原片 / 成片」按钮：整幅切换，不需要按住也不用拖动。 */
+        void showBeforeOnly(boolean on) {
+            showBeforeOnly = on;
+            holding = false;
+            split = 0f;
+            invalidate();
+        }
         void setAfter(Bitmap b) { after = b; invalidate(); }
 
         void clear() {
             before = null;
             after = null;
+            showBeforeOnly = false;
             holding = false;
             dragging = false;
             split = 0f;
@@ -813,7 +851,9 @@ public class MainActivity extends Activity {
         }
 
         @Override protected void onDraw(android.graphics.Canvas canvas) {
-            final Bitmap base = after != null ? after : before;
+            // 按钮切到「原片」时整幅只画原图，不再叠加分割/长按逻辑
+            final Bitmap base = (showBeforeOnly && before != null)
+                    ? before : (after != null ? after : before);
             if (base == null) return;
             drawFit(canvas, base);
             if (before == null || after == null) return;
