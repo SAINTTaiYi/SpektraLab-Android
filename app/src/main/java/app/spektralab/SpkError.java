@@ -30,13 +30,39 @@ public final class SpkError {
         if (raw == null || raw.isEmpty()) return "[E-0000] 未知错误";
         int code = codeOf(raw);
         if (code == 0) code = 9000;
+        if (code == 9000 && isNativeLoadFailure(raw)) {
+            if (raw.contains("libvulkan.so")) return "[E-9000] " + NO_VULKAN + "（" + raw + "）";
+            return "[E-9000] " + NATIVE_LOAD + "（" + raw + "）";
+        }
         return "[E-" + code + "] " + explain(code) + "（" + raw + "）";
+    }
+
+    /**
+     * The most common E-9000 by far: the engine's own library did not load.
+     * It used to arrive as a bare NoClassDefFoundError with no cause, which
+     * reads like a bug in the app rather than a broken install, and sent people
+     * looking in the wrong place. The chain now travels with the message (see
+     * SpektraLabEngine.ensureLoaded), so this only has to name it.
+     */
+    private static final String NATIVE_LOAD =
+            "引擎库没有加载成功（libspektrafilm_engine.so）——多数是安装时 so 没被解出来，"
+            + "从官网重新下载覆盖安装一次通常就好；仍然不行请把这条截图发给我";
+
+    private static final String NO_VULKAN =
+            "这台手机没有可用的 Vulkan 驱动，SpektraLab 的渲染全在 GPU 上，没有它跑不起来；"
+            + "如果你的机型确实支持 Vulkan，请把这条截图发给我";
+
+    static boolean isNativeLoadFailure(String raw) {
+        if (raw == null) return false;
+        return raw.contains("libspektrafilm_engine") || raw.contains("引擎库没有加载成功")
+                || raw.contains("dlopen failed") || raw.contains("UnsatisfiedLink");
     }
 
     /** Short form for a status line, without the engine text. */
     public static String shortForm(String raw) {
         int code = codeOf(raw);
         if (code == 0) code = 9000;
+        if (code == 9000 && isNativeLoadFailure(raw)) return "[E-9000] 引擎库没有加载成功";
         return "[E-" + code + "] " + explain(code);
     }
 

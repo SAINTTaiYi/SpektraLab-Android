@@ -6,8 +6,89 @@ import java.nio.ByteBuffer;
  * Java facade over the SpektraLab C ABI (spk_engine.h).
  */
 public class SpektraLabEngine implements AutoCloseable {
-    static {
-        System.loadLibrary("spektrafilm_engine");
+    // **Not a `static {}` block on purpose.** A class initialiser that throws
+    // leaves the class *erroneous*: the first access reports the real reason
+    // (an UnsatisfiedLinkError, usually swallowed by a caller), and every later
+    // one reports a bare `NoClassDefFoundError: app.spektralab.engine.
+    // SpektraLabEngine` with nothing in it. That is exactly what E-9000 was
+    // showing on the phones where the native library did not load: the cause was
+    // reported once, to nobody, and the visible failure had lost it. Keeping the
+    // failure in a field means every caller sees the cause, every time.
+    private static volatile boolean nativeLoaded;
+    private static volatile String nativeLoadError;
+    private static volatile String nativeLibDir;
+
+    /**
+     * The app's own native-library directory, before anything native is used.
+     *
+     * Optional: without it the plain loader is tried, which is what a desktop
+     * build of these classes would want. With it, every bundled object is
+     * loaded by absolute path first.
+     */
+    public static void prepare(String libraryDir) {
+        nativeLibDir = libraryDir;
+        ensureLoaded();
+    }
+
+    /**
+     * Loads the engine, and the objects it is linked against, once.
+     *
+     * <p>`libraw.so` names `libjpeg.so.8` and `libz.so.1` as DT_NEEDED. The
+     * plain loader resolves those by searching the app's library directory,
+     * and a few OEM linkers only search it for names that end in `.so` --
+     * these two deliberately do not (they keep their upstream sonames, which
+     * is what libraw was built against). Loading each object by absolute path
+     * first registers it in the namespace under its own soname, so the
+     * dependency resolves whether or not that search works.
+     */
+    private static synchronized void ensureLoaded() {
+        if (nativeLoaded) return;
+        if (nativeLoadError != null) throw new RuntimeException(nativeLoadError);
+        final String[] bundled = {
+                "libc++_shared.so", "libjpeg.so.8", "libz.so.1",
+                "liblcms2.so", "libraw.so", "libraw_r.so",
+        };
+        final StringBuilder tried = new StringBuilder();
+        final String dir = nativeLibDir;
+        if (dir != null && !dir.isEmpty()) {
+            for (String name : bundled) {
+                final java.io.File f = new java.io.File(dir, name);
+                if (!f.isFile()) { tried.append(name).append("=missing "); continue; }
+                try { System.load(f.getAbsolutePath()); }
+                catch (Throwable e) { tried.append(name).append('=').append(brief(e)).append(' '); }
+            }
+            try {
+                System.load(new java.io.File(dir, "libspektrafilm_engine.so").getAbsolutePath());
+                nativeLoaded = true;
+                return;
+            } catch (Throwable e) {
+                tried.append("engine=").append(brief(e)).append(' ');
+            }
+        }
+        try {
+            System.loadLibrary("spektrafilm_engine");
+            nativeLoaded = true;
+            return;
+        } catch (Throwable e) {
+            tried.append("loadLibrary=").append(brief(e));
+        }
+        nativeLoadError = "引擎库没有加载成功（libspektrafilm_engine.so）。" + tried;
+        throw new RuntimeException(nativeLoadError);
+    }
+
+    /**
+     * `Class: message` plus the cause chain. A dlopen failure names the missing
+     * file or symbol in its *cause*, not in the top-level message, so the chain
+     * is the part worth keeping.
+     */
+    private static String brief(Throwable t) {
+        final StringBuilder b = new StringBuilder();
+        for (Throwable c = t; c != null && b.length() < 400; c = c.getCause()) {
+            if (b.length() > 0) b.append(" <- ");
+            b.append(c.getClass().getSimpleName()).append(": ").append(c.getMessage());
+            if (c.getCause() == c) break;
+        }
+        return b.toString();
     }
 
     private final long handle;
@@ -26,6 +107,7 @@ public class SpektraLabEngine implements AutoCloseable {
      *                read stderr).
      */
     public static SpektraLabEngine create(String resourcesDir, String logPath) {
+        ensureLoaded();
         if (logPath != null) {
             nativeSetEnv("SPEKTRAFILM_TRANSFER_TIMINGS", "1");
             nativeSetEnv("SPK_VK_LOG", logPath);
@@ -36,6 +118,7 @@ public class SpektraLabEngine implements AutoCloseable {
     }
 
     public static String buildInfo() {
+        ensureLoaded();
         return nativeGetBuildInfo();
     }
 
@@ -209,10 +292,10 @@ public class SpektraLabEngine implements AutoCloseable {
     public String deviceProfile() { return nativeDeviceProfile(handle); }
 
     /** Stable code for an engine message, 0 for empty, 9000 for unrecognised. */
-    public static int errorCode(String message) { return nativeErrorCode(message); }
+    public static int errorCode(String message) { ensureLoaded(); return nativeErrorCode(message); }
 
     /** The RAW decoder's own frame size, before the device cap shrank it. */
-    public static int[] rawSourceSize() { return nativeRawSourceSize(); }
+    public static int[] rawSourceSize() { ensureLoaded(); return nativeRawSourceSize(); }
 
     private native String nativeDeviceProfile(long engineHandle);
     private static native int nativeErrorCode(String message);

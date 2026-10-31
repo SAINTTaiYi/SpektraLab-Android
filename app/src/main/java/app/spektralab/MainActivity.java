@@ -76,6 +76,13 @@ public class MainActivity extends Activity {
                 DebugSink.text("crash", "thread=" + t.getName() + "\n" + sw);
             } catch (Throwable ignored) {}
         });
+        // The native side, before anything reads it: every object the engine
+        // is linked against is loaded by path, and a failure is kept (see
+        // SpektraLabEngine.ensureLoaded) so that the import reports the real
+        // reason instead of a NoClassDefFoundError on the class itself.
+        String nativeDir = null;
+        try { nativeDir = getApplicationInfo().nativeLibraryDir; } catch (Throwable ignored) {}
+        try { SpektraLabEngine.prepare(nativeDir); } catch (Throwable e) { lastImportError = describe(e); }
         try { DebugSink.text("app-start", "buildInfo=" + SpektraLabEngine.buildInfo()); } catch (Throwable ignored) {}
         
         buildUi();
@@ -142,6 +149,9 @@ public class MainActivity extends Activity {
             36.25 / 24.3, 24.0 / 18.0, 65.0 / 24.0, 56.0 / 41.5,
             1.0, 69.5 / 56.0, 76.0 / 56.0, 84.0 / 56.0, 112.0 / 56.0, 168.0 / 56.0};
     private Spinner edgeSpinner;
+    /** True while `refreshEdgeFormats` rebuilds the adapter: the spinner fires
+     *  onItemSelected for that too, and it is not a user choice. */
+    private boolean edgeSpinnerBusy = false;
     private final List<String> edgeLabels = new ArrayList<>(), edgeIds = new ArrayList<>();
     private Spinner formatSpinner;
     private final View[] stepCells = new View[4];
@@ -621,8 +631,15 @@ public class MainActivity extends Activity {
         edgePanel.addView(selectRow("片边格式", edgeSpinner), edgeLp);
         edgeSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (position < 0 || position >= edgeIds.size()) return;
-                overscanFormat = edgeIds.get(position);
+                if (edgeSpinnerBusy || position < 0 || position >= edgeIds.size()) return;
+                final String picked = edgeIds.get(position);
+                if (picked.equals(overscanFormat)) return;
+                overscanFormat = picked;
+                // **The rebate format is a parameter, not a render-time flag.**
+                // Without this the engine kept the gate the session was opened
+                // with, and every choice after the first came back as the first
+                // one -- "换边框后好像没反应，都是最开始设置的样式" exactly.
+                applyParams();
                 if (uiReady && lastRenderedBitmap != null) renderImage();
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
@@ -669,10 +686,15 @@ public class MainActivity extends Activity {
             edgeIds.add(EDGE_IDS[i]);
             if (error < bestError) { bestError = error; best = edgeIds.size() - 1; }
         }
-        edgeSpinner.setAdapter(inkAdapter(edgeLabels));
-        final int keep = edgeIds.indexOf(overscanFormat);
-        edgeSpinner.setSelection(keep >= 0 ? keep : Math.max(0, best), false);
-        if (!edgeIds.isEmpty()) overscanFormat = edgeIds.get(edgeSpinner.getSelectedItemPosition());
+        edgeSpinnerBusy = true;
+        try {
+            edgeSpinner.setAdapter(inkAdapter(edgeLabels));
+            final int keep = edgeIds.indexOf(overscanFormat);
+            edgeSpinner.setSelection(keep >= 0 ? keep : Math.max(0, best), false);
+            if (!edgeIds.isEmpty()) overscanFormat = edgeIds.get(edgeSpinner.getSelectedItemPosition());
+        } finally {
+            edgeSpinnerBusy = false;
+        }
         try {
             DebugSink.text("overscan", "aspect=" + aspect + " gates=" + edgeIds
                     + " chosen=" + overscanFormat);
@@ -2158,7 +2180,7 @@ public class MainActivity extends Activity {
         if (t instanceof OutOfMemoryError) {
             return "[E-1003] 内存不足：这张图对本机太大。换一张小一点的，或先关掉其它应用再试";
         }
-        return SpkError.format(t.getClass().getSimpleName() + ": " + t.getMessage());
+        return SpkError.format(describe(t));
     }
 
     private Bitmap applyExifRotation(Uri uri, Bitmap bitmap) {
@@ -2329,7 +2351,7 @@ public class MainActivity extends Activity {
                 });
             } catch (Throwable e) {
                 try { session.renderEnd(); } catch (Throwable ignored) {}
-                final String msg = e.getClass().getSimpleName() + ": " + e.getMessage();
+                final String msg = describe(e);
                 runOnUiThread(() -> {
                     statusText.setText("渲染失败 " + SpkError.shortForm(msg));
                     progressBar.setVisibility(View.GONE);
@@ -2566,7 +2588,7 @@ public class MainActivity extends Activity {
                     setStep(2);
                 });
             } catch (Throwable e) {
-                final String msg = e.getClass().getSimpleName() + ": " + e.getMessage();
+                final String msg = describe(e);
                 try { DebugSink.text("export-error", "tier=" + tier + " " + msg); } catch (Throwable ignored) {}
                 uploadExportProgress(tmp);
                 uploadVkLog();
@@ -2580,6 +2602,23 @@ public class MainActivity extends Activity {
                 if (tmp.exists()) tmp.delete();
             }
         }).start();
+    }
+
+
+    /**
+     * `Class: message`, then its cause chain. A native library that fails to
+     * load says *why* in the cause (`dlopen failed: library "libz.so.1" not
+     * found`, `cannot locate symbol ...`), and that sentence is the entire bug
+     * report. The old form printed only the outer class name.
+     */
+    private static String describe(Throwable t) {
+        final StringBuilder b = new StringBuilder();
+        for (Throwable c = t; c != null && b.length() < 600; c = c.getCause()) {
+            if (b.length() > 0) b.append(" <- ");
+            b.append(c.getClass().getSimpleName()).append(": ").append(c.getMessage());
+            if (c.getCause() == c) break;
+        }
+        return b.toString();
     }
 
     private static void deleteTree(java.io.File f) {
