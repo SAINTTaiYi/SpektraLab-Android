@@ -1,7 +1,6 @@
 package app.spektralab;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
@@ -10,7 +9,6 @@ import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -75,9 +73,8 @@ final class UpdateCheck {
             if (body == null) {
                 if (manual) {
                     final String detail = lastError == null ? "所有更新地址都不可用" : lastError;
-                    post(activity, () -> Toast.makeText(activity,
-                            "[E-2001] 检查更新失败（网络不可用或公告地址被拦截）\n" + detail,
-                            Toast.LENGTH_LONG).show());
+                    post(activity, () -> toast(activity,
+                    "[E-2001] 检查更新失败（网络不可用或公告地址被拦截）\n" + detail));
                 }
                 return;
             }
@@ -86,17 +83,16 @@ final class UpdateCheck {
             try {
                 a = Announcement.parse(body);
             } catch (Throwable t) {
-                if (manual) post(activity, () -> Toast.makeText(activity,
-                        "[E-2002] 更新公告格式错误：" + t.getMessage(), Toast.LENGTH_LONG).show());
+                if (manual) post(activity, () -> toast(activity,
+                        "[E-2002] 更新公告格式错误：" + t.getMessage()));
                 return;
             }
             if (a == null) return;
 
             final int current = versionCode(activity);
             if (a.versionCode <= current) {
-                if (manual) post(activity, () -> Toast.makeText(activity,
-                        "已是最新版本 " + versionName(activity) + "（" + current + "）",
-                        Toast.LENGTH_SHORT).show());
+                if (manual) post(activity, () -> toast(activity,
+                        "已是最新版本 " + versionName(activity) + "（" + current + "）"));
                 return;
             }
             if (!manual && prefs.getInt(KEY_SEEN_CODE, 0) == a.versionCode) return;
@@ -105,33 +101,40 @@ final class UpdateCheck {
         }, "update-check").start();
     }
 
+    /** The app owns its messages: never show the Android system Toast. */
+    private static void toast(Activity activity, String message) {
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).showInAppToast(message);
+        }
+    }
+
     private static void show(Activity activity, Announcement a, SharedPreferences prefs) {
         StringBuilder message = new StringBuilder();
         for (String note : a.notes) message.append("· ").append(note).append('\n');
         if (message.length() > 0) message.append('\n');
         message.append("点「去更新」打开下载页（开源免费）");
 
-        new AlertDialog.Builder(activity)
-                .setTitle("发现新版本 " + a.versionName)
-                .setMessage(message.toString().trim())
-                .setPositiveButton("去更新", (d, w) -> {
-                    prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
-                    try {
-                        activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(a.url)));
-                    } catch (ActivityNotFoundException e) {
-                        Toast.makeText(activity, "没有可用的浏览器：" + a.url, Toast.LENGTH_LONG).show();
+        if (!(activity instanceof MainActivity)) return;
+        final String[] actions = {"去更新", "复制链接", "稍后"};
+        ((MainActivity) activity).showActionSheet("发现新版本 " + a.versionName,
+                message.toString().trim(), actions, which -> {
+                    if (which == 0) {
+                        prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
+                        try {
+                            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(a.url)));
+                        } catch (ActivityNotFoundException e) {
+                            toast(activity, "没有可用的浏览器：" + a.url);
+                        }
+                    } else if (which == 1) {
+                        android.content.ClipboardManager cm =
+                                (android.content.ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("SpektraLab", a.url));
+                        toast(activity, "链接已复制");
+                        prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
+                    } else {
+                        prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
                     }
-                })
-                .setNeutralButton("复制链接", (d, w) -> {
-                    android.content.ClipboardManager cm =
-                            (android.content.ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("SpektraLab", a.url));
-                    Toast.makeText(activity, "链接已复制", Toast.LENGTH_SHORT).show();
-                    prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
-                })
-                .setNegativeButton("稍后", (d, w) ->
-                        prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply())
-                .show();
+                });
     }
 
     private static String fetch(String endpoint) throws Exception {

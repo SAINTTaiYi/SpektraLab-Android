@@ -229,6 +229,16 @@ public class SpektraLabEngine implements AutoCloseable {
             synchronized (RENDER_LOCK) { return nativeExportSource(handle, tier); }
         }
 
+        /**
+         * The last render's progress JSON. `auto_exposure_ev` in it is the EV
+         * the meter applied to this frame -- null when the meter was off. It is
+         * the only way to tell "the render is dark" from "the render is dark
+         * *because* the meter took 1.7 stops off it".
+         */
+        public String progressJson() {
+            synchronized (RENDER_LOCK) { return nativeProgressJson(handle); }
+        }
+
         public void renderEnd() {
             synchronized (RENDER_LOCK) { nativeRenderEnd(); }
         }
@@ -315,6 +325,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeCloseSession(long sessionHandle);
     private static native void nativeSetParams(long sessionHandle, String paramsJson);
     private static native String nativeGetParams(long sessionHandle);
+    private static native String nativeProgressJson(long sessionHandle);
     private static native int[] nativeGetSessionDimensions(long sessionHandle);
     private static native double nativeRenderToBuffer(long sessionHandle, String tier, ByteBuffer outBuffer, int outWidth, int outHeight);
     private static native int nativeGetLastRowStride();

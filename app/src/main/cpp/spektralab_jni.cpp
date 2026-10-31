@@ -120,6 +120,23 @@ JNI(jlong, nativeOpenSession)(JNIEnv* env, jclass, jlong engineHandle,
     return reinterpret_cast<jlong>(session);
 }
 
+/**
+ * The last render's progress JSON. Carries `auto_exposure_ev`, which is the only
+ * place the number the meter actually applied can be read: `spk_get_params`
+ * returns what was *asked for*, not what the frame got. Without this, "the
+ * picture looks darker on that phone" has no measurable answer.
+ */
+JNI(jstring, nativeProgressJson)(JNIEnv* env, jclass, jlong sessionHandle) {
+    spk_session* session = reinterpret_cast<spk_session*>(sessionHandle);
+    if (!session) return nullptr;
+    char* json = nullptr;
+    spk_status st = spk_progress(session, nullptr, &json);
+    if (st != SPK_OK || !json) return nullptr;
+    jstring out = env->NewStringUTF(json);
+    spk_string_free(json);
+    return out;
+}
+
 JNI(void, nativeCloseSession)(JNIEnv*, jclass, jlong sessionHandle) {
     if (sessionHandle) spk_session_release(reinterpret_cast<spk_session*>(sessionHandle));
 }
