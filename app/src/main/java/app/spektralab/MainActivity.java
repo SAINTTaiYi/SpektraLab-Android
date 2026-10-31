@@ -1925,6 +1925,16 @@ public class MainActivity extends Activity {
                             nativeSize ? 0 : maxImportPixels(),
                             nativeSize ? 0 : IMPORT_LONG_EDGE);
                     lastImportError = null;
+                    // **The session's own parameters, which this path never sent.**
+                    // `openRawSession` carries the film, the paper and the decode
+                    // colour space; it does not carry grain, halation, glare, the
+                    // format or the rebate, and those live in `applyParams()`. The
+                    // bitmap path has always called this pair; the raw path did
+                    // not, so a raw kept the engine's defaults for every optical
+                    // control until the user moved a slider -- and a rebate or a
+                    // date back chosen before the import never reached the render
+                    // at all.
+                    applySessionParams();
 
                     // **The raw itself**, which is the "before" side of every
                     // comparison and the only honest thing to show on import:
