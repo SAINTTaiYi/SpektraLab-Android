@@ -13,3 +13,6 @@ debug.keystore
 
 # ~30 MB of binary resources are not distributed with the source
 app/src/main/assets/
+
+# local deliverables (APK, promo video) ¡ª published as GitHub release assets
+dist/
