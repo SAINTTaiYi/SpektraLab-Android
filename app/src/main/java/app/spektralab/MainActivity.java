@@ -1617,17 +1617,24 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Ceilings that hold on every device we have measured.
+     * The long edge accepted without asking.
      *
-     * 16,490,040 px is the largest frame this driver rendered without losing
-     * blocks (16,983,680 lost the top ~200 rows); 65 535 workgroups x 256
-     * threads is 16,776,960, and the failure appears just under it. 4700 is
-     * the long edge we validated end to end, so a phone with a 2 GiB binding
-     * limit still imports what we actually tested rather than the maximum the
-     * hardware would accept.
+     * It was 4700, from the days when a dispatch past 16,776,960 threads lost
+     * its top rows: the long edge was the only number that kept a 3:2 frame
+     * under that wall. The wall is gone (chunked dispatches, and every plane
+     * is row-banded now), so the edge no longer has to answer for the area --
+     * `maxImportPixels()` does, and it is derived from this device's binding
+     * range and the memory the phone has free right now.
+     *
+     * 8000 is where a frame stops being plausible rather than where it stops
+     * working: measured on the SM8735 here, 7500 x 5000 (37.5 MP) renders in
+     * 32 s with a 2.7 GB pool, 8000 x 5333 (42.7 MP) in 57 s, and 8192 x 5464
+     * (44.8 MP) loses the device inside `spk_iir_df_acc`. A 45 MP camera raw
+     * is 8256 x 5504, so this lands it at 8000 x 5333 rather than at 4700.
      */
+    private static final int IMPORT_LONG_EDGE = 8000;
+    /** Used when the profile cannot be read at all. */
     private static final int IMPORT_PIXEL_FALLBACK = 16490040;
-    private static final int IMPORT_LONG_EDGE = 4700;
 
     private SpektraLabEngine ensureEngine() throws Exception {
         if (engine == null) {
@@ -1673,7 +1680,9 @@ public class MainActivity extends Activity {
         // 24 GB does not accept a 300 MP frame nobody meant to open.
         final long byBinding = probe.maxPixelsByBinding();
         final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
-        final long px = Math.min(Math.min(byBinding, byMemory), 100_000_000L);
+        // The hard cap is measured, not chosen: 42.7 MP renders here, 44.8 MP
+        // takes the device down, and the pool's peak is 6.3 planes (76 B/px).
+        final long px = Math.min(Math.min(byBinding, byMemory), DeviceProbe.HARD_PIXEL_CAP);
         return (int) Math.min(Math.max(px, 1_000_000L), Integer.MAX_VALUE);
     }
 

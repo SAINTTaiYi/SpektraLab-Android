@@ -29,6 +29,17 @@ public final class DeviceProbe {
      */
     public static final int DISPATCH_PIXEL_CAP = 16_490_040;
 
+    /**
+     * Where a frame stops rendering on this class of hardware, measured.
+     *
+     * The dispatch wall is fixed, so what is left is memory: the pool peaks at
+     * 6.3 live planes, 76 bytes per pixel. On the SM8735 here that is 37.5 MP
+     * in 2.7 GB (32 s), 42.7 MP in 57 s, and 44.8 MP loses the device inside
+     * `spk_iir_df_acc`. A device with more free memory can go higher, but not
+     * past this until the number is re-measured on it.
+     */
+    public static final int HARD_PIXEL_CAP = 42_000_000;
+
     public final String backend;
     public final String device;
     public final long maxStorageBufferRange;   // 0 = no per-binding limit
@@ -74,14 +85,18 @@ public final class DeviceProbe {
      * which is where the measured ceiling sat.
      */
     public static long maxPixelsByMemory(long availableBytes) {
-        if (availableBytes <= 0) return DISPATCH_PIXEL_CAP;
+        if (availableBytes <= 0) return HARD_PIXEL_CAP;
         final long reserve = 1536L << 20;   // 1.5 GiB: a frame that pushes the system into its low-memory killer costs more than it gives
-        return Math.max(0, availableBytes - reserve) / (12L * 7);
+        // 76 B/px is the GPU pool's measured peak (6.3 live planes), and the
+        // import itself holds the frame twice more before the GPU sees it: an
+        // ARGB_8888 bitmap (4 B/px) and the 12 B/px float buffer handed to
+        // spk_open. That is what made a 45 MP import die before the render did.
+        return Math.max(0, availableBytes - reserve) / (12L * 7 + 16);
     }
 
     /** Largest frame imported without asking. */
     public long maxPixels() {
-        return Math.min(maxPixelsByBinding(), DISPATCH_PIXEL_CAP);
+        return Math.min(maxPixelsByBinding(), HARD_PIXEL_CAP);
     }
 
     /** True when this device cannot take the frame size this build was tuned for. */
