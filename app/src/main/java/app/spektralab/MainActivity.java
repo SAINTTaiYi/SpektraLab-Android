@@ -33,6 +33,8 @@ public class MainActivity extends Activity {
     private boolean importAtNativeSize = false;
     /** A cap the last E-1001 offered, good for exactly one import. */
     private int pendingCapPixels = 0;
+    /** The user has already said yes to this frame's downscale. One import. */
+    private boolean importBudgetAccepted = false;
     /** One retry offer per import; a dialog loop would be worse than the error. */
     private boolean e1001Offered = false;
     /** A render is in flight: one native result buffer, one renderer. */
@@ -320,10 +322,6 @@ public class MainActivity extends Activity {
             cell.addView(bar, new android.widget.FrameLayout.LayoutParams(-1, dp(2), android.view.Gravity.BOTTOM));
 
             cell.setOnClickListener(v -> onWorkflow(index));
-            if (i == 0) {
-                // Long-press keeps the three import routes the phone needs.
-                cell.setOnLongClickListener(v -> { showImportMenu(); return true; });
-            }
             if (i == 3) {
                 // And 04's old shortcut: long-press exports the full frame.
                 cell.setOnLongClickListener(v -> { exportImage("full"); return true; });
@@ -394,7 +392,7 @@ public class MainActivity extends Activity {
         load.setGravity(android.view.Gravity.CENTER);
         load.setBackgroundColor(UI_PAPER);
         load.setPadding(dp(18), 0, dp(18), 0);
-        load.setOnClickListener(v -> pickImage());
+        load.setOnClickListener(v -> showImportMenu());
         TextView loadText = label("Select image", 7, UI_BLUE, tfBody);
         loadText.setAllCaps(true);
         loadText.setLetterSpacing(0.04f);
@@ -986,10 +984,13 @@ public class MainActivity extends Activity {
     /** The four cells are the old top bar: 01/02 open a picker, 03 renders, 04 exports. */
     private void onWorkflow(int step) {
         if (step == 0) {
-            pickImage();
+            // A tap on 01 asks where from. The long-press that used to carry
+            // this was invisible: nobody found the RAW route by accident, and
+            // the users who did were the ones who had read the release note.
+            showImportMenu();
         } else if (step == 1) {
             statusText.setText("选择要替换的照片…");
-            pickImage();
+            showImportMenu();
         } else if (step == 2) {
             renderImage();
         } else {
@@ -997,21 +998,25 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Long-press on 01: the three import routes, unchanged from 1.2.5. */
+    /**
+     * The two doors, asked on every tap of 01.
+     *
+     * They are not the same door: the gallery's picker only shows what the
+     * media store knows as an image, and a Sony .ARW -- or a HEIC a download
+     * left untyped -- is not one. Long-press used to hold this and nobody
+     * found it; a tap asking a question costs one tap and answers it.
+     */
     private void showImportMenu() {
         new android.app.AlertDialog.Builder(this)
                 .setTitle("导入")
                 .setItems(new String[]{
-                        "从相册选择（照片 / JPEG）",
-                        "从文件选择（RAW / HEIC / 任意格式）",
-                        "按原始尺寸导入（可能失败）"},
+                        "从相册选择（照片）",
+                        "从文件管理器选择（RAW / HEIC / 任意文件）"},
                         (d, which) -> {
                             if (which == 0) {
                                 pickImage();
-                            } else if (which == 1) {
-                                pickRawFile();
                             } else {
-                                confirmNativeImport();
+                                pickRawFile();
                             }
                         })
                 .show();
@@ -1239,21 +1244,76 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Full-size import is kept, and honest about itself. */
-    private void confirmNativeImport() {
-        final String overDispatch =
-                "\n\n另：超过 1677 万像素（约 5000×3350）时，部分驱动会丢掉画面块，"
-                + "可能出现顶部未渲染的区域。";
+    /**
+     * A frame this device cannot take at its own size: **asked about, not
+     * quietly shrunk**.
+     *
+     * The import used to scale silently (a toast, on the RAW path only), which
+     * reads as "the app ate my resolution" the next time the user exports a
+     * 4700-pixel frame from a 45 MP negative. The two numbers are the whole
+     * story: what the file is, and what this phone renders in one go.
+     */
+    private void showImportBudgetDialog(final Uri uri, final int w, final int h, final int capPixels) {
+        final double fit = importScale(w, h, capPixels);
+        final int sw = Math.max(1, (int) Math.round(w * fit));
+        final int sh = Math.max(1, (int) Math.round(h * fit));
         new android.app.AlertDialog.Builder(this)
-                .setTitle("按原始尺寸导入")
-                .setMessage((probe.isLimited()
-                        ? "本机可用内存与 GPU 上限合计约 " + String.format("%.1f", maxImportPixels() / 1e6)
-                          + " MP，超过这个尺寸的图很可能渲染失败（错误码 E-1001）。"
-                        : "按原始尺寸导入（不做任何缩放）。") + overDispatch
-                        + "\n\n仍要继续吗？")
-                .setPositiveButton("继续", (d, w) -> { importAtNativeSize = true; pickRawFile(); })
+                .setTitle("这张图超过本机预算")
+                .setMessage("原图 " + w + "×" + h + "（" + megapixels(w, h) + " MP），这台机器一次能渲染约 "
+                        + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP。"
+                        + "\n\n按 " + sw + "×" + sh + " 导入一定出得来；"
+                        + "按原尺寸可能在本机渲染失败（E-1001）。")
+                .setPositiveButton("按 " + sw + "×" + sh + " 导入", (d, x) -> {
+                    importBudgetAccepted = true;
+                    loadImage(uri);
+                })
+                .setNeutralButton("按原尺寸", (d, x) -> {
+                    importAtNativeSize = true;
+                    loadImage(uri);
+                })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /**
+     * The scale the import will actually apply, so the dialog can name the size
+     * it is about to deliver -- the same three ceilings, in the same order, as
+     * `loadImage` below.
+     */
+    private double importScale(int w, int h, int capPixels) {
+        final long area = (long) w * (long) h;
+        double k = 1.0;
+        if (area > capPixels) k = Math.sqrt((double) capPixels / (double) area);
+        final int longEdge = Math.max(w, h);
+        if (longEdge > IMPORT_LONG_EDGE) k = Math.min(k, (double) IMPORT_LONG_EDGE / longEdge);
+        final long availBytes = availableMemoryBytes();
+        if (availBytes > 0) {
+            final long budget = Math.max(1L << 20, availBytes - (128L << 20));
+            final double wantBytes = (double) area * 12.0;
+            if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
+        }
+        return Math.min(k, 1.0);
+    }
+
+    private static String megapixels(int w, int h) {
+        return String.format(java.util.Locale.US, "%.1f", (double) w * (double) h / 1e6);
+    }
+
+    /** The file's own size, from the header, before anything is decoded. */
+    private int[] sniffImageSize(Uri uri) {
+        try {
+            android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream head = getContentResolver().openInputStream(uri)) {
+                if (head != null) android.graphics.BitmapFactory.decodeStream(head, null, bounds);
+            }
+            if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                return new int[]{bounds.outWidth, bounds.outHeight};
+            }
+        } catch (Throwable t) {
+            try { DebugSink.text("decode", "sniff " + t); } catch (Throwable ignored) { }
+        }
+        return null;
     }
 
     /** Long-press on the title: version, update check, and where the code lives. */
@@ -1383,7 +1443,7 @@ public class MainActivity extends Activity {
         chain.add(new Intent(Intent.ACTION_OPEN_DOCUMENT)
                 .addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"));
         if (!launchFirstResolvable(chain, 1)) {
-            Toast.makeText(this, "本机没有可用的图片选择器；请长按「导入」→「从文件选择」",
+            Toast.makeText(this, "本机没有可用的图片选择器；请点「导入」→「从文件管理器选择」",
                     Toast.LENGTH_LONG).show();
         }
     }
@@ -1467,7 +1527,7 @@ public class MainActivity extends Activity {
         Uri uri = data == null ? null : data.getData();
         if (uri == null) {
             try { DebugSink.text("picker", "RESULT_OK with no data"); } catch (Throwable ignored) { }
-            Toast.makeText(this, "没有拿到图片（选择器返回空）。请长按「导入」→「从文件选择」再试一次",
+            Toast.makeText(this, "没有拿到图片（选择器返回空）。请点「导入」→「从文件管理器选择」再试一次",
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -1503,7 +1563,25 @@ public class MainActivity extends Activity {
                 loadRawImage(uri);
                 return;
             }
-            
+
+            // **Ask before shrinking.** Importing at the negative's own size is
+            // the point of a 45 MP camera; a silent downscale is the app making
+            // that decision on the user's behalf, and it shows up later as an
+            // export that is smaller than the file. The header gives the size
+            // without decoding anything, so the question is free.
+            if (!importAtNativeSize && !importBudgetAccepted) {
+                final int[] full = sniffImageSize(uri);
+                if (full != null) {
+                    final long area = (long) full[0] * (long) full[1];
+                    final int cap = maxImportPixels();
+                    if (area > cap || Math.max(full[0], full[1]) > IMPORT_LONG_EDGE) {
+                        showImportBudgetDialog(uri, full[0], full[1], cap);
+                        return;
+                    }
+                }
+            }
+            importBudgetAccepted = false;
+
             // Free the previous frame before decoding: a 20 MP pick wants a
             // ~200 MB direct buffer and the old session still holds its planes
             // (this OOM was 241 MB with 201 MB left in the heap).
@@ -1933,8 +2011,24 @@ public class MainActivity extends Activity {
                         refreshEdgeFormats();
                         setStep(1);
                         if (shrunk) {
-                            Toast.makeText(this, "原图超出本机 GPU 单缓冲上限，已按 " + w + "x" + h + " 导入",
-                                    Toast.LENGTH_LONG).show();
+                            // The raw has to be decoded before its size is known,
+                            // so this asks afterwards -- but it still asks, and
+                            // it offers the escape hatch the long-press used to
+                            // hide.
+                            final int rawW = src[0], rawH = src[1];
+                            new android.app.AlertDialog.Builder(this)
+                                    .setTitle("原图超过本机预算")
+                                    .setMessage("原图 " + rawW + "×" + rawH + "（" + megapixels(rawW, rawH)
+                                            + " MP），这台机器一次能渲染约 "
+                                            + String.format(java.util.Locale.US, "%.1f", maxImportPixels() / 1e6)
+                                            + " MP，已按 " + w + "×" + h + " 导入。"
+                                            + "\n\n按原尺寸导入可能渲染失败（E-1001）。")
+                                    .setPositiveButton("就这样", null)
+                                    .setNegativeButton("按原尺寸重来", (d, x) -> {
+                                        importAtNativeSize = true;
+                                        loadRawImage(uri);
+                                    })
+                                    .show();
                         }
                         statusText.setText("RAW metadata loaded");
                     });
