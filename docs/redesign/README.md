@@ -18,6 +18,15 @@ SHA-256 2A35F50C1492FEF69C09DBDF7AE6CB87B2F2D634FA5C742AD870A85E8EAF1D16
 
 ---
 
+
+## 宣传片（28s · 竖屏）
+
+[SpektraLab-promo.mp4](https://github.com/rf404034-spec/SpektraLab-Android/releases/download/v1.3-minimal/SpektraLab-promo.mp4) · 1080×1920 / 30fps / H.264 yuv420p / 28.0s / 3.6 MB
+
+用 Remotion 生成（工程在 pkbuild/promo/remotion，不属于本仓库）：标题卡 → 空状态 → 渲染出片 → 调色四条滑杆 → **真机胶片/相纸列表录屏** → 导出 → 收尾。
+素材：两张真机截图 + 两段录屏（裁掉状态栏与系统提示条）+ 图标 + Inter/OPPOSans。
+封面：[poster.jpg](https://github.com/rf404034-spec/SpektraLab-Android/releases/download/v1.3-minimal/poster.jpg)
+
 ## 这次只做一件事：把不用的东西拿掉
 
 | | 现在 | 重构后 |
