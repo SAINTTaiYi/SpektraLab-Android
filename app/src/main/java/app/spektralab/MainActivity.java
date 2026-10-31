@@ -1260,7 +1260,8 @@ public class MainActivity extends Activity {
         new android.app.AlertDialog.Builder(this)
                 .setTitle("这张图超过本机预算")
                 .setMessage("原图 " + w + "×" + h + "（" + megapixels(w, h) + " MP），这台机器一次能渲染约 "
-                        + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP。"
+                        + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
+                        + (overscanOn ? "（已按片边预留画布，片边会把画布再撑大约 1.5 倍）" : "") + "。"
                         + "\n\n按 " + sw + "×" + sh + " 导入一定出得来；"
                         + "按原尺寸可能在本机渲染失败（E-1001）。")
                 .setPositiveButton("按 " + sw + "×" + sh + " 导入", (d, x) -> {
