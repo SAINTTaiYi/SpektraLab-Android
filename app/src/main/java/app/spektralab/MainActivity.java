@@ -93,6 +93,8 @@ public class MainActivity extends Activity {
         // speaks when there is a newer build than this one.
         new android.os.Handler(android.os.Looper.getMainLooper())
                 .postDelayed(() -> UpdateCheck.check(this, false), 3000);
+        // Once per build, and late enough that the canvas has settled first.
+        maybeShowFeedbackGroup();
     }
 
     // ---------------------------------------------------------------------
@@ -185,6 +187,12 @@ public class MainActivity extends Activity {
     private final List<View> formatCards = new ArrayList<>();
     private static final int CONTROLS_OPEN_DP = 298;
     private static final int CONTROLS_CLOSED_DP = 58;
+    /** 反馈群：the one place a user can reach a human. Shown once per build. */
+    private static final String QQ_GROUP = "1134320449";
+    private static final String PROMO_PREFS = "promo";
+    private static final String PROMO_SEEN_CODE = "qq_group_seen_code";
+    private static final String PROMO_MUTED = "qq_group_muted";
+
     private static final String[] BRAND_IDS = {"all", "kodak", "fujifilm", "ilford", "cinestill"};
     private static final String[] BRAND_NAMES = {"全部", "KODAK", "FUJIFILM", "ILFORD", "CINESTILL"};
     private static final String[] FORMAT_NAMES = {"135 全画幅", "135 半格", "135 XPan", "645", "6×6", "6×7", "6×9", "6×12", "6×17"};
@@ -1257,6 +1265,161 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** The feedback group, in the app's own card rather than a system dialog.
+     *
+     *  <p>Auto-shown once per build: a group nobody can find is useless, and a
+     *  card on every launch is a card people learn to dismiss without reading.
+     *  The About sheet carries a permanent entry, so the way back never depends
+     *  on this having appeared. */
+    private void maybeShowFeedbackGroup() {
+        final android.content.SharedPreferences p = getSharedPreferences(PROMO_PREFS, MODE_PRIVATE);
+        if (p.getBoolean(PROMO_MUTED, false)) return;
+        if (p.getInt(PROMO_SEEN_CODE, 0) == UpdateCheck.versionCode(this)) return;
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (isFinishing() || !uiReady) return;
+            showFeedbackGroup(true);
+        }, 1800);
+    }
+
+    void showFeedbackGroup(final boolean auto) {
+        if (isFinishing()) return;
+        final android.content.SharedPreferences p = getSharedPreferences(PROMO_PREFS, MODE_PRIVATE);
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundColor(UI_PAPER);
+        View cap = new View(this);
+        cap.setBackgroundColor(UI_BLUE);
+        card.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(16), 0, dp(16), 0);
+        head.addView(mixedLabel("FEEDBACK / 反馈与交流", 8, UI_BLUE),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
+        close.setPadding(dp(12), dp(14), 0, dp(14));
+        close.setOnClickListener(v -> dialog.dismiss());
+        head.addView(close);
+        card.addView(head, new LinearLayout.LayoutParams(-1, dp(42)));
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(16), 0, dp(16), 4);
+        TextView title = label("遇到问题，或者想聊冲印？", 17, UI_INK, tfHan);
+        body.addView(title);
+        TextView copyText = label("渲染报错、导出异常、想要某支胶片，直接发在群里。"
+                + "问题能复现的话，把「复制错误信息」的内容一起贴上。", 10, UI_MUTED, tfHan);
+        copyText.setLineSpacing(dp(4), 1f);
+        LinearLayout.LayoutParams copyTextLp = new LinearLayout.LayoutParams(-1, -2);
+        copyTextLp.topMargin = dp(9);
+        body.addView(copyText, copyTextLp);
+
+        TextView number = label(QQ_GROUP, 27, UI_BLUE, tfDisplay);
+        number.setLetterSpacing(-0.02f);
+        LinearLayout.LayoutParams numberLp = new LinearLayout.LayoutParams(-1, -2);
+        numberLp.topMargin = dp(16);
+        body.addView(number, numberLp);
+        TextView hint = label("QQ 群号，点下面按钮复制后搜索加入", 9, UI_MUTED, tfHan);
+        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(-1, -2);
+        hintLp.topMargin = dp(5);
+        body.addView(hint, hintLp);
+        card.addView(body, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        TextView open = label("打开 QQ", 10, UI_BLUE, tfHan);
+        open.setGravity(android.view.Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable openBg = new android.graphics.drawable.GradientDrawable();
+        openBg.setColor(UI_PAPER);
+        openBg.setStroke(dp(1), UI_BLUE);
+        open.setBackground(openBg);
+        open.setOnClickListener(v -> openQqGroup());
+        LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        openLp.rightMargin = dp(8);
+        actions.addView(open, openLp);
+
+        TextView copy = label("复制群号", 10, UI_PAPER, tfHan);
+        copy.setGravity(android.view.Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable copyBg = new android.graphics.drawable.GradientDrawable();
+        copyBg.setColor(UI_BLUE);
+        copy.setBackground(copyBg);
+        copy.setOnClickListener(v -> {
+            if (copyToClipboard("SpektraLab 反馈群", QQ_GROUP)) {
+                copy.setText("已复制");
+            } else {
+                copy.setText("复制失败 · 请长按");
+            }
+        });
+        copy.setLongClickable(true);
+        copy.setOnLongClickListener(v -> {
+            copyToClipboard("SpektraLab 反馈群", QQ_GROUP);
+            return true;
+        });
+        actions.addView(copy, new LinearLayout.LayoutParams(0, dp(42), 1.45f));
+        card.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        if (auto) {
+            TextView mute = label("不再自动弹出", 8.5f, UI_MUTED, tfHan);
+            mute.setGravity(android.view.Gravity.CENTER);
+            mute.setPaintFlags(mute.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
+            mute.setPadding(0, 0, 0, dp(14));
+            mute.setOnClickListener(v -> {
+                p.edit().putBoolean(PROMO_MUTED, true).apply();
+                dialog.dismiss();
+                showInAppToast("已关闭，仍可在「关于」里找到反馈群");
+            });
+            card.addView(mute, new LinearLayout.LayoutParams(-1, dp(30)));
+        }
+
+        dialog.setContentView(card);
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
+            int width = Math.min(dp(358), getResources().getDisplayMetrics().widthPixels - dp(32));
+            dialog.getWindow().setLayout(width, android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            dialog.getWindow().setDimAmount(0.32f);
+        }
+        // Shown counts as seen: the point is that a new build mentions it once.
+        p.edit().putInt(PROMO_SEEN_CODE, UpdateCheck.versionCode(this)).apply();
+    }
+
+    private boolean copyToClipboard(String labelText, String text) {
+        try {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(android.content.ClipData.newPlainText(labelText, text));
+            return true;
+        } catch (Throwable t) {
+            try { DebugSink.text("clipboard", String.valueOf(t)); } catch (Throwable ignored) { }
+            return false;
+        }
+    }
+
+    /** QQ's group card, then the search route. A ROM without QQ simply gets
+     *  the number copied; that is a working answer, not a failure. */
+    private void openQqGroup() {
+        final String[] schemes = {
+                "mqqwpa://im/chat?chat_type=group&uin=" + QQ_GROUP + "&version=1&src_type=web",
+                "mqq://im/chat?chat_type=group&uin=" + QQ_GROUP + "&version=1&src_type=web",
+        };
+        for (String scheme : schemes) {
+            try {
+                startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse(scheme)));
+                return;
+            } catch (Throwable ignored) { }
+        }
+        copyToClipboard("SpektraLab 反馈群", QQ_GROUP);
+        showInAppToast("群号已复制，请在 QQ 里搜索加入");
+    }
+
     /** A paper bottom sheet in the same visual language as the cards. */
     private void showChoiceSheet(String title, List<String> labels, String selected,
                                  java.util.function.Consumer<String> onPick) {
@@ -2140,11 +2303,13 @@ public class MainActivity extends Activity {
                 + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
                 + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android";
         showActionSheet("SpektraLab Android " + version, details, new String[]{
-                "检查更新", "打开 GitHub", "关闭"
+                "检查更新", "反馈群（QQ 1134320449）", "打开 GitHub", "关闭"
         }, which -> {
             if (which == 0) {
                 UpdateCheck.check(this, true);
             } else if (which == 1) {
+                showFeedbackGroup(false);
+            } else if (which == 2) {
                 try {
                     startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                             android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
