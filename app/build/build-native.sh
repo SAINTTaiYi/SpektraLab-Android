@@ -16,6 +16,6 @@ $CXX $INCS $DEFS -c app/src/main/cpp/spektralab_jni.cpp -o app/build/native/spek
 $CXX $INCS $DEFS -c app/src/main/cpp/spektralab_raw_jni.cpp -o app/build/native/spektralab_raw_jni.o
 $CXX -shared -o app/build/native/libspektrafilm_engine.so app/build/native/*.o \
   -L"$SYS/usr/lib/aarch64-linux-android/24" -L"$PREFIX/lib" \
-  -llog -landroid -ljnigraphics -lvulkan -lraw -lraw_r -ljpeg -lc++_shared -lc -lm -ldl \
+  -llog -landroid -ljnigraphics -lvulkan -lraw -lraw_r -ljpeg -lz -lc++_shared -lc -lm -ldl \
   -Wl,-z,max-page-size=16384
 ls -la app/build/native/libspektrafilm_engine.so

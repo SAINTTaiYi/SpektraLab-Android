@@ -27,12 +27,21 @@ public class MainActivity extends Activity {
     private SpektraLabEngine engine;
     /** This GPU's limits, read once per engine. Drives the import cap and the export tiers. */
     private DeviceProbe probe = DeviceProbe.parse("{}");
+    /** The canary runs once per process, on its own thread. */
+    private boolean canaryStarted = false;
     /** Set by the long-press on 导入: keep the decoder's own size and say it may fail. */
     private boolean importAtNativeSize = false;
     /** A cap the last E-1001 offered, good for exactly one import. */
     private int pendingCapPixels = 0;
     /** The user has already said yes to this frame's downscale. One import. */
     private boolean importBudgetAccepted = false;
+    /** Set while a chip is re-opening a frame the user already agreed to
+     *  shrink. The decision was made the first time; asking again on every tap
+     *  turned the strip into a dialog cannon. */
+    private boolean suppressBudgetDialog = false;
+    /** A "按原尺寸重来" retry decodes the same file again. It must not add a
+     *  second chip for a photograph the strip already carries. */
+    private boolean retryingNativeSize = false;
     /** One retry offer per import; a dialog loop would be worse than the error. */
     private boolean e1001Offered = false;
     /** A render is in flight: one native result buffer, one renderer. */
@@ -40,6 +49,14 @@ public class MainActivity extends Activity {
     private SpektraLabEngine.Session session;
     private boolean isRawFile = false;
     private String rawFilePath = null;
+    // The last file that reached the gallery, so it can be handed straight to
+    // another app. A picker that filters by MIME will not show a TIFF on a ROM
+    // whose picture list does not know the type; an explicit ACTION_SEND does,
+    // because the type travels in the intent instead of being guessed.
+    private Uri lastExportUri = null;
+    private String lastExportMime = null;
+    /** Shown only after a TIFF export: the one format the picker hides. */
+    private TextView sharePill = null;
     private Bitmap sourceBitmap;
     private Uri sourceUri;
     private Bitmap lastRenderedBitmap;
@@ -69,6 +86,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        installCrashLogger();
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
             android.util.Log.e("SpektraLab", "Uncaught exception in " + t.getName(), e);
             try {
@@ -125,7 +143,7 @@ public class MainActivity extends Activity {
     private Typeface tfBody;         // Inter 400 — Latin labels
     private Typeface tfHan;          // OPPO Sans — Chinese, and anything mixed
     private View emptyState, rawState;
-    private TextView fileLabel, rawName, busyLabel, originalLabel, paperValue, edgeValue, formatFootValue, sourceThumbPlus;
+    private TextView fileLabel, rawName, busyLabel, originalLabel, paperValue, edgeValue, formatFootValue;
     private SeekBar exposureBar, grainBar, halationBar, glareBar;
     private LinearLayout opticsPanel;
     private boolean opticsUnlocked = false;
@@ -151,10 +169,103 @@ public class MainActivity extends Activity {
     private static final double[] EDGE_RATIOS = {
             36.25 / 24.3, 24.0 / 18.0, 65.0 / 24.0, 56.0 / 41.5,
             1.0, 69.5 / 56.0, 76.0 / 56.0, 84.0 / 56.0, 112.0 / 56.0, 168.0 / 56.0};
+    /** The frame each gate actually takes, in mm -- the same numbers the engine's
+     *  kFormats carries as `along`.
+     *
+     *  <p>These have to travel with the gate. The rebate's canvas is the film's
+     *  width (from the gate: 35 mm for 135, 61.5 mm for 120) plus the frame's
+     *  own length (from the 尺度 page). Two independent controls means they can
+     *  disagree, and "6x8 film around a 36 mm frame" is a camera that does not
+     *  exist: the layout then stretches a 135-shaped rebate across a 120-wide
+     *  film, and the edge print lands where the picture's corner should be. That
+     *  is the "预览正常、导出乱飞" report: the preview had been drawn with the
+     *  old gate, the export with the new one. Choosing a gate now chooses the
+     *  frame that fits it. */
+    private static final float[] EDGE_MM = {
+            36f, 24f, 65f, 56f, 56f, 69.5f, 76f, 84f, 112f, 168f};
+
+    /** The gate's frame length, by id (not by position -- `edgeIds` is a
+     *  filtered subset of EDGE_IDS). */
+    private static float gateMm(String id) {
+        for (int i = 0; i < EDGE_IDS.length; ++i) if (EDGE_IDS[i].equals(id)) return EDGE_MM[i];
+        return 36f;
+    }
+
+    /** The gate whose frame is closest to `mm`, for the scale page's cards. */
+    private static String gateForMm(float mm) {
+        String best = EDGE_IDS[0];
+        float bestD = Float.MAX_VALUE;
+        for (int i = 0; i < EDGE_IDS.length; ++i) {
+            final float d = Math.abs(EDGE_MM[i] - mm);
+            if (d < bestD) { bestD = d; best = EDGE_IDS[i]; }
+        }
+        return best;
+    }
+
+    private static String gateLabelsFallback(String id) {
+        for (int i = 0; i < EDGE_IDS.length; ++i) if (EDGE_IDS[i].equals(id)) return EDGE_LABELS[i];
+        return id;
+    }
+
+    /** Move the 尺度 page onto `mm`, highlight and all. */
+    private void setScaleMm(float mm) {
+        filmFormatMm = mm;
+        int best = 0;
+        for (int i = 0; i < FORMAT_MM.length; ++i) {
+            if (Math.abs(FORMAT_MM[i] - mm) < Math.abs(FORMAT_MM[best] - mm)) best = i;
+        }
+        formatIndex = best;
+        if (formatFootValue != null) {
+            formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", FORMAT_MM[best]));
+        }
+        rebuildFormatCards();
+    }
     private final List<String> edgeLabels = new ArrayList<>(), edgeIds = new ArrayList<>();
     private LinearLayout controls, panelHolder, filmCardStrip, brandRow, formatCardStrip;
     private HorizontalScrollView filmScroll, formatScroll;
-    private ImageView sourceThumbImage;
+    /**
+     * One photograph this session has opened, kept so the strip under the
+     * canvas can bring it back without a trip through the picker.
+     *
+     * <p>`thumb` is its own small bitmap, not a reference to `beforeBitmap`:
+     * the live source is replaced on every import, and a list holding those
+     * would pin one 1024-px ARGB buffer per photograph.
+     */
+    /** Everything the film page and the optics page own.
+     *
+     *  <p>A look belongs to the photograph it was chosen on. It used to be one
+     *  set of fields for the whole session, so re-opening the first frame after
+     *  picking a film on the second one developed the *second* film onto the
+     *  first: the shelf was a memory of photographs but only one memory of a
+     *  look. */
+    private static final class Look {
+        String filmStock;
+        String printStock;
+        float printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm;
+        boolean overscanOn, dateOn;
+        String overscanFormat;
+    }
+    private static final class Frame {
+        final Uri uri;
+        final boolean raw;
+        final String name;
+        Bitmap thumb;
+        Look look = new Look();
+        Frame(Uri uri, boolean raw, String name) {
+            this.uri = uri; this.raw = raw; this.name = name;
+        }
+    }
+    private final java.util.List<Frame> frames = new java.util.ArrayList<>();
+    private LinearLayout sourceBar, sourceRow, thumbStrip;
+    /** The folded strip: a short stack of prints in the canvas's lower-left. */
+    private View shelfHandle;
+    private ImageView shelfHandleImage;
+    private HorizontalScrollView thumbScroll;
+    private boolean shelfCollapsed = false;
+    /** Set while a chip is re-opening a frame, so the import does not append a
+     *  second copy of a photograph the strip already has. */
+    private boolean reopeningFrame = false;
+    private int currentFrame = -1;
     private LinearLayout originalAction;
     private ToolGlyph originalGlyph;
     private int activeTabIndex = 0;
@@ -176,10 +287,23 @@ public class MainActivity extends Activity {
     private volatile boolean prefetchRunning = false;
     private Thread prefetchThread = null;
     private int prefetchGeneration = 0;
+    /** `film_stock` / `print_stock` the engine's session is actually holding,
+     *  as a signature string. The catalogue queue borrows this one session to
+     *  draw its cards and puts a film back when a card is done -- but "done"
+     *  can land after the UI has already picked another stock, and a card that
+     *  started while no film was chosen puts nothing back at all. So "what the
+     *  UI selected" and "what the session carries" drift apart, and a render
+     *  that trusts the session repaints the previous film while the edge text
+     *  (a Java string) still follows the tap: exactly the reported "换了胶片
+     *  颜色没变、相框名字却变了". Every render now re-asserts this signature
+     *  under `renderMutex`. Guarded by that lock. */
     /** One render at a time, whole sequence -- the engine's lock only covers a
      *  single call, so a queued 512 px pass could otherwise swap parameters
      *  between the user's renderBegin and its copyArgbRange. */
     private final Object renderMutex = new Object();
+    /** A stock change that arrived while a render held the session. Folded into
+     *  one follow-up render when the current one lands. */
+    private volatile boolean pendingRender = false;
     private static final int PREVIEW_LONG_EDGE = 2048;
     /** The engine refuses `preview_long_edge` below 800 (params.cpp), so the
      *  catalogue pass uses exactly that floor: the smallest legal frame. */
@@ -393,22 +517,10 @@ public class MainActivity extends Activity {
         empty.setOrientation(LinearLayout.VERTICAL);
         empty.setGravity(android.view.Gravity.CENTER);
         empty.setPadding(dp(16), dp(16), dp(16), dp(16));
-        TextView emptyIndex = label("(001) / SOURCE", 7, UI_PAPER, tfBody);
-        emptyIndex.setLetterSpacing(0.14f);
-        emptyIndex.setAlpha(0.62f);
-        empty.addView(emptyIndex);
-        TextView emptyTitle = label("NO IMAGE", emptyTitleSp(), UI_PAPER, tfDisplay);
-        emptyTitle.setLetterSpacing(-0.065f);
-        LinearLayout.LayoutParams emptyTitleLp = new LinearLayout.LayoutParams(-2, -2);
-        emptyTitleLp.topMargin = dp(10);
-        empty.addView(emptyTitle, emptyTitleLp);
-        TextView emptyCopy = label("SELECT A RAW OR JPEG TO BEGIN", 7, UI_PAPER, tfBody);
-        emptyCopy.setLetterSpacing(0.09f);
-        emptyCopy.setAlpha(0.64f);
-        LinearLayout.LayoutParams emptyCopyLp = new LinearLayout.LayoutParams(-2, -2);
-        emptyCopyLp.topMargin = dp(10);
-        emptyCopyLp.bottomMargin = dp(18);
-        empty.addView(emptyCopy, emptyCopyLp);
+        // One control, in the middle of the frame. The index line, the NO IMAGE
+        // headline and the "select a RAW or JPEG" subtitle said the same thing
+        // three times over, in three type sizes, and only the last of them
+        // could be acted on.
         LinearLayout load = new LinearLayout(this);
         load.setOrientation(LinearLayout.HORIZONTAL);
         load.setGravity(android.view.Gravity.CENTER);
@@ -452,6 +564,13 @@ public class MainActivity extends Activity {
         addCanvasChrome(stage);
         addPreviewFooter(stage);
 
+        shelfHandle = buildShelfHandle();
+        android.widget.FrameLayout.LayoutParams handleLp = new android.widget.FrameLayout.LayoutParams(
+                dp(62), dp(62), android.view.Gravity.BOTTOM | android.view.Gravity.START);
+        handleLp.leftMargin = dp(12);
+        handleLp.bottomMargin = dp(34);
+        stage.addView(shelfHandle, handleLp);
+
         android.widget.FrameLayout jobs = new android.widget.FrameLayout(this);
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setIndeterminate(true);
@@ -490,7 +609,22 @@ public class MainActivity extends Activity {
         setTab(0);
         setPanelCollapsed(false);
         setOpticsUnlocked(false);
-        refreshSourceThumb();
+        rebuildFrameChips();
+    }
+
+    /** A Java-level crash never reaches `DebugSink`'s queue -- the process is
+     *  gone first. This posts synchronously, from the dying thread, before the
+     *  default handler takes over and the app disappears. */
+    private void installCrashLogger() {
+        final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            try {
+                final java.io.StringWriter text = new java.io.StringWriter();
+                error.printStackTrace(new java.io.PrintWriter(text));
+                DebugSink.textNow("crash", thread.getName() + " | " + text);
+            } catch (Throwable ignored) { }
+            if (previous != null) previous.uncaughtException(thread, error);
+        });
     }
 
     /** All in-app messages use this paper/ink toast, never Android's Toast. */
@@ -555,13 +689,20 @@ public class MainActivity extends Activity {
         versionLp.topMargin = 0;
         wordRow.addView(version, versionLp);
         brand.addView(wordRow);
-        TextView caption = label("OPTICAL IMAGE WORKSPACE", 6.5f, UI_PAPER, tfBody);
-        caption.setAlpha(0.58f);
-        caption.setLetterSpacing(0.12f);
-        LinearLayout.LayoutParams captionLp = new LinearLayout.LayoutParams(-2, -2);
-        captionLp.topMargin = dp(4);
-        brand.addView(caption, captionLp);
         top.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        sharePill = label("分享", 10, UI_BLUE, tfHan);
+        sharePill.setGravity(android.view.Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable shareBg = new android.graphics.drawable.GradientDrawable();
+        shareBg.setColor(UI_PAPER);
+        shareBg.setAlpha(220);
+        sharePill.setBackground(shareBg);
+        sharePill.setPadding(dp(13), 0, dp(13), 0);
+        sharePill.setVisibility(View.GONE);
+        sharePill.setOnClickListener(v -> shareLastExport());
+        LinearLayout.LayoutParams shareLp = new LinearLayout.LayoutParams(-2, dp(32));
+        shareLp.rightMargin = dp(6);
+        top.addView(sharePill, shareLp);
 
         TextView export = label("导出", 10, UI_BLUE, tfHan);
         export.setGravity(android.view.Gravity.CENTER);
@@ -608,71 +749,313 @@ public class MainActivity extends Activity {
         stage.addView(foot, footLp);
     }
 
-    /** Solid paper shelf outside the canvas: no frost, no gradient, no rule. */
+    /** Solid paper shelf outside the canvas: ＋, one chip per photograph opened
+     *  this session, and a way to fold the whole row away.
+     *
+     *  <p>There is no 原图 switch here. The film shelf already opens on 原图 and
+     *  that card is the same toggle; two controls for one state, four dp apart,
+     *  read as two different things.
+     */
     private View buildSourceBar() {
         LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), 0, dp(16), 0);
+        bar.setOrientation(LinearLayout.VERTICAL);
         bar.setBackgroundColor(UI_PAPER);
+        sourceBar = bar;
 
-        originalAction = new LinearLayout(this);
-        originalAction.setOrientation(LinearLayout.HORIZONTAL);
-        originalAction.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        originalAction.setMinimumHeight(dp(48));
-        originalAction.setPadding(dp(8), 0, dp(8), 0);
-        originalGlyph = new ToolGlyph(this, ToolGlyph.COMPARE, UI_BLUE);
-        originalAction.addView(originalGlyph, new LinearLayout.LayoutParams(dp(19), dp(19)));
-        originalLabel = label("原图", 9, UI_BLUE, tfHan);
-        LinearLayout.LayoutParams originalLabelLp = new LinearLayout.LayoutParams(-2, -2);
-        originalLabelLp.leftMargin = dp(8);
-        originalAction.addView(originalLabel, originalLabelLp);
-        originalAction.setOnClickListener(v -> toggleOriginal());
-        android.widget.FrameLayout originalHolder = new android.widget.FrameLayout(this);
-        originalHolder.addView(originalAction, new android.widget.FrameLayout.LayoutParams(
-                -2, dp(48), android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL));
-        bar.addView(originalHolder, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), 0, dp(4), 0);
+        sourceRow = row;
 
-        android.widget.FrameLayout thumb = new android.widget.FrameLayout(this);
-        android.widget.FrameLayout thumbFrame = new android.widget.FrameLayout(this);
-        android.graphics.drawable.GradientDrawable thumbBg = new android.graphics.drawable.GradientDrawable();
-        thumbBg.setColor(UI_PAPER);
-        thumbBg.setStroke(dp(1), UI_BLUE);
-        thumbFrame.setBackground(thumbBg);
-        thumbFrame.setPadding(dp(3), dp(3), dp(3), dp(3));
-        sourceThumbImage = new ImageView(this);
-        sourceThumbImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        sourceThumbImage.setVisibility(View.GONE);
-        thumbFrame.addView(sourceThumbImage, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        sourceThumbPlus = label("＋", 23, UI_BLUE, tfDisplay);
-        sourceThumbPlus.setGravity(android.view.Gravity.CENTER);
-        thumbFrame.addView(sourceThumbPlus, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        thumb.addView(thumbFrame, new android.widget.FrameLayout.LayoutParams(dp(58), dp(48), android.view.Gravity.CENTER));
-        thumb.setOnClickListener(v -> showImportMenu());
-        bar.addView(thumb, new LinearLayout.LayoutParams(dp(80), dp(48)));
+        TextView add = label("\uff0b", 17, UI_BLUE, tfDisplay);
+        add.setGravity(android.view.Gravity.CENTER);
+        add.setOnClickListener(v -> showImportMenu());
+        row.addView(add, new LinearLayout.LayoutParams(dp(40), dp(48)));
 
-        LinearLayout change = new LinearLayout(this);
-        change.setOrientation(LinearLayout.HORIZONTAL);
-        change.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
-        change.setMinimumHeight(dp(48));
-        change.setPadding(dp(8), 0, dp(8), 0);
-        change.addView(label("换图", 9, UI_BLUE, tfHan));
-        ToolGlyph camera = new ToolGlyph(this, ToolGlyph.CAMERA, UI_BLUE);
-        LinearLayout.LayoutParams cameraLp = new LinearLayout.LayoutParams(dp(19), dp(19));
-        cameraLp.leftMargin = dp(8);
-        change.addView(camera, cameraLp);
-        change.setOnClickListener(v -> showImportMenu());
-        bar.addView(change, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        // The strip. Empty until a photograph is opened: no placeholder tile,
+        // because an empty shelf is not a missing control.
+        thumbScroll = new HorizontalScrollView(this);
+        thumbScroll.setHorizontalScrollBarEnabled(false);
+        thumbScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        thumbStrip = new LinearLayout(this);
+        thumbStrip.setOrientation(LinearLayout.HORIZONTAL);
+        thumbStrip.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        thumbScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
+        row.addView(thumbScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
+        TextView fold = label("\u2039", 15, UI_MUTED, tfHan);
+        fold.setGravity(android.view.Gravity.CENTER);
+        fold.setOnClickListener(v -> setShelfCollapsed(true));
+        row.addView(fold, new LinearLayout.LayoutParams(dp(28), dp(48)));
+
+        bar.addView(row, new LinearLayout.LayoutParams(-1, dp(62)));
         return bar;
     }
 
-    private void refreshSourceThumb() {
-        if (sourceThumbImage == null || sourceThumbPlus == null) return;
-        final boolean has = beforeBitmap != null;
-        sourceThumbImage.setVisibility(has ? View.VISIBLE : View.GONE);
-        sourceThumbPlus.setVisibility(has ? View.GONE : View.VISIBLE);
-        if (has) sourceThumbImage.setImageBitmap(beforeBitmap);
+    /** Folded: three cards stacked at the canvas's lower-left corner, the way a
+     *  short stack of prints looks -- one picture, two edges behind it, and a
+     *  chevron that says the rest of the strip is that way. */
+    private View buildShelfHandle() {
+        final int card = dp(52), step = dp(4);
+        android.widget.FrameLayout handle = new android.widget.FrameLayout(this);
+        handle.setVisibility(View.GONE);
+
+        for (int i = 2; i >= 1; --i) {
+            View edge = new View(this);
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setColor(i == 2 ? 0xFFD9D9D3 : 0xFFECECE7);
+            bg.setCornerRadius(dp(7));
+            bg.setStroke(Math.max(1, dp(1)), UI_LINE);
+            edge.setBackground(bg);
+            android.widget.FrameLayout.LayoutParams lp =
+                    new android.widget.FrameLayout.LayoutParams(card, card);
+            lp.leftMargin = step * i;
+            lp.topMargin = step * i;
+            handle.addView(edge, lp);
+        }
+
+        shelfHandleImage = new ImageView(this);
+        shelfHandleImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        shelfHandleImage.setClipToOutline(true);
+        shelfHandleImage.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), dp(7));
+            }
+        });
+        handle.addView(shelfHandleImage, new android.widget.FrameLayout.LayoutParams(card, card));
+
+        TextView chevron = label("\u203a", 14, UI_PAPER, tfDisplay);
+        chevron.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
+        chevron.setPadding(0, 0, dp(5), 0);
+        chevron.setShadowLayer(dp(2), 0, 0, 0xCC000000);
+        handle.addView(chevron, new android.widget.FrameLayout.LayoutParams(card, card));
+
+        handle.setOnClickListener(v -> setShelfCollapsed(false));
+        return handle;
+    }
+
+    private Look captureLook() {
+        final Look look = new Look();
+        look.filmStock = filmStock;
+        look.printStock = printStock;
+        look.printExposure = printExposure;
+        look.grainAmount = grainAmount;
+        look.halationAmount = halationAmount;
+        look.glareAmount = glareAmount;
+        look.filmFormatMm = filmFormatMm;
+        look.overscanOn = overscanOn;
+        look.overscanFormat = overscanFormat;
+        look.dateOn = dateOn;
+        return look;
+    }
+
+    /** Put a frame's own look back, controls included: a slider that says 1.00
+     *  while the render used 1.40 is worse than no slider. `setBarProgress`
+     *  goes through `onProgressChanged`, so the number and the field move
+     *  together. */
+    private void applyLook(Look look) {
+        if (look == null) return;
+        filmStock = look.filmStock;
+        printStock = look.printStock;
+        printExposure = look.printExposure;
+        grainAmount = look.grainAmount;
+        halationAmount = look.halationAmount;
+        glareAmount = look.glareAmount;
+        filmFormatMm = look.filmFormatMm;
+        overscanOn = look.overscanOn;
+        overscanFormat = look.overscanFormat;
+        dateOn = look.dateOn;
+        setBarProgress(exposureBar, 0.25f, 4.0f, printExposure);
+        setBarProgress(grainBar, 0.0f, 2.0f, grainAmount);
+        setBarProgress(halationBar, 0.0f, 4.0f, halationAmount);
+        setBarProgress(glareBar, 0.0f, 12f, glareAmount);
+        if (overscanMark != null) overscanMark.setLit(overscanOn);
+        if (dateMark != null) dateMark.setLit(dateOn);
+        for (int i = 0; i < FORMAT_MM.length; ++i) {
+            if (Math.abs(FORMAT_MM[i] - filmFormatMm) < 0.5f) { formatIndex = i; break; }
+        }
+        if (formatFootValue != null) {
+            formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", filmFormatMm));
+        }
+        refreshPaperLabel();
+    }
+
+    /** Park the live controls on the frame that owns them, before leaving it. */
+    /** What a brand-new photograph arrives with. Not "whatever was on screen":
+     *  a frame that has never been developed has no look, and inheriting the
+     *  previous one made an untouched import come back with somebody else's
+     *  grain and rebate. */
+    private Look defaultLook() {
+        final Look look = new Look();
+        look.filmStock = null;
+        look.printStock = "kodak_portra_endura";
+        look.printExposure = 1.0f;
+        look.grainAmount = 1.0f;
+        look.halationAmount = 1.0f;
+        look.glareAmount = 3.0f;
+        look.filmFormatMm = FORMAT_MM[0];
+        look.overscanOn = false;
+        look.overscanFormat = "135";
+        look.dateOn = false;
+        return look;
+    }
+
+    private void saveLookIntoFrames() {
+        if (currentFrame < 0 || currentFrame >= frames.size()) return;
+        frames.get(currentFrame).look = captureLook();
+    }
+
+    private void updateShelfHandle() {
+        if (shelfHandleImage == null) return;
+        Bitmap thumb = (currentFrame >= 0 && currentFrame < frames.size())
+                ? frames.get(currentFrame).thumb : null;
+        shelfHandleImage.setImageBitmap(thumb);
+    }
+
+    /** Fold or unfold the photograph strip. Unfolded it costs 62 dp above the
+     *  panels; folded it costs 20, and the canvas takes the difference -- the
+     *  stage is the weighted child of the column, so nothing else has to move. */
+    private void setShelfCollapsed(boolean collapsed) {
+        if (shelfCollapsed == collapsed) return;
+        // Nothing to fold into: with no photographs the handle would not be
+        // drawn, and ＋ would go with the row -- a one-way trip.
+        if (collapsed && frames.isEmpty()) return;
+        shelfCollapsed = collapsed;
+        updateShelfVisibility();
+        if (collapsed) updateShelfHandle();
+    }
+
+    /** The strip is furniture: it exists only when there is something on it.
+     *  Before the first import it is not folded, it is absent -- the canvas's
+     *  own 选择照片 button is the way in, and a 62 dp row of nothing above the
+     *  panels is just a gap. */
+    private void updateShelfVisibility() {
+        if (sourceBar == null) return;
+        final boolean show = !frames.isEmpty() && !shelfCollapsed;
+        sourceBar.setVisibility(show ? View.VISIBLE : View.GONE);
+        android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
+        if (lp != null) {
+            lp.height = dp(show ? 62 : 0);
+            sourceBar.setLayoutParams(lp);
+        }
+        if (shelfHandle != null) {
+            shelfHandle.setVisibility(shelfCollapsed && !frames.isEmpty()
+                    ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /** File the frame that just finished importing, once. */
+    private void rememberFrame(Uri uri) {
+        if (uri == null) return;
+        String name = getFileName(uri);
+        if (retryingNativeSize) {
+            // Same photograph, decoded again at its own size. The chip is
+            // already there; a second one would read as two files.
+            retryingNativeSize = false;
+            return;
+        }
+        if (reopeningFrame) {
+            // A chip asked for this frame. It is already in the list; only the
+            // highlight and the freshly decoded pixels changed.
+            reopeningFrame = false;
+            rebuildFrameChips();
+            return;
+        }
+        final Frame frame = new Frame(uri, isRawFile, name);
+        frame.look = captureLook();
+        if (beforeBitmap != null) {
+            try {
+                final int w = Math.max(1, dp(42));
+                final int h = Math.max(1, Math.round(
+                        w * beforeBitmap.getHeight() / (float) beforeBitmap.getWidth()));
+                frame.thumb = Bitmap.createScaledBitmap(beforeBitmap, w, h, true);
+            } catch (Throwable ignored) { }
+        }
+        frames.add(frame);
+        currentFrame = frames.size() - 1;
+        rebuildFrameChips();
+    }
+
+    /** One chip per opened frame, newest at the right, the open one ringed. */
+    private void rebuildFrameChips() {
+        if (thumbStrip == null) return;
+        thumbStrip.removeAllViews();
+        for (int i = 0; i < frames.size(); ++i) {
+            final int index = i;
+            final Frame frame = frames.get(i);
+            final boolean active = index == currentFrame;
+            android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setColor(UI_GROUND);
+            bg.setStroke(dp(active ? 2 : 1), active ? UI_BLUE : UI_LINE);
+            box.setBackground(bg);
+            box.setPadding(dp(2), dp(2), dp(2), dp(2));
+            ImageView img = new ImageView(this);
+            img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            if (frame.thumb != null) img.setImageBitmap(frame.thumb);
+            box.addView(img, new android.widget.FrameLayout.LayoutParams(-1, -1));
+            box.setOnClickListener(v -> reopenFrame(index));
+            box.setOnLongClickListener(v -> {
+                showActionSheet("删除这张照片？",
+                        (frame.name == null ? "照片" : frame.name) + "\n\n只从这条栏里移除，文件本身不动。",
+                        new String[]{"删除", "取消"}, which -> {
+                            if (which == 0) removeFrame(index);
+                        });
+                return true;
+            });
+            box.setContentDescription(frame.name == null ? "照片" : frame.name);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(42), dp(42));
+            lp.rightMargin = dp(6);
+            thumbStrip.addView(box, lp);
+        }
+        if (currentFrame >= 0 && currentFrame < thumbStrip.getChildCount()) {
+            final View target = thumbStrip.getChildAt(currentFrame);
+            thumbStrip.post(() -> {
+                if (thumbScroll != null && target != null) {
+                    thumbScroll.smoothScrollTo(Math.max(0, target.getLeft() - dp(36)), 0);
+                }
+            });
+        }
+        updateShelfHandle();
+        updateShelfVisibility();
+        try {
+            DebugSink.text("frame-strip", "frames=" + frames.size() + " current=" + currentFrame);
+        } catch (Throwable ignored) { }
+    }
+
+    /** Drop a chip. The file is untouched -- this is the strip's own list. If
+     *  the frame was the one on the canvas, the canvas is emptied rather than
+     *  silently showing a photograph that is no longer in the list. */
+    private void removeFrame(int index) {
+        if (index < 0 || index >= frames.size()) return;
+        frames.remove(index);
+        if (index == currentFrame) {
+            currentFrame = -1;
+            lastRenderedBitmap = null;
+            if (compare != null) compare.clear();
+            setStage(0, null);
+            statusText.setText("等待导入");
+        } else if (currentFrame > index) {
+            currentFrame--;
+        }
+        rebuildFrameChips();
+        try { DebugSink.text("frame-strip", "removed " + index + ", now " + frames.size()); }
+        catch (Throwable ignored) { }
+    }
+
+    /** Re-open a frame from the strip. Same entry point the picker uses, so a
+     *  RAW chip and a JPEG chip take exactly the roads they took the first time. */
+    private void reopenFrame(int index) {
+        if (index < 0 || index >= frames.size()) return;
+        if (index == currentFrame && session != null) return;
+        final Frame frame = frames.get(index);
+        saveLookIntoFrames();
+        currentFrame = index;
+        reopeningFrame = true;
+        suppressBudgetDialog = true;
+        rebuildFrameChips();
+        loadImage(frame.uri);
     }
 
     private void setOriginalVisual(boolean on) {
@@ -1085,6 +1468,15 @@ public class MainActivity extends Activity {
         if (index < 0 || index >= FORMAT_MM.length) return;
         formatIndex = index;
         filmFormatMm = FORMAT_MM[index];
+        // ... and the other way: a frame length picks the gate it fits.
+        final String gate = gateForMm(filmFormatMm);
+        if (!gate.equals(overscanFormat) && (edgeIds.isEmpty() || edgeIds.contains(gate))) {
+            overscanFormat = gate;
+            if (edgeValue != null) {
+                final int gi = edgeIds.indexOf(gate);
+                edgeValue.setText(gi >= 0 ? edgeLabels.get(gi) : gateLabelsFallback(gate));
+            }
+        }
         if (formatFootValue != null) {
             formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", FORMAT_MM[index]));
         }
@@ -1163,6 +1555,9 @@ public class MainActivity extends Activity {
             if (i < 0) return;
             overscanFormat = edgeIds.get(i);
             if (edgeValue != null) edgeValue.setText(edgeLabels.get(i));
+            // The frame that goes in this gate, not whatever the scale page
+            // happened to be left on.
+            setScaleMm(gateMm(overscanFormat));
             onEdgeChanged();
         });
     }
@@ -1700,9 +2095,18 @@ public class MainActivity extends Activity {
                     });
                 }
             } finally {
-                setPrefetchEdge(PREVIEW_LONG_EDGE);
-                prefetchRunning = false;
-                try { DebugSink.text("prefetch", "done, thumbs=" + filmThumbs.size()); } catch (Throwable ignored) { }
+                // A queue from a previous frame can outlive the import that
+                // replaced it. Knocking `prefetchRunning` down and resetting
+                // the edge here would stop the *live* queue mid-shelf, and the
+                // cards after that point would simply never fill.
+                if (generation == prefetchGeneration) {
+                    setPrefetchEdge(PREVIEW_LONG_EDGE);
+                    prefetchRunning = false;
+                }
+                try {
+                    DebugSink.text("prefetch", "done gen=" + generation + "/" + prefetchGeneration
+                            + " thumbs=" + filmThumbs.size());
+                } catch (Throwable ignored) { }
             }
         }, "film-prefetch");
         prefetchThread.setPriority(Thread.MIN_PRIORITY);
@@ -1725,16 +2129,27 @@ public class MainActivity extends Activity {
         prefetchRunning = false;
     }
 
-    /** One stock, one small render. The queue never touches the user's chosen
-     *  stock -- only the engine's copy of it, which is put back in `finally`. */
+    /** One stock, one small render at the shelf's own size.
+     *
+     *  The session is left sitting on whichever film this card asked for; the
+     *  next render or export states its own film in its own delta, so there is
+     *  no bookkeeping here to fall out of step. */
     private Bitmap renderStockThumbnail(String stock) {
         final SpektraLabEngine.Session s = session;
         if (s == null) return null;
-        final String keepStock = filmStock;
         synchronized (renderMutex) {
             try {
-                s.setParams(String.format(java.util.Locale.US,
-                        "{\"film_stock\":\"%s\",\"print_stock\":\"%s\"}", stock, printStock));
+                if (s != session) return null;          // the frame was replaced while we waited
+                // **The whole parameter set, not just film+paper.** A delta
+                // that carries `film_stock` is a stock change, and the engine
+                // answers a stock change by rebuilding the parameter tree --
+                // every field the delta leaves out falls back to its default.
+                // This card used to send only the two names, so its exposure,
+                // grain, halation, glare, format and rebate text were all the
+                // defaults while a tapped render carried the user's. That is
+                // the "some films look nothing like themselves" report: the
+                // shelf and the canvas were developing two different recipes.
+                applyParams(stock, PREFETCH_LONG_EDGE);
                 // `live` honours preview_long_edge (800 here); `preview` is a
                 // fixed 3400 px and made every card an export-sized print.
                 final int[] dims = s.renderBegin("live");
@@ -1754,13 +2169,10 @@ public class MainActivity extends Activity {
                 try { DebugSink.text("prefetch", "render " + stock + ": " + t); } catch (Throwable ignored) { }
                 return null;
             } finally {
+                // Nothing is put back. The card left its own film on the
+                // session; the next render or export states the user's film in
+                // its own delta, so there is nothing here to keep in step.
                 try { s.renderEnd(); } catch (Throwable ignored) { }
-                try {
-                    if (keepStock != null) {
-                        s.setParams(String.format(java.util.Locale.US,
-                                "{\"film_stock\":\"%s\",\"print_stock\":\"%s\"}", keepStock, printStock));
-                    }
-                } catch (Throwable ignored) { }
             }
         }
     }
@@ -1897,7 +2309,11 @@ public class MainActivity extends Activity {
                 }
             }
         });
-        row.addView(bar, new LinearLayout.LayoutParams(-1, dp(10)));
+        // **32 dp, not 10.** A 10 dp-tall SeekBar is a 10 dp-tall touch target:
+        // the thumb is 9 dp across, so most of a finger lands outside the view
+        // and the drag never starts. The track still draws 2 px -- that is the
+        // drawable's inset, not the view's height.
+        row.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
         parent.addView(row, new LinearLayout.LayoutParams(-1, 0, 1f));
         return bar;
     }
@@ -1931,7 +2347,11 @@ public class MainActivity extends Activity {
         thumb.setIntrinsicHeight(dp(9));
         bar.setThumb(thumb);
         bar.setSplitTrack(false);
-        bar.setPadding(dp(5), 0, dp(5), 0);
+        // 32 dp tall view, 10 dp of drawable between 11 dp of vertical padding:
+        // the track keeps its old 2 px look while the touch target is a finger
+        // wide. Without the padding the inset above would have to be 15 dp and
+        // the track would vanish into it.
+        bar.setPadding(dp(5), dp(11), dp(5), dp(11));
     }
 
     /** The old four-step ribbon is gone; the render state is in the canvas foot. */
@@ -1987,11 +2407,7 @@ public class MainActivity extends Activity {
         rawState.setVisibility(mode == 2 ? View.VISIBLE : View.GONE);
         if (mode == 0) {
             showingOriginal = false;
-            if (sourceThumbImage != null) sourceThumbImage.setVisibility(View.GONE);
-            if (sourceThumbPlus != null) sourceThumbPlus.setVisibility(View.VISIBLE);
             setOriginalVisual(false);
-        } else {
-            refreshSourceThumb();
         }
         if (name != null && !name.isEmpty()) {
             fileLabel.setText(name);
@@ -2012,11 +2428,40 @@ public class MainActivity extends Activity {
                 "从相册选择（照片）",
                 "从文件管理器选择（RAW / HEIC / 任意文件）"
         }, which -> {
+            // A deliberate pick is a *new* photograph, not a chip coming back.
+            // Cleared here so a chip whose file disappeared cannot leave the
+            // flag set and make the next import silently skip the strip.
+            reopeningFrame = false;
+            suppressBudgetDialog = false;
+            saveLookIntoFrames();
             if (which == 0) pickImage(); else pickRawFile();
         });
     }
 
     /** Export tiers come from the session and the device, not a fixed sensor. */
+    /**
+     * Hands the file that was just written to another app, bypassing the file
+     * picker. Lightroom's own picker asks Android for pictures; on some ROMs the
+     * picture list has no entry for TIFF, so a perfectly good .tif never
+     * appears in it -- while an ACTION_SEND carrying "image/tiff" reaches it
+     * fine. Same class of problem Adobe documents for CR3 on Android.
+     */
+    private void shareLastExport() {
+        if (lastExportUri == null) {
+            showInAppToast("还没有导出过文件");
+            return;
+        }
+        try {
+            final Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType(lastExportMime == null ? "image/*" : lastExportMime);
+            send.putExtra(Intent.EXTRA_STREAM, lastExportUri);
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(send, "发送到"));
+        } catch (Throwable t) {
+            showErrorDialog("无法发送", describe(t));
+        }
+    }
+
     private void showExportDialog() {
         if (session == null) {
             showInAppToast("先导入一张照片");
@@ -2028,11 +2473,56 @@ public class MainActivity extends Activity {
                 ? "（本机上限约 " + String.format(java.util.Locale.US, "%.1f", maxImportPixels() / 1e6)
                   + " MP，可能导出失败）"
                 : "（原图）";
-        showActionSheet("导出照片", "保留现有三个输出层级", new String[]{
-                "实时画质 · 当前预览尺寸",
-                "预览画质 · 长边 3400",
-                full + fullNote
-        }, which -> exportImage(which == 0 ? "live" : which == 1 ? "preview" : "full"));
+        // What the driver says it can take, as opposed to what this build
+        // currently lets through. The two were only ever visible as one number,
+        // and it was always the smaller -- so a phone reporting 2 GiB of
+        // maxStorageBufferRange looked like it was capped at 15 MP for no
+        // stated reason. Name both, and say which one is temporary.
+        final String driverLine;
+        if (probe.maxStorageBufferRange > 0) {
+            final double driverMp = probe.maxStorageBufferRange / 12.0 * 0.80 / 1e6;
+            final double budgetMp = maxImportPixels() / 1e6;
+            driverLine = String.format(java.util.Locale.US,
+                    "驱动单缓冲 %.0f MiB，可达 %.0f MP；当前版本按 %.1f MP 预算（分块引擎优化中）",
+                    probe.maxStorageBufferRange / 1048576.0, driverMp, budgetMp);
+        } else {
+            driverLine = probe.valid ? "驱动未报单缓冲上限" : "设备信息读取失败";
+        };
+        // One sheet, six rows. It was two -- format, then size -- and the first
+        // thing that did was hide "全尺寸（原图）" behind a tap that nobody
+        // expects from a menu that used to end in it.
+        final boolean limited = probe.isLimited();
+        // "the gallery says it is corrupt" is a question this sheet can answer
+        // before the file is written, not after: Android's picture viewer does
+        // not read 16-bit TIFF at all, and the phone's Lightroom does.
+        // DNG is shipped as a file for a desktop, and says so on the tin. The
+        // phone's Lightroom refuses every linear DNG this writer produces --
+        // four containers, two photometrics, 600x400 through 3000x2000, a
+        // correct XYZ(D50) colour matrix, a camera-shaped IFD0 preview -- with
+        // "failed to load the development version", which Adobe lists as a
+        // known Android bug. Rather than let that read as our defect, the row
+        // and the note name the destination and close the question.
+        final String note = (limited
+                ? "TIFF 是 16 位；"
+                  + "导出后点导出旁边的「分享」，分享到 Lightroom 即可使用（手机相册多半不显示 TIFF）。JPEG 哪儿都能看。"
+                : "TIFF 是 16 位；"
+                  + "导出后点导出旁边的「分享」，分享到 Lightroom 即可使用（手机相册多半不显示 TIFF）。JPEG 是 8 位、哪儿都能看")
+                + "\n" + driverLine
+                + "\nDNG 只给电脑上的 Lightroom / ACR 用：手机版 Lr 打不开是已知问题，"
+                  + "遇到报错不必反馈。";
+        showActionSheet("导出照片", note, new String[]{
+                "JPEG · 实时画质",
+                "JPEG · 预览画质 · 长边 3400",
+                "JPEG · 全尺寸（原图）",
+                "TIFF 16 位 · 实时画质",
+                "TIFF 16 位 · 预览画质 · 长边 3400",
+                "TIFF 16 位 · 全尺寸（原图）",
+                "DNG · 全尺寸（电脑用 · 手机版打不开）"
+        }, which -> {
+            if (which == 6) { exportImage("dng", "full"); return; }
+            exportImage(which >= 3 ? "tiff" : "jpeg",
+                        which % 3 == 0 ? "live" : which % 3 == 1 ? "preview" : "full");
+        });
     }
 
     /** Reset from the old single control strip: delegate to the film page. */
@@ -2297,19 +2787,101 @@ public class MainActivity extends Activity {
     }
 
     /** Long-press on the title: version, update check, and where the code lives. */
+    /**
+     * The probe, re-read if it never landed.
+     *
+     * `ensureEngine()` reads it exactly once, immediately after the engine is
+     * created -- and `engine` is assigned first, so a throw in that one call
+     * leaves `probe` at `parse("{}")` for the life of the process while every
+     * render works perfectly. The device then reads as "设备信息读取失败" and,
+     * worse, `maxImportPixels()` loses the one number it is derived from.
+     */
+    /**
+     * Ask the driver whether it enforces the range it reports.
+     *
+     * The canary is the only way to tell a device that merely reports 128 MiB
+     * from one that enforces it: past the limit the writes are dropped and no
+     * error comes back, so a soft report and a hard wall are identical from
+     * the API. It runs once, on its own thread, as soon as the engine exists --
+     * before the first import asks for a budget.
+     *
+     * The import budget stays on the reported value until the answer lands,
+     * which is the conservative side: someone who imports immediately is
+     * never handed a larger frame than the measurement would have allowed.
+     */
+    private void startCanaryProbe() {
+        if (canaryStarted || engine == null) return;
+        canaryStarted = true;
+        final SpektraLabEngine e = engine;
+        new Thread(() -> {
+            String json = null;
+            try {
+                synchronized (renderMutex) { json = e.probeCanary(DeviceProbe.CANARY_NEED_BYTES); }
+            } catch (Throwable t) {
+                try { DebugSink.text("canary", "threw: " + describe(t)); } catch (Throwable ignored) { }
+            }
+            final String result = json;
+            final long budget = maxImportPixels();
+            runOnUiThread(() -> {
+                try {
+                    if (result != null) probe.applyCanary(result);
+                    DebugSink.text("canary", (result == null ? "(no answer)" : result)
+                            + "\n" + probe.describe());
+                } catch (Throwable ignored) { }
+                try { DeviceReport.submit(this, probe, budget); } catch (Throwable ignored) { }
+            });
+        }, "canary-probe").start();
+    }
+
+    private DeviceProbe probeNow() {
+        if (!probe.valid && engine == null) {
+            // "关于" can be opened before anything is imported, which is the
+            // usual way this reads as a failure: there is no engine yet, so
+            // there is nothing to ask. Build it.
+            try { ensureEngine(); }
+            catch (Throwable t) {
+                try { DebugSink.text("device-profile", "engine create failed: " + describe(t)); }
+                catch (Throwable ignored) { }
+            }
+        }
+        if (!probe.valid && engine != null) {
+            try {
+                final String json = engine.deviceProfile();
+                probe = DeviceProbe.parse(json);
+                try { DebugSink.text("device-profile", "re-read " + probe.describe() + "\n" + json); }
+                catch (Throwable ignored) { }
+            } catch (Throwable t) {
+                try { DebugSink.text("device-profile", "re-read failed: " + describe(t)); }
+                catch (Throwable ignored) { }
+            }
+        }
+        return probe;
+    }
+
     private void showAbout() {
+        probeNow();
         final String version = UpdateCheck.versionName(this) + "（" + UpdateCheck.versionCode(this) + "）";
         final String details = probe.describe()
                 + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
                 + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android";
+        // The report switch lives here rather than in a settings screen: it is
+        // one line of one dialog, and it is the only thing this app sends that
+        // the user did not ask for. The label carries the state, because the
+        // sheet's note cannot scroll and a longer paragraph would be clipped.
+        final boolean reporting = DeviceReport.enabled(this);
         showActionSheet("SpektraLab Android " + version, details, new String[]{
-                "检查更新", "反馈群（QQ 1134320449）", "打开 GitHub", "关闭"
+                "检查更新",
+                reporting ? "驱动报告：开（每周一次，只报机型和 GPU）" : "驱动报告：关",
+                "反馈群（QQ 1134320449）", "打开 GitHub", "关闭"
         }, which -> {
             if (which == 0) {
                 UpdateCheck.check(this, true);
             } else if (which == 1) {
-                showFeedbackGroup(false);
+                DeviceReport.setEnabled(this, !reporting);
+                showAbout();
             } else if (which == 2) {
+                showFeedbackGroup(false);
+            } else if (which == 3) {
                 try {
                     startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                             android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
@@ -2485,6 +3057,15 @@ public class MainActivity extends Activity {
 
     private void loadImage(Uri uri) {
         sourceUri = uri;
+        // The frame's own look, stated before any session is built: a chip
+        // returns to a photograph *and* to what was done to it; a pick from ＋
+        // starts with no film at all.
+        if (reopeningFrame) {
+            if (currentFrame >= 0 && currentFrame < frames.size())
+                applyLook(frames.get(currentFrame).look);
+        } else {
+            applyLook(defaultLook());
+        }
         try {
             // Check if this is a RAW file by extension
             String fileName = getFileName(uri);
@@ -2517,7 +3098,7 @@ public class MainActivity extends Activity {
             // that decision on the user's behalf, and it shows up later as an
             // export that is smaller than the file. The header gives the size
             // without decoding anything, so the question is free.
-            if (!importAtNativeSize && !importBudgetAccepted) {
+            if (!importAtNativeSize && !importBudgetAccepted && !suppressBudgetDialog) {
                 final int[] full = sniffImageSize(uri);
                 if (full != null) {
                     final long area = (long) full[0] * (long) full[1];
@@ -2530,10 +3111,28 @@ public class MainActivity extends Activity {
             }
             importBudgetAccepted = false;
 
+            // Retire the shelf queue *before* the session it is holding goes
+            // away. Its generation is the only thing that makes a card which
+            // is already rendering drop its bitmap instead of filing the old
+            // photograph's picture under this photograph's films: without this
+            // bump the queue wrote last frame's thumbnails into `filmThumbs`,
+            // every card then looked right in the map (`containsKey`), and the
+            // new queue skipped them forever -- cards showing the previous
+            // photo until each one was tapped.
+            stopPrefetch();
             // Free the previous frame before decoding: a 20 MP pick wants a
             // ~200 MB direct buffer and the old session still holds its planes
             // (this OOM was 241 MB with 201 MB left in the heap).
-            if (session != null) { session.close(); session = null; }
+            //
+            // **Under the render lock.** `stopPrefetch` only bumps a generation
+            // -- it does not wait for the thread, which may be inside
+            // `renderBegin` on this very session. Closing it from under the GPU
+            // is the SIGSEGV this device logs as `vkCmdCopyBuffer` against a
+            // destroyed buffer, and it is what tapping an earlier thumbnail
+            // while the shelf was still drawing looked like.
+            synchronized (renderMutex) {
+                if (session != null) { session.close(); session = null; }
+            }
             lastRenderedBitmap = null;
             setOpticsUnlocked(false);
             dateText = null;
@@ -2541,6 +3140,13 @@ public class MainActivity extends Activity {
             sourceBitmap = null;
             sourcePixels = null;
             filmThumbs.clear();
+            // The canvas is not a control. `setOriginalVisual` only paints the
+            // 原图 button; what CompareView holds is `after` (the last render)
+            // and it survives a new session. That was the whole "I changed the
+            // photo and the canvas still shows the old one" report: the frame
+            // was never dropped, so the next render was the first thing to
+            // replace it.
+            if (compare != null) compare.clear();
             System.gc();
 
             // Cap by area, the way the RAW path does. inSampleSize only halves,
@@ -2624,13 +3230,15 @@ public class MainActivity extends Activity {
             sourceBitmap = null;
             statusText.setText("Local preview");
             setStage(1, getFileName(uri));
-            refreshSourceThumb();
+            rememberFrame(uri);
             rebuildFilmCards();
             setStep(1);
             
             // Create engine and session
             ensureEngine();
-            if (session != null) session.close();
+            synchronized (renderMutex) {
+                if (session != null) { session.close(); session = null; }
+            }
             session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
             applySessionParams();
             lastImportError = null;
@@ -2640,8 +3248,16 @@ public class MainActivity extends Activity {
             lastRenderedBitmap = null;
             setOriginalVisual(true);
             rebuildFilmCards();
-            statusText.setText("未渲染 · 选择胶片开始");
-            startPrefetch();
+            if (filmStock != null) {
+                // A chip came back with a look: develop it again rather than
+                // making the user re-pick a film that was never unpicked.
+                showingOriginal = false;
+                updateFilmSelection();
+                renderImage();
+            } else {
+                statusText.setText("未渲染 · 选择胶片开始");
+                startPrefetch();
+            }
         } catch (Throwable t) {
             lastImportError = describeImportFailure(t);
             showErrorDialog("导入失败", lastImportError);
@@ -2682,6 +3298,7 @@ public class MainActivity extends Activity {
             probe = DeviceProbe.parse(engine.deviceProfile());
             try { DebugSink.text("device-profile", probe.describe() + "\n" + engine.deviceProfile()); }
             catch (Throwable ignored) { }
+            startCanaryProbe();
             try { uploadCapabilities(); } catch (Throwable ignored) { }
         }
         return engine;
@@ -2735,6 +3352,7 @@ public class MainActivity extends Activity {
      */
     private int maxImportPixels(boolean withRebate) {
         try { ensureEngine(); } catch (Throwable ignored) { }
+        probeNow();
         long byBinding = Long.MAX_VALUE;
         try {
             final int byNative = engine == null ? 0 : engine.maxFramePixels();
@@ -2753,119 +3371,6 @@ public class MainActivity extends Activity {
         return maxImportPixels(overscanOn);
     }
 
-    /**
-     * The camera's own preview, out of the RAW container.
-     *
-     * Every mainstream raw carries a JPEG rendering of the frame -- Sony,
-     * Nikon, Canon's CR2, DNG, Fuji. It is what Lightroom shows before it
-     * develops anything, and the only way this app can put a raw on screen
-     * without running the film pipeline first: the decode happens on the GPU,
-     * so there is no bitmap of the raw itself to show.
-     */
-    private Bitmap embeddedPreview(String path) {
-        final long t0 = System.currentTimeMillis();
-        java.io.RandomAccessFile file = null;
-        final java.util.List<long[]> spans = new java.util.ArrayList<>();
-        try {
-            file = new java.io.RandomAccessFile(path, "r");
-            final long size = file.length();
-            if (size < 8192) return null;
-            final byte[] chunk = new byte[1 << 20];
-            long start = -1, pos = 0;
-            // Every complete JPEG in the file, not just the biggest guess: a
-            // container holds a thumbnail, a preview, and sometimes runs of raw
-            // data that happen to look like markers.
-            while (pos < size) {
-                file.seek(pos);
-                final int n = file.read(chunk);
-                if (n <= 0) break;
-                for (int i = 0; i + 1 < n; ++i) {
-                    final int a = chunk[i] & 0xFF, b = chunk[i + 1] & 0xFF;
-                    if (start < 0) {
-                        // FF D8: the span starts one byte before the D8, which
-                        // is the previous chunk's last byte when the pair
-                        // straddles a boundary (i == 0).
-                        if (a == 0xD8 && b == 0xFF) start = pos + i - 1;
-                    } else if (a == 0xFF && b == 0xD9) {
-                        addPreviewSpan(spans, start, pos + i + 2);
-                        start = -1;
-                    }
-                }
-                pos += Math.max(1, n - 1);      // a marker can straddle two chunks
-            }
-            // A preview whose EOI was cut (or never stored) still decodes.
-            if (start >= 0) addPreviewSpan(spans, start, size);
-            if (spans.isEmpty()) {
-                try { DebugSink.text("raw-preview", "no jpeg markers in " + size + "B"); } catch (Throwable ignored) { }
-                return null;
-            }
-            spans.sort((x, y) -> Long.compare(y[1], x[1]));
-
-            final int tries = Math.min(32, spans.size());
-            final byte[] head = new byte[1 << 18];      // 256 KB: every sane header fits
-            for (int k = 0; k < tries; ++k) {
-                final long at = spans.get(k)[0], len = spans.get(k)[1];
-                // A real JPEG declares itself in its first few KB. Raw data
-                // that happens to hold the two markers usually does not, and
-                // this check costs 64 KB instead of sixteen megabytes.
-                try {
-                    final int probe = (int) Math.min(len, head.length);
-                    file.seek(at);
-                    file.readFully(head, 0, probe);
-                    final android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
-                    bounds.inJustDecodeBounds = true;
-                    BitmapFactory.decodeByteArray(head, 0, probe, bounds);
-                    if (bounds.outWidth < 320 || bounds.outHeight < 320) continue;
-
-                    final byte[] jpeg = new byte[(int) len];
-                    file.seek(at);
-                    file.readFully(jpeg);
-                    final Bitmap bmp = decodePreview(jpeg);
-                    try {
-                        DebugSink.text("raw-preview", (bmp == null ? "reject" : bmp.getWidth() + "x" + bmp.getHeight())
-                                + " span#" + k + " at=" + at + " len=" + len + " of " + spans.size()
-                                + " head=" + bounds.outWidth + "x" + bounds.outHeight);
-                    } catch (Throwable ignored) { }
-                    if (bmp != null) return bmp;
-                } catch (Throwable t) {
-                    try { DebugSink.text("raw-preview", "span#" + k + " threw " + t); } catch (Throwable ignored) { }
-                }
-            }
-            return null;
-        } catch (Throwable t) {
-            try { DebugSink.text("raw-preview", "failed " + t); } catch (Throwable ignored) { }
-            return null;
-        } finally {
-            if (file != null) try { file.close(); } catch (Throwable ignored) { }
-            try { DebugSink.text("raw-preview-timing", (System.currentTimeMillis() - t0) + " ms"); }
-            catch (Throwable ignored) { }
-        }
-    }
-
-    private static void addPreviewSpan(java.util.List<long[]> spans, long start, long end) {
-        final long len = end - start;
-        // Below 8 KB it is a thumbnail; above 16 MB it is sensor data that
-        // happened to contain the markers.
-        if (start < 0 || len < 8192 || len > (16L << 20)) return;
-        spans.add(new long[]{start, len});
-    }
-
-    private static Bitmap decodePreview(byte[] jpeg) {
-        try {
-            final BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length, bounds);
-            if (bounds.outWidth < 320 || bounds.outHeight < 320) return null;
-            int sample = 1;
-            while (Math.max(bounds.outWidth, bounds.outHeight) / sample > 2400) sample *= 2;
-            final BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = sample;
-            return BitmapFactory.decodeByteArray(jpeg, 0, jpeg.length, opts);
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
     private void loadRawImage(Uri uri) {
         try {
             String filePath = getFilePathFromUri(uri);
@@ -2876,9 +3381,19 @@ public class MainActivity extends Activity {
             }
             
             statusText.setText("Decoding RAW…");
-            // The JPEG path drops the old frame before it decodes; this one did
-            // not, so a RAW import left the *previous* photo on screen until a
-            // render replaced it.
+            // **The same three things the JPEG path does, for the same three
+            // reasons** — and this path had none of them, which is why a RAW
+            // import kept the previous photograph everywhere except the little
+            // source thumbnail:
+            //   · stopPrefetch() retires the shelf queue, whose generation is
+            //     what stops last frame's cards being filed under this frame;
+            //   · compare.clear() drops `CompareView.after`, the previous
+            //     render, which nothing else ever clears;
+            //   · filmThumbs.clear() is the shelf's own cache, keyed by film
+            //     id with no frame identity in the key.
+            stopPrefetch();
+            if (compare != null) compare.clear();
+            filmThumbs.clear();
             lastRenderedBitmap = null;
             setOpticsUnlocked(false);
             dateText = null;
@@ -2892,7 +3407,13 @@ public class MainActivity extends Activity {
                         engine = SpektraLabEngine.create(resourcesDir, vkLogFile().getAbsolutePath());
                         uploadCapabilities();
                     }
-                    if (session != null) session.close();
+                    // Under the render lock: the shelf queue can still be
+                    // inside `renderBegin` when this thread gets here, and
+                    // closing a session out from under it is a native crash,
+                    // not an exception.
+                    synchronized (renderMutex) {
+                        if (session != null) { session.close(); session = null; }
+                    }
                     
                     // `film_stock` names a profile file: "" and "null" both make
                     // `load_profile` fail ("bad stock name"), so an unchosen film
@@ -2935,8 +3456,10 @@ public class MainActivity extends Activity {
                     // comparison and the only honest thing to show on import:
                     // the decoded frame in working space, packed with no
                     // transfer function, so a display reads it the way it reads
-                    // a raw -- flat, and dark. The camera's own JPEG is the
-                    // fallback for a container the engine will not decode twice.
+                    // a raw -- flat, and dark. The camera's own JPEG is **not**
+                    // a stand-in for it: a preview is the camera's rendering,
+                    // not this frame, and showing it as "原图" is the same lie
+                    // as importing it would be. No frame, no picture.
                     Bitmap rawView = null;
                     try {
                         final int[] d = session.exportSource("live");
@@ -2964,33 +3487,26 @@ public class MainActivity extends Activity {
                     } catch (Throwable t) {
                         try { DebugSink.text("raw-view", "export failed: " + t); } catch (Throwable ignored) { }
                     }
-                    boolean fromCamera = false;
-                    if (rawView == null) {
-                        Bitmap camera = embeddedPreview(filePath);
-                        if (camera != null) {
-                            int apply = orientationOfPath(filePath);
-                            if ((apply == 6 || apply == 8 || apply == 5 || apply == 7)
-                                    && camera.getHeight() > camera.getWidth()) {
-                                apply = 0;      // the camera already turned it
-                            }
-                            Bitmap turned = rotateForOrientation(camera, apply);
-                            if (turned != camera) { camera.recycle(); camera = turned; }
-                            rawView = camera;
-                            fromCamera = true;
-                        }
-                    }
                     final Bitmap preview = rawView;
-                    final boolean cameraShot = fromCamera;
                     final boolean hasPreview = preview != null;
+                    if (!hasPreview) {
+                        // The canvas is not allowed to be blank for no reason.
+                        // A session that opened but produced no source frame is
+                        // a bug, and it has to say so rather than look like a
+                        // photo that failed to load.
+                        try { DebugSink.text("raw-view", "no source frame for the canvas"); }
+                        catch (Throwable ignored) { }
+                        runOnUiThread(() -> statusText.setText("RAW 已载入，原图预览未生成"));
+                    }
                     if (hasPreview) {
                         runOnUiThread(() -> {
                             beforeBitmap = preview;
                             compare.setBefore(preview);
                             setStage(1, getFileName(uri));
-                            refreshSourceThumb();
+                            rememberFrame(uri);
                             rebuildFilmCards();
                             setStep(1);
-                            statusText.setText(cameraShot ? "Embedded preview" : "Raw preview");
+                            statusText.setText("Raw preview");
                         });
                     }
 
@@ -3006,13 +3522,18 @@ public class MainActivity extends Activity {
                     }
                     runOnUiThread(() -> {
                         if (session == null) return;
-                        // Same rule as the JPEG path: the RAW lands unrendered.
                         showingOriginal = true;
                         lastRenderedBitmap = null;
                         setOriginalVisual(true);
                         rebuildFilmCards();
-                        statusText.setText("未渲染 · 选择胶片开始");
-                        startPrefetch();
+                        if (filmStock != null) {
+                            showingOriginal = false;
+                            updateFilmSelection();
+                            renderImage();
+                        } else {
+                            statusText.setText("未渲染 · 选择胶片开始");
+                            startPrefetch();
+                        }
                     });
 
                     // Get dimensions from session
@@ -3037,7 +3558,7 @@ public class MainActivity extends Activity {
                     runOnUiThread(() -> {
                         refreshEdgeFormats();
                         setStep(1);
-                        if (shrunk) {
+                        if (shrunk && !suppressBudgetDialog) {
                             // The raw has to be decoded before its size is known,
                             // so this asks afterwards -- but it still asks, and
                             // it offers the escape hatch the long-press used to
@@ -3052,6 +3573,7 @@ public class MainActivity extends Activity {
                                             new String[]{"就这样", "按原尺寸重来"}, which -> {
                                                 if (which == 1) {
                                                     importAtNativeSize = true;
+                                                    retryingNativeSize = true;
                                                     loadRawImage(uri);
                                                 }
                                             });
@@ -3061,6 +3583,9 @@ public class MainActivity extends Activity {
                 } catch (Throwable t) {
                     final String said = describeImportFailure(t);
                     lastImportError = said;
+                    // A High-Efficiency NEF is not a preview job. Say what it
+                    // is (E-1108, a compression this build has no decoder for)
+                    // and what to change, and leave the file alone.
                     runOnUiThread(() -> {
                         statusText.setText("RAW加载失败 " + SpkError.shortForm(said));
                         showErrorDialog("RAW 加载失败", said);
@@ -3475,7 +4000,10 @@ public class MainActivity extends Activity {
             showInAppToast("选择一张胶片开始渲染");
             return;
         }
-        applySessionParams();
+        // No `applySessionParams()` here any more: it wrote the engine from the
+        // UI thread, which both raced the catalogue queue and could park the UI
+        // behind a long render's lock. `renderImage` applies the stock under the
+        // same lock it renders under -- one writer, one order.
         showingOriginal = false;
         setOriginalVisual(false);
         updateFilmSelection();
@@ -3502,6 +4030,45 @@ public class MainActivity extends Activity {
                     + " overscan=" + overscanOn + " date=" + dateOn + " fmt=" + filmFormatMm);
         } catch (Throwable ignored) { }
         applyParams(PREVIEW_LONG_EDGE);
+    }
+
+    /**
+     * The same delta **plus the film and the paper**, for every call that is
+     * about to produce a picture.
+     *
+     * <p>This is the one thing that has to be true before `renderBegin`: the
+     * session carries the stock the user is looking at. It used to be kept by
+     * a Java-side `sessionSignature` -- a field written by the catalogue
+     * queue and by the UI thread, compared against the engine's *assumed*
+     * state. One write out of order and the signature claimed a stock the
+     * session never got, so every film rendered the same picture while the
+     * rebate text (which the app draws from its own field) kept changing.
+     *
+     * <p>Stating the stock in the delta costs ~10 ms on the host (26 ms
+     * against 19 ms for the delta without it, measured at 900x600 with
+     * `stock_cost`); a render is two orders of magnitude more. So there is no
+     * bookkeeping left to get wrong: whoever draws, says what to draw.
+     */
+    private void applyParams(String stock, int longEdge) {
+        if (session == null || stock == null) return;
+        // The line a "every film looks the same" report needs: what this render
+        // actually told the engine, next to what the UI thinks is selected.
+        try {
+            DebugSink.text("params", "draw film=" + stock + " print=" + printStock
+                    + " render=" + rendering + " long=" + longEdge);
+        } catch (Throwable ignored) { }
+        session.setParams(String.format(java.util.Locale.US,
+            "{\"film_stock\":\"%s\",\"print_stock\":\"%s\","
+            + "\"output_color_space\":\"sRGB\",\"preview_long_edge\":%d,"
+            + "\"print_exposure\":%.2f,\"grain_amount\":%.3f,\"halation_amount\":%.3f,"
+            + "\"glare_amount\":%.3f,\"film_format_mm\":%.1f,"
+            + "\"overscan_active\":%s,\"overscan_format\":\"%s\",\"overscan_edge_text\":\"%s\","
+            + "\"date_imprint_active\":%s,\"date_imprint_text\":\"%s\",\"date_imprint_style\":\"lcd\"}",
+            stock, printStock, longEdge,
+            printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm,
+            overscanOn ? "true" : "false", overscanFormat, edgeTextFor(stock),
+            dateOn ? "true" : "false", dateOn ? imprintDate() : ""
+        ));
     }
 
     /** Same set, at whatever long edge the caller is rendering. The catalogue
@@ -3557,14 +4124,7 @@ public class MainActivity extends Activity {
         if (session == null) return;
         final String stock = filmStock;
         if (stock == null) return;
-        session.setParams(String.format(
-            "{\"film_stock\":\"%s\",\"print_stock\":\"%s\",\"input_color_space\":\"%s\","
-            + "\"input_cctf_decoding\":%s,\"auto_exposure\":%s}",
-            stock, printStock,
-            isRawFile ? "ProPhoto RGB" : "sRGB",
-            isRawFile ? "false" : "true",
-            isRawFile ? "true" : "false"));
-        applyParams();
+        applyParams(stock, PREVIEW_LONG_EDGE);
     }
 
     private void renderImage() {
@@ -3588,7 +4148,10 @@ public class MainActivity extends Activity {
             // interleave on it and hand back another frame's dimensions.
             try { DebugSink.text("render", "already rendering"); } catch (Throwable ignored) { }
             statusText.setText("Rendering…");
-            showInAppToast("正在渲染，请稍候…");
+            // Not dropped: a tap that lands mid-render is the *last* choice the
+            // user made, so it becomes the next render instead of a toast.
+            pendingRender = true;
+            showInAppToast("正在渲染，完成后按新选择再画一次…");
             return;
         }
         final String renderedStock = filmStock;
@@ -3602,6 +4165,12 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 synchronized (renderMutex) {
+                if (session == null) throw new RuntimeException("session closed before render");
+                // The queue stops here, but a card it started before still
+                // finishes and can put a stock back onto this session. Take the
+                // film the user picked, under the same lock the render runs
+                // under, so the picture and the edge text cannot disagree.
+                applyParams(renderedStock, PREVIEW_LONG_EDGE);
                 int[] dims = session.renderBegin("live");
                 int w = dims[0], h = dims[1];
                 if (w <= 0 || h <= 0) throw new RuntimeException("engine returned empty frame");
@@ -3623,6 +4192,13 @@ public class MainActivity extends Activity {
                     final int at = pj == null ? -1 : pj.indexOf("\"auto_exposure_ev\"");
                     DebugSink.text("exposure", "tier=live " + (at < 0 ? "(no progress json)"
                             : pj.substring(at, Math.min(pj.length(), at + 40))));
+                } catch (Throwable ignored) { }
+                // The rebate's own numbers, next to the buffer they belong to.
+                // "the edge is wrong in the export but right in the preview" is
+                // a question only these two lines can answer.
+                try {
+                    DebugSink.text("overscan-geom", "tier=live " + w + "x" + h + " "
+                            + session.overscanGeometry());
                 } catch (Throwable ignored) { }
                 // The engine's log for this render. When a frame comes back as
                 // one flat colour there is nothing else to read: it says which
@@ -3668,6 +4244,7 @@ public class MainActivity extends Activity {
                     progressBar.setVisibility(View.GONE);
                     busyLabel.setVisibility(View.GONE);
                     rendering = false;
+                    if (pendingRender) { pendingRender = false; renderImage(); }
                 });
             }
             } catch (Throwable e) {
@@ -3683,6 +4260,7 @@ public class MainActivity extends Activity {
                     showErrorDialog("渲染失败", SpkError.format(msg)
                             + "\n\n" + sourceWidth + "×" + sourceHeight
                             + "\n" + probe.describe());
+                    if (pendingRender) { pendingRender = false; renderImage(); }
                 });
                 // E-1001 is "a plane is bigger than one binding may name", and
                 // the only cure is a smaller session. The import cap already
@@ -3726,7 +4304,7 @@ public class MainActivity extends Activity {
     }
 
     private void exportImage() {
-        exportImage("preview");
+        exportImage("jpeg", "preview");
     }
 
     /**
@@ -3804,7 +4382,30 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {}
     }
 
-    private void exportImage(String tier) {
+    /** The rebate's canvas as `WxH`, or "" when this frame has no rebate.
+     *  Printed next to the export's own size: when the two disagree the file
+     *  carries a band that was never drawn, and that is the whole of the
+     *  "the rebate flies in the export but not in the preview" report. */
+    private String overscanCanvasLabel() {
+        try {
+            final String g = session == null ? null : session.overscanGeometry();
+            if (g == null) return "";
+            final int wAt = g.indexOf("\"canvas_w\":");
+            final int hAt = g.indexOf("\"canvas_h\":");
+            if (wAt < 0 || hAt < 0) return "";
+            final int w0 = wAt + 11, w1 = g.indexOf(',', w0);
+            final int h0 = hAt + 11, h1 = g.indexOf(',', h0);
+            if (w1 < 0 || h1 < 0) return "";
+            return g.substring(w0, w1) + "x" + g.substring(h0, h1);
+        } catch (Throwable ignored) { return ""; }
+    }
+
+    private void exportImage(String format, String tier) {
+        final boolean tiff = "tiff".equals(format);
+        final boolean dng = "dng".equals(format);
+        final String ext = dng ? ".dng" : tiff ? ".tif" : ".jpg";
+        final String mime = dng ? "image/x-adobe-dng" : tiff ? "image/tiff" : "image/jpeg";
+        if (sharePill != null) sharePill.setVisibility(View.GONE);
         if (engine == null || session == null) {
             showInAppToast("请先导入照片");
             return;
@@ -3813,19 +4414,23 @@ public class MainActivity extends Activity {
             showInAppToast("先选一张胶片，再导出");
             return;
         }
+        // The shelf queue prints 800 px cards through this same session, and a
+        // card that lands between "start export" and the first strip swaps
+        // film_stock under the full-size render. That -- not the params delta --
+        // is what used to come back as a flat grey.
+        stopPrefetch();
         new Thread(() -> {
-            java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ".jpg");
+            java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ext);
             try {
                 runOnUiThread(() -> {
                     statusText.setText("导出中：准备全尺寸渲染（分条）...");
                     exportProgressBar.setVisibility(View.VISIBLE);
                     setStep(3);
                 });
-                // **No spk_set_params here.** The engine treats the *presence* of
-                // film_stock/print_stock in a delta as a stock change and rebuilds
-                // the pipeline, which resets session state; the render that
-                // follows then comes back as a flat grey. The session already
-                // carries the film/print it was opened with.
+                // A stock delta before an export is fine -- measured, not
+                // assumed (`full_after_delta`: mean 104.2 std 11945 before,
+                // 102.4 std 12481 after, and the two hashes differ). It is the
+                // same delta the preview renders with, which is the point.
                 try {
                     DebugSink.text("export-params", "film=" + filmStock + " print=" + printStock
                             + " pex=" + printExposure + " (no delta sent)");
@@ -3846,7 +4451,30 @@ public class MainActivity extends Activity {
                 runOnUiThread(tick);
                 int[] info;
                 try {
-                    info = session.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
+                    synchronized (renderMutex) {
+                        // Everything the preview drew with, re-stated: a stock,
+                        // a paper, a gate, an edge text or a date that moved
+                        // since the last render would otherwise be exported as
+                        // the *preview* had it, or not at all.
+                        applyParams(filmStock, PREVIEW_LONG_EDGE);
+                        try {
+                            DebugSink.text("overscan-geom", "tier=" + tier + " before "
+                                    + session.overscanGeometry());
+                            // The whole parameter set this export is about to use.
+                            // "the export disagrees with the preview" is a question
+                            // about which of these two numbers changed.
+                            DebugSink.text("export-params", "tier=" + tier + " " + session.getParams());
+                        } catch (Throwable ignored) { }
+                        info = dng
+                                ? session.exportDng(tmp.getAbsolutePath(), tier)
+                                : tiff
+                                ? session.exportTiff(tmp.getAbsolutePath(), tier)
+                                : session.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
+                        try {
+                            DebugSink.text("overscan-geom", "tier=" + tier + " " + info[0] + "x" + info[1]
+                                    + " " + session.overscanGeometry());
+                        } catch (Throwable ignored) { }
+                    }
                 } finally {
                     spinning.set(false);
                 }
@@ -3860,10 +4488,10 @@ public class MainActivity extends Activity {
 
                 final int fw = w, fh = h;
                 runOnUiThread(() -> statusText.setText("导出中：写入相册 " + fw + "x" + fh + "..."));
-                String fileName = "SpektraLab_" + System.currentTimeMillis() + ".jpg";
+                String fileName = "SpektraLab_" + System.currentTimeMillis() + ext;
                 android.content.ContentValues values = new android.content.ContentValues();
                 values.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName);
-                values.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                values.put(android.provider.MediaStore.Images.Media.MIME_TYPE, mime);
                 values.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
                     android.os.Environment.DIRECTORY_PICTURES + "/SpektraLab");
                 values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
@@ -3884,7 +4512,7 @@ public class MainActivity extends Activity {
 
                 try {
                     long len = tmp.length();
-                    DebugSink.text("export", "tier=" + tier + " w=" + w + " h=" + h + " renderMs=" + renderMs
+                    DebugSink.text("export", "format=" + format + " tier=" + tier + " w=" + w + " h=" + h + " renderMs=" + renderMs
                             + " bytes=" + len);
                     if (len > 0 && len < 30L * 1024 * 1024) {
                         byte[] buf = new byte[(int) len];
@@ -3892,7 +4520,7 @@ public class MainActivity extends Activity {
                             int off = 0, n;
                             while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
                         }
-                        DebugSink.bytes("export", "out-" + tier + ".jpg", buf, "image/jpeg");
+                        DebugSink.bytes("export", "out-" + tier + ext, buf, mime);
                     }
                 } catch (Throwable ignored) {}
                 final long secs = Math.max(1, (System.currentTimeMillis() - t0) / 1000);
@@ -3901,12 +4529,24 @@ public class MainActivity extends Activity {
                 final String sizeLabel = bytes > 0
                         ? String.format("%.1f MB", bytes / 1048576.0) : "?";
                 runOnUiThread(() -> {
+                    lastExportUri = outUri;
+                    lastExportMime = mime;
+                    // A separate control, and only when it has something to do:
+                    // every other format opens where it lands, and a permanent
+                    // share button on a photograph app reads as "post to
+                    // social", which is not what this is.
+                    if (sharePill != null) sharePill.setVisibility((tiff || dng) ? View.VISIBLE : View.GONE);
                     // Dimensions and file size together: "3.3 MB" alone reads as
                     // a bug when the frame is 16 MP, and the reason is worth
                     // saying out loud rather than guessing at later.
-                    showInAppToast("已保存 " + fw + "x" + fh + " · " + sizeLabel);
-                    statusText.setText("已导出 " + fw + "x" + fh + " · " + sizeLabel
-                        + "（" + secs + " 秒，其中渲染 " + (fRender / 1000.0) + " 秒）");
+                    final String canvas = overscanCanvasLabel();
+                    final String canvasNote = canvas.isEmpty() ? "" : " · 画布 " + canvas;
+                    final String tiffHint = tiff
+                            ? "（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）"
+                            : dng ? "（DNG：线性 16 位，给电脑上的 Lightroom / ACR；手机版打不开，已知问题，不必反馈）" : "";
+                    showInAppToast("已保存 " + fw + "x" + fh + canvasNote + " · " + sizeLabel + tiffHint);
+                    statusText.setText("已导出 " + fw + "x" + fh + canvasNote + " · " + sizeLabel
+                        + "（" + secs + " 秒，其中渲染 " + (fRender / 1000.0) + " 秒）" + tiffHint);
                     exportProgressBar.setVisibility(View.GONE);
                     setStep(2);
                 });
@@ -4026,8 +4666,15 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (session != null) session.close();
-        if (engine != null) engine.close();
+        stopPrefetch();
+        // Session *and* engine go down under the same lock the render runs
+        // under: a shelf card that is mid-`renderBegin` is holding device
+        // buffers owned by this engine, and tearing it down outside the lock
+        // is the same destroyed-buffer SIGSEGV one layer up.
+        synchronized (renderMutex) {
+            if (session != null) { session.close(); session = null; }
+            if (engine != null) { engine.close(); engine = null; }
+        }
         super.onDestroy();
     }
 }

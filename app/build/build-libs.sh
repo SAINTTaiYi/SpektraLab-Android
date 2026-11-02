@@ -30,8 +30,21 @@ mkdir -p "$DST"
 # 9.2 MB) build of the same soname. Swapping it is a silent ABI bet.
 cp "$CXXLIB" "$DST"/
 cp "$PREFIX/lib/liblcms2.so"      "$DST"/
-cp "$PREFIX/lib/libraw.so"        "$DST"/
-cp "$PREFIX/lib/libraw_r.so"      "$DST"/
+# LibRaw is ours now: the HE/HE* sniff in `src/metadata/tiff.cpp` is what
+# turns a Nikon high-efficiency NEF into a clean "unsupported" instead of
+# 34 million out-of-range pixels that the engine reports as "corrupt data".
+# It is built from source by app/build/build-libs-raw.sh and lands in
+# app/build/native/; the Termux package is only the fallback for a tree that
+# has not run that step.
+if [ -f app/build/native/libraw.so ]; then
+  echo "  libraw: patched build from app/build/native"
+  cp app/build/native/libraw.so    "$DST"/
+  cp app/build/native/libraw_r.so  "$DST"/
+else
+  echo "  libraw: WARNING falling back to the Termux package (no HE sniff)"
+  cp "$PREFIX/lib/libraw.so"        "$DST"/
+  cp "$PREFIX/lib/libraw_r.so"      "$DST"/
+fi
 cp "$PREFIX/lib/libjpeg.so.8"     "$DST"/libjpeg_8.so
 cp "$PREFIX/lib/libz.so.1"        "$DST"/libz_1.so
 cp app/build/native/libspektrafilm_engine.so "$DST"/

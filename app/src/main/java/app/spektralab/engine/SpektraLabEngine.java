@@ -198,6 +198,12 @@ public class SpektraLabEngine implements AutoCloseable {
             nativeSetParams(handle, paramsJson);
         }
 
+        /** The rebate's own layout: canvas_w/h, mm_per_px, vertical, gate quads.
+         *  `{"valid":false}` when the frame has no rebate. */
+        public String overscanGeometry() {
+            return nativeOverscanGeometry(handle);
+        }
+
         public String getParams() {
             return nativeGetParams(handle);
         }
@@ -273,6 +279,24 @@ public class SpektraLabEngine implements AutoCloseable {
             return nativeExportJpeg(handle, path, quality, stripRows, tier);
         }
 
+        /**
+         * The same render as 16-bit sRGB TIFF: no 8-bit quantisation, and the
+         * profile is in the file rather than assumed by the reader. Returns
+         * {width, height, renderMs, totalMs}.
+         */
+        public int[] exportTiff(String path, String tier) {
+            synchronized (RENDER_LOCK) { return nativeExportTiff(handle, path, tier); }
+        }
+
+        /**
+         * The same render as a linear 16-bit DNG. Linear on purpose: a DNG
+         * holds light, so Lightroom gets the whole ramp to develop instead of
+         * a curve it would have to guess and invert.
+         */
+        public int[] exportDng(String path, String tier) {
+            synchronized (RENDER_LOCK) { return nativeExportDng(handle, path, tier); }
+        }
+
         @Override
         public void close() {
             if (handle != 0) nativeCloseSession(handle);
@@ -303,12 +327,31 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeSetEnv(String name, String value);
     private static native long nativeCreateEngine(String resourcesDir);
     private static native void nativeDestroyEngine(long handle);
+    /** The rebate's layout for whatever was rendered last: canvas, mm/px, gate quads. */
+    private static native String nativeOverscanGeometry(long handle);
     private static native String nativeGetBuildInfo();
     private static native String nativeCapabilities(long handle);
     private static native String nativeMemoryReport(long handle);
     private static native long nativeOpenSession(long engineHandle, ByteBuffer pixels, int width, int height, int channels);
     /** The GPU as JSON: binding range, heaps, workgroup limits. */
     public String deviceProfile() { return nativeDeviceProfile(handle); }
+
+    /**
+     * Does this driver enforce the range it reports, or only say it?
+     *
+     * Nothing in the Vulkan API distinguishes the two: a descriptor whose
+     * range exceeds {@code maxStorageBufferRange} updates without complaint
+     * and the writes past the limit are dropped with no error at all. This
+     * asks the engine to find out -- it allocates a buffer larger than the
+     * reported range, binds the whole thing, and writes probes through it.
+     *
+     * @param needBytes the plane size we want; when the reported range
+     *                  already covers it this returns immediately without
+     *                  allocating anything.
+     * @return JSON: reported_range, cap, probe_ok, effective_range, skipped,
+     *         tiers[]. Never null; {@code "{}"} when the engine is gone.
+     */
+    public String probeCanary(long needBytes) { return nativeProbeCanary(handle, needBytes); }
 
     /** Stable code for an engine message, 0 for empty, 9000 for unrecognised. */
     public static int errorCode(String message) { ensureLoaded(); return nativeErrorCode(message); }
@@ -320,6 +363,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native int nativeErrorCode(String message);
     private static native int[] nativeRawSourceSize();
     private static native long nativeMaxPlaneBytes(long engineHandle);
+    private static native String nativeProbeCanary(long engineHandle, long needBytes);
     private static native long nativeOpenRawSession(long engineHandle, String filePath, String paramsJson,
                                                     int maxPixels, int maxLongEdge);
     private static native void nativeCloseSession(long sessionHandle);
@@ -335,5 +379,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native int nativeCopyArgbRange(int[] dst, int rowOffset, int rowCount);
     private static native void nativeRenderEnd();
     private static native int[] nativeExportJpeg(long handle, String path, int quality, int stripRows, String tier);
+    private static native int[] nativeExportTiff(long handle, String path, String tier);
+    private static native int[] nativeExportDng(long handle, String path, String tier);
     private static native String nativeSolve(long handle, String target);
 }

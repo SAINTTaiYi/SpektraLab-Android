@@ -1,0 +1,18 @@
+--- pristine/LibRaw-0.22.2/src/metadata/tiff.cpp	2026-07-15 14:00:07.000000000 +0800
++++ libraw-src/LibRaw-0.22.2/src/metadata/tiff.cpp	2026-11-02 01:42:18.074406404 +0800
+@@ -2260,9 +2260,12 @@
+       {
+         load_raw = &LibRaw::nikon_load_padded_packed_raw;
+       }
+-      else if ((!strncmp(model, "NIKON Z 9", 9) || !strncmp(model, "NIKON Z 8", 9) || !strcmp(model, "NIKON Z f")
+-		  || !strcmp(model, "NIKON Z6_3")) &&
+-               tiff_ifd[raw].offset)
++      // HE/HE* used to be recognised by a hard-coded list of four bodies
++      // (Z9, Z8, Zf, Z6III).  Every newer body -- Z50II included -- fell
++      // through to the lossless decoder, which then read a JPEG-XS bitstream
++      // as Huffman codes: tens of millions of out-of-range pixels instead of
++      // a clean "unsupported".  The stream says what it is, so sniff it.
++      else if (tiff_ifd[raw].offset)
+       {
+           INT64 pos = ftell(ifp);
+           unsigned char cmp[] = {0xff, 0x10, 0xff, 0x50 }; // JpegXS SOC + Cap

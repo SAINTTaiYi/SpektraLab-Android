@@ -64,6 +64,9 @@ public final class SpkError {
         if (code == 0) code = 9000;
         if (code == 9000 && isNativeLoadFailure(raw)) return "[E-9000] 引擎库没有加载成功";
         if (code == 1010) return "[E-1010] 画布超过单帧上限（约 42 MP）";
+        if (code == 1108) return "[E-1108] 解码未授权：请把相机改成「无损压缩」";
+        if (code == 1109) return "[E-1109] 缺少解码器：请先转成普通 DNG";
+        if (code == 1110) return "[E-1110] 机型未收录：请把原始文件发我";
         return "[E-" + code + "] " + explain(code);
     }
 
@@ -90,11 +93,30 @@ public final class SpkError {
                              + "请关掉片边，或按更小的尺寸重新导入";
             // 11xx — the file
             case 1101: return "RAW 打开失败：格式或压缩方式不受支持";
-            case 1102: return "RAW 解包失败：文件可能损坏或未下载完整";
+            case 1102: return "RAW 解包失败：文件确实损坏或没有下载完整（换一份重传试试）";
             case 1103: return "RAW 显影失败";
             case 1104: return "RAW 输出异常";
             case 1105: return "RAW 高光扩展失败";
             case 1106: return "RAW 解码失败";
+            // Not damage, and not something a smaller frame or a re-download
+            // fixes: Nikon's high-efficiency NEF is JPEG-XS, and the decoder
+            // for it is Nikon's to license. The cure is one camera setting, so
+            // the sentence is the setting.
+            case 1108: return "解码未授权：这是尼康高效率压缩（HE/HE★）RAW，"
+                             + "解 JPEG-XS 的授权不在本程序里。请改相机设置——"
+                             + "照片拍摄菜单 → RAW 记录 → 无损压缩；"
+                             + "已经拍好的这张，请用 NX Studio 或 Adobe DNG Converter 转成 DNG 再导入";
+            // No decoder in this build, and no way to add one without the
+            // codec's own library. A different converter for each, so two
+            // sentences; one code, because the cure is always "convert".
+            case 1109: return "这个文件用的是本机没有解码器的压缩（DNG 的 JPEG XL，"
+                             + "或 GoPro GPR 的 VC-5）。请先用 Adobe DNG Converter 转成普通 DNG"
+                             + "（选无损压缩），GoPro 的文件请先用 GoPro Player 导出 DNG 或 TIFF";
+            // The decoder has tables for specific bodies. A new one is not a
+            // broken file, and saying "corrupt" would send the user to their
+            // card reader for nothing.
+            case 1110: return "这台相机还没有收录进解码器的机型表，这一档压缩暂时解不了。"
+                             + "请把这张原始文件（不要压缩、不要截图）发我，我加上机型支持";
             // 12xx — the render graph
             case 1201: return "该效果在当前图形后端上尚未实现";
             case 1202: return "渲染没有输出像素";

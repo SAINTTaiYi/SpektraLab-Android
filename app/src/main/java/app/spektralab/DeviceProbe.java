@@ -12,6 +12,13 @@ import org.json.JSONObject;
  * is a hard ceiling on the frame — 128 MiB is 11.2 MP, 256 MiB is 22.4 MP, and
  * a phone that reports 128 MiB fails at 4700 pixels on the long edge with
  * "buffer exceeds maxStorageBufferRange". Measured, not guessed.
+ *
+ * <p>But a reported number is a claim, and the canary is the check on it. On
+ * Adreno, bounding a descriptor past {@code maxStorageBufferRange} is not an
+ * error the API reports: the update succeeds, the dispatch runs in about a
+ * millisecond, and the writes past the limit are simply dropped. A driver that
+ * over-reports its range and one that does not are indistinguishable from the
+ * outside — {@link #applyCanary} is what tells them apart, by writing.
  */
 public final class DeviceProbe {
 
@@ -40,11 +47,27 @@ public final class DeviceProbe {
      */
     public static final int HARD_PIXEL_CAP = 42_000_000;
 
+    /**
+     * The plane size one frame at {@link #HARD_PIXEL_CAP} needs, in bytes.
+     *
+     * This is what the canary is asked to reach: if the reported binding range
+     * already covers it, there is nothing to learn and the probe returns
+     * without allocating. 504 MB -- below every Adreno 6xx/7xx/8xx report, and
+     * above the 128 MiB that 7xx devices claim.
+     */
+    public static final long CANARY_NEED_BYTES = HARD_PIXEL_CAP * 12L;
+
     public final String backend;
     public final String device;
     public final long maxStorageBufferRange;   // 0 = no per-binding limit
     public final long heapDeviceLocal;
     public final int maxWorkgroupCount;
+    /** The other two ceilings a frame can hit, carried for the report. */
+    public final long maxMemoryAllocation;
+    public final int maxImage2d;
+    public final int maxWorkgroupInvocations;
+    public final String api;
+    public final String driver;
     /**
      * False when the profile could not be read at all.
      *
@@ -59,42 +82,112 @@ public final class DeviceProbe {
      */
     public final boolean valid;
 
-    private DeviceProbe(String backend, String device, long range, long heap, int workgroups) {
-        this(backend, device, range, heap, workgroups, true);
-    }
+    /** Did the canary run this session, and what did it find? */
+    public boolean canaryRan = false;
+    public boolean canaryPassed = false;
+    public long canaryEffectiveRange = 0;
+    public String canarySkipped = "";
+    public String canaryTiers = "";
+    /** Milliseconds the engine spent walking the tiers, 0 when it skipped. */
+    public long canaryMillis = 0;
 
     private DeviceProbe(String backend, String device, long range, long heap, int workgroups,
-                        boolean valid) {
+                        boolean valid, long maxAllocation, int image2d, int invocations,
+                        String api, String driver) {
         this.backend = backend;
         this.device = device;
         this.maxStorageBufferRange = range;
         this.heapDeviceLocal = heap;
         this.maxWorkgroupCount = workgroups;
         this.valid = valid;
+        this.maxMemoryAllocation = maxAllocation;
+        this.maxImage2d = image2d;
+        this.maxWorkgroupInvocations = invocations;
+        this.api = api == null ? "?" : api;
+        this.driver = driver == null ? "?" : driver;
     }
 
     /** Never throws: an unreadable profile is a device that claims no limits. */
     public static DeviceProbe parse(String json) {
         try {
-            if (json == null || json.length() < 3) return new DeviceProbe("?", "?", 0, 0, 0, false);
+            if (json == null || json.length() < 3) return missing();
             JSONObject o = new JSONObject(json);
-            if (!o.has("max_storage_buffer_range")) return new DeviceProbe("?", "?", 0, 0, 0, false);
+            if (!o.has("max_storage_buffer_range")) return missing();
             return new DeviceProbe(
                     o.optString("backend", "?"),
                     o.optString("device", "?"),
                     o.optLong("max_storage_buffer_range", 0),
                     o.optLong("heap_device_local", 0),
-                    o.optInt("max_workgroup_count", 0));
+                    o.optInt("max_workgroup_count", 0),
+                    true,
+                    o.optLong("max_memory_allocation", 0),
+                    o.optInt("max_image_2d", 0),
+                    o.optInt("max_workgroup_invocations", 0),
+                    o.optString("api", "?"),
+                    o.optString("driver", "?"));
         } catch (Throwable t) {
-            return new DeviceProbe("?", "?", 0, 0, 0, false);
+            return missing();
         }
+    }
+
+    private static DeviceProbe missing() {
+        return new DeviceProbe("?", "?", 0, 0, 0, false, 0, 0, 0, "?", "?");
+    }
+
+    /**
+     * Adopt a canary result produced by {@code SpektraLabEngine.probeCanary}.
+     *
+     * The engine's answer is authoritative about what it measured and says
+     * nothing it did not: {@code probe_ok} is whether writes past the reported
+     * range landed, {@code effective_range} is the largest tier that did. A
+     * skipped run means the reported range already covers what we want, which
+     * is a pass -- there is nothing above it we need.
+     *
+     * A malformed or absent document leaves the probe exactly as it was: the
+     * reported number is a valid fallback, and a failed measurement must never
+     * be read as a permissive one.
+     */
+    public void applyCanary(String json) {
+        if (json == null || json.length() < 3) return;
+        try {
+            JSONObject o = new JSONObject(json);
+            if (!o.has("probe_ok")) return;
+            canaryRan = true;
+            canaryPassed = o.optBoolean("probe_ok", false);
+            canaryEffectiveRange = o.optLong("effective_range", maxStorageBufferRange);
+            canarySkipped = o.optString("skipped", "");
+            if (canaryEffectiveRange <= 0) canaryEffectiveRange = maxStorageBufferRange;
+            org.json.JSONArray tiers = o.optJSONArray("tiers");
+            canaryTiers = tiers == null ? "[]" : tiers.toString();
+        } catch (Throwable ignored) {
+            // Leave the probe alone.
+        }
+    }
+
+    /** True when the canary actually allocated and wrote something. */
+    public boolean canaryMeasured() {
+        return canaryRan && canaryEffectiveRange > 0 && canaryEffectiveRange != maxStorageBufferRange;
+    }
+
+    /**
+     * The range this driver will actually honour.
+     *
+     * The canary only ever raises it. A device that reports 128 MiB and takes
+     * 1 GiB is the case worth having: it is the difference between importing
+     * 11 MP and importing 42 MP on a 2023 flagship. A canary that failed or
+     * never ran leaves the reported number in place, because an unmeasured
+     * device is not a permissive one.
+     */
+    public long effectiveStorageRange() {
+        if (canaryRan && canaryPassed && canaryEffectiveRange > maxStorageBufferRange)
+            return canaryEffectiveRange;
+        return maxStorageBufferRange;
     }
 
     /** Largest frame the binding range allows, with 20% headroom. */
     public long maxPixelsByBinding() {
-        return maxStorageBufferRange > 0
-                ? (long) (maxStorageBufferRange / 12.0 * 0.80)
-                : Long.MAX_VALUE;
+        final long range = effectiveStorageRange();
+        return range > 0 ? (long) (range / 12.0 * 0.80) : Long.MAX_VALUE;
     }
 
     /**
@@ -141,10 +234,60 @@ public final class DeviceProbe {
         StringBuilder sb = new StringBuilder(device == null || device.isEmpty() ? "GPU" : device);
         if (maxStorageBufferRange > 0) {
             sb.append(" · 单缓冲 ").append(Math.round(maxStorageBufferRange / 1048576.0)).append(" MiB");
-            sb.append(" · 上限 ").append(String.format("%.1f", maxMegapixels())).append(" MP");
+            sb.append(" · 上限 ").append(String.format(java.util.Locale.US, "%.1f", maxMegapixels())).append(" MP");
+            if (canaryMeasured()) {
+                sb.append(" · 实测可到 ").append(Math.round(effectiveStorageRange() / 1048576.0)).append(" MiB");
+            } else if (canaryRan && canaryPassed) {
+                sb.append(" · 实测确认");
+            } else if (canaryRan) {
+                sb.append(" · 实测未能突破");
+            }
         } else {
             sb.append(" · 无单缓冲上限");
         }
         return sb.toString();
+    }
+
+    /**
+     * This device, as the one document the report endpoint accepts.
+     *
+     * Capability only. No photograph, no file name, no account, no identifier
+     * that outlives the install -- the fields are the ones a GPU database
+     * would hold, plus the frame budget this build derived from them.
+     */
+    public JSONObject reportJson(String appVersion, int appCode, String androidRelease,
+                                 int sdk, String brand, String model, String deviceCode,
+                                 long budgetPixels) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("v", 1);
+            o.put("app", appVersion);
+            o.put("app_code", appCode);
+            o.put("android", androidRelease);
+            o.put("sdk", sdk);
+            o.put("brand", brand);
+            o.put("model", model);
+            o.put("device", deviceCode);
+            o.put("gpu", this.device == null ? "?" : this.device);
+            o.put("api", this.api);
+            o.put("driver", this.driver);
+            o.put("range", this.maxStorageBufferRange);
+            o.put("alloc", this.maxMemoryAllocation);
+            o.put("img2d", this.maxImage2d);
+            o.put("wg_inv", this.maxWorkgroupInvocations);
+            o.put("wg_count", this.maxWorkgroupCount);
+            o.put("heap0", this.heapDeviceLocal);
+            o.put("valid", this.valid);
+            o.put("canary_ran", this.canaryRan);
+            o.put("canary_ok", this.canaryPassed);
+            o.put("canary_effective", this.canaryEffectiveRange);
+            o.put("canary_skipped", this.canarySkipped);
+            o.put("canary_tiers", this.canaryTiers);
+            o.put("budget_px", budgetPixels);
+            o.put("limited", isLimited());
+            o.put("ts", System.currentTimeMillis() / 1000L);
+        } catch (Throwable ignored) {
+        }
+        return o;
     }
 }

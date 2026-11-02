@@ -141,7 +141,13 @@ JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle,
     if (open_json) spk_string_free(open_json);
     
     if (!session) {
-        throw_runtime(env, "spk_open failed after RAW decode");
+        // Same rule as the plain open: the engine has a reason, and a message
+        // without it classifies as [E-9000] 未归类 -- the one answer that
+        // tells neither the user nor the log anything.
+        char msg[512];
+        std::snprintf(msg, sizeof msg, "spk_open failed after RAW decode: %s",
+                      spk_last_error(engine));
+        throw_runtime(env, msg);
         return 0;
     }
     
