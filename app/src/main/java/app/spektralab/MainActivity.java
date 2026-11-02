@@ -4059,12 +4059,24 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) { }
         session.setParams(String.format(java.util.Locale.US,
             "{\"film_stock\":\"%s\",\"print_stock\":\"%s\","
+            // The file's own colour space and transfer function. A camera
+            // JPEG is sRGB *already encoded*: read as ProPhoto linear (the
+            // engine default, which is right for a decoded RAW) its mid-tones
+            // print about 1.5 stops down with the top 5% flattened from 193
+            // to 126 -- the "grey and flat after the update" report. These
+            // are not `is_live` fields, so they must ride the same delta as
+            // the stock, which has already asked for a rebuild.
+            + "\"input_color_space\":\"%s\",\"input_cctf_decoding\":%s,\"auto_exposure\":%s,"
             + "\"output_color_space\":\"sRGB\",\"preview_long_edge\":%d,"
             + "\"print_exposure\":%.2f,\"grain_amount\":%.3f,\"halation_amount\":%.3f,"
             + "\"glare_amount\":%.3f,\"film_format_mm\":%.1f,"
             + "\"overscan_active\":%s,\"overscan_format\":\"%s\",\"overscan_edge_text\":\"%s\","
             + "\"date_imprint_active\":%s,\"date_imprint_text\":\"%s\",\"date_imprint_style\":\"lcd\"}",
-            stock, printStock, longEdge,
+            stock, printStock,
+            isRawFile ? "ProPhoto RGB" : "sRGB",
+            isRawFile ? "false" : "true",
+            isRawFile ? "true" : "false",
+            longEdge,
             printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm,
             overscanOn ? "true" : "false", overscanFormat, edgeTextFor(stock),
             dateOn ? "true" : "false", dateOn ? imprintDate() : ""
