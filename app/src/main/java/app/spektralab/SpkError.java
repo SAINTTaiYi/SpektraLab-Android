@@ -26,8 +26,23 @@ public final class SpkError {
     }
 
     /** "[E-1001] 中文说明" plus the engine's own text, which carries the numbers. */
+    /**
+     * The picker's grant, gone. Not an engine failure at all: a `content://`
+     * URI is valid only while the process that received the grant lives, and
+     * the ColorOS file manager will not make it persistable.
+     */
+    private static final String IMPORT_PERMISSION =
+            "照片的读取权限已失效（系统收回了文件选择器给的临时授权）。请点「导入」重新选择这张照片";
+
+    static boolean isPermissionFailure(String raw) {
+        if (raw == null) return false;
+        return raw.contains("SecurityException") || raw.contains("Permission Denial")
+                || raw.contains("that is not exported") || raw.contains("not exported from UID");
+    }
+
     public static String format(String raw) {
         if (raw == null || raw.isEmpty()) return "[E-0000] 未知错误";
+        if (isPermissionFailure(raw)) return "[E-1304] " + IMPORT_PERMISSION + "（" + raw + "）";
         int code = codeOf(raw);
         if (code == 0) code = 9000;
         if (code == 9000 && isNativeLoadFailure(raw)) {
@@ -60,6 +75,7 @@ public final class SpkError {
 
     /** Short form for a status line, without the engine text. */
     public static String shortForm(String raw) {
+        if (isPermissionFailure(raw)) return "[E-1304] 照片权限已失效，请重新导入";
         int code = codeOf(raw);
         if (code == 0) code = 9000;
         if (code == 9000 && isNativeLoadFailure(raw)) return "[E-9000] 引擎库没有加载成功";
@@ -77,7 +93,9 @@ public final class SpkError {
             case 1002: return "渲染调度超出本机上限（图像太大）";
             case 1003: return "显存不足";
             case 1004: return "GPU 驱动被重置（过热或单次运算过久），请等机器凉下来再试";
-            case 1005: return "本机没有可用的 Vulkan 驱动";
+            case 1005: return "本机没有可用的 Vulkan 驱动，或驱动版本低于引擎要求"
+                             + "（需要 Vulkan 1.1 以上的计算管线）。"
+                             + "换个系统版本更新的机器试试；同一台机器升级系统也可能解决";
             case 1006: return "本机驱动能力低于本程序的最低要求";
             case 1007: return "该效果在当前图形后端上尚未实现";
             case 1008: return "图形资源创建失败";
@@ -89,6 +107,9 @@ public final class SpkError {
             case 1009: return "图形后端调用失败（大图多为显存不足）：可关掉片边、或按较小尺寸重新导入后重试";
             // The rebate's canvas, which is a frame of its own: a source that
             // fits can still lay out a canvas that cannot be rendered.
+            case 1011: return "渲染引擎没能在这台设备上启动：Vulkan 设备建立失败，"
+                             + "多半是驱动不完整或显存被别的应用占着。"
+                             + "重启手机再试一次；仍然不行就是这台机器的驱动跑不了这个引擎";
             case 1010: return "开了片边之后，画布超过了安卓端冲洗引擎的单帧上限（约 42 MP）："
                              + "请关掉片边，或按更小的尺寸重新导入";
             // 11xx — the file
@@ -124,6 +145,7 @@ public final class SpkError {
             case 1301: return "胶片或相纸名称无效";
             case 1302: return "参数超出允许范围";
             case 1303: return "会话状态异常，请重新导入照片";
+            case 1304: return IMPORT_PERMISSION;
             // 2xxx — the update channel
             case 2001: return "检查更新失败：网络不可用，或公告地址被当前网络拦截";
             case 2002: return "更新公告格式错误";

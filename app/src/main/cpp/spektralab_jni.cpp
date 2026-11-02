@@ -39,10 +39,15 @@ static std::string g_resources_dir;
 #define LOGE(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
-static void throw_runtime(JNIEnv* env, const char* msg) {
+static void throw_runtime(JNIEnv* env, const char* format, ...) {
     if (env->ExceptionCheck()) return;
+    char buffer[1024];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
     jclass cls = env->FindClass("java/lang/RuntimeException");
-    if (cls) { env->ThrowNew(cls, msg); env->DeleteLocalRef(cls); }
+    if (cls) { env->ThrowNew(cls, buffer); env->DeleteLocalRef(cls); }
 }
 
 static void throw_status(JNIEnv* env, spk_status st) {
@@ -107,7 +112,16 @@ JNI(jlong, nativeCreateEngine)(JNIEnv* env, jclass, jstring resourcesDir) {
     // in rather than let the reader guess.
     g_resources_dir = dir;
     env->ReleaseStringUTFChars(resourcesDir, dir);
-    if (!engine) { throw_runtime(env, "spk_engine_create failed"); return 0; }
+    if (!engine) {
+        // `spk_last_error` ignores its handle: the slot is per-thread, and the
+        // engine is exactly what does not exist here. Without this the app has
+        // nothing but "failed" to show, which is how every driver problem
+        // became an E-9000.
+        const char* why = spk_last_error(nullptr);
+        throw_runtime(env, "spk_engine_create failed: %s",
+                      (why && *why) ? why : "no reason reported");
+        return 0;
+    }
     return reinterpret_cast<jlong>(engine);
 }
 
@@ -453,9 +467,16 @@ static void trim_to_canvas(spk_session* session, spk_result& r, const std::strin
     if (cw <= 0 || ch <= 0) return;
     if (long(r.width) == cw && long(r.height) == ch) return;
     prog_line(progPath, "geometry: result %ux%u, canvas %ldx%ld", r.width, r.height, cw, ch);
-    if (long(r.width) == cw && ch < long(r.height)) {
+    // The canvas is drawn into the buffer's **top-left** (that is the shape of
+    // this engine bug, and the reason this function exists). Cropping to the
+    // canvas is therefore right whenever the buffer is the bigger one -- the
+    // old version only did it when the widths already agreed, so a full export
+    // whose width differed kept the whole buffer and showed the bottom rebate
+    // in the middle of the file: "preview is fine, export is flying".
+    if (cw <= long(r.width) && ch <= long(r.height)) {
+        r.width = uint32_t(cw);
         r.height = uint32_t(ch);
-        prog_line(progPath, "geometry: trimmed to the canvas, %ux%u", r.width, r.height);
+        prog_line(progPath, "geometry: cropped to the canvas, %ux%u", r.width, r.height);
     }
 }
 
