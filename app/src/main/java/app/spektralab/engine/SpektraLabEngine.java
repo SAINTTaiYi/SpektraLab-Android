@@ -126,6 +126,21 @@ public class SpektraLabEngine implements AutoCloseable {
         return new SpektraLabEngine(handle);
     }
 
+    /**
+     * Debug only: an environment variable the native side reads when it creates
+     * the Vulkan device.
+     *
+     * <p>`SPEKTRAFILM_STORAGE_LIMIT` is how a phone whose driver reports a 2 GiB
+     * binding range is made to behave like one that reports 128 MiB -- which is
+     * the device class the banded renderer exists for (docs/tiling.md, P0) and
+     * which is not in this drawer. It can only lower the limit; the engine
+     * refuses a value above what the driver advertises.
+     */
+    public static void setEnv(String name, String value) {
+        ensureLoaded();
+        nativeSetEnv(name, value);
+    }
+
     public static String buildInfo() {
         ensureLoaded();
         return nativeGetBuildInfo();
@@ -137,6 +152,17 @@ public class SpektraLabEngine implements AutoCloseable {
     }
 
     /** Buffer ledger: what the engine holds and where it was allocated. */
+    /**
+     * Drop the pooled render buffers that nothing is using, and say how many
+     * bytes that gave back. Called after an export: the pool keeps a full
+     * render's working set by design, and on a big frame that is more device
+     * memory than the rest of the phone can afford to lose.
+     */
+    public long trimPool() {
+        if (handle == 0) return 0;
+        return nativeTrimPool(handle);
+    }
+
     public String memoryReport() {
         return nativeMemoryReport(handle);
     }
@@ -170,10 +196,13 @@ public class SpektraLabEngine implements AutoCloseable {
      * render time with "buffer exceeds maxStorageBufferRange".
      */
     public int maxFramePixels() {
-        long limit = nativeMaxPlaneBytes(handle);
-        if (limit <= 0) return 0;                 // no limit: caller decides
-        double px = limit / 12.0 * 0.80;          // 20% headroom for wider planes
-        return (int) Math.min(px, Integer.MAX_VALUE);
+        // **0: no binding ceiling.** `nativeMaxPlaneBytes` still reports what the
+        // driver advertises, and `describe()` still shows it, but a frame is no
+        // longer bounded by it -- the renderer bands every pass that would
+        // otherwise need the whole plane (docs/tiling.md, P0). The budget is the
+        // memory one; returning the old range/12 figure here would quietly
+        // reinstate the 8.95 MP ceiling on every 128 MiB device.
+        return 0;
     }
 
     @Override
@@ -207,6 +236,36 @@ public class SpektraLabEngine implements AutoCloseable {
         public String getParams() {
             return nativeGetParams(handle);
         }
+
+        public String sourceExifJson() { return nativeRawExifJson(handle); }
+
+        /**
+         * Writes this session's persistent planes -- its source and every tier
+         * it has rendered -- to a scratch file and releases the device copies,
+         * so a job that needs the memory more can have it. {@link #resume}
+         * reads them back and the session is exactly as it was.
+         *
+         * <p>Returns false when no scratch file could be created; the session
+         * is untouched in that case, and the caller should carry on. This is
+         * not a cache and not an error path: it is the difference between an
+         * export holding one frame's planes and two.
+         */
+        public boolean suspend() {
+            if (suspended) return true;
+            suspended = nativeSuspendSession(handle) == 0;
+            return suspended;
+        }
+
+        /** Undo {@link #suspend}. A no-op when nothing was suspended. */
+        public boolean resume() {
+            if (!suspended) return true;
+            suspended = nativeResumeSession(handle) == 0;
+            return suspended;
+        }
+
+        public boolean isSuspended() { return suspended; }
+
+        private boolean suspended;
 
         public int[] getDimensions() {
             return nativeGetSessionDimensions(handle);
@@ -332,6 +391,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native String nativeGetBuildInfo();
     private static native String nativeCapabilities(long handle);
     private static native String nativeMemoryReport(long handle);
+    private static native long nativeTrimPool(long handle);
     private static native long nativeOpenSession(long engineHandle, ByteBuffer pixels, int width, int height, int channels);
     /** The GPU as JSON: binding range, heaps, workgroup limits. */
     public String deviceProfile() { return nativeDeviceProfile(handle); }
@@ -356,12 +416,18 @@ public class SpektraLabEngine implements AutoCloseable {
     /** Stable code for an engine message, 0 for empty, 9000 for unrecognised. */
     public static int errorCode(String message) { ensureLoaded(); return nativeErrorCode(message); }
 
+    /** Read this session's source capture fields, if it came from a RAW. */
+    public static String rawExifJson(Session session) {
+        return session == null ? "{}" : session.sourceExifJson();
+    }
+
     /** The RAW decoder's own frame size, before the device cap shrank it. */
     public static int[] rawSourceSize() { ensureLoaded(); return nativeRawSourceSize(); }
 
     private native String nativeDeviceProfile(long engineHandle);
     private static native int nativeErrorCode(String message);
     private static native int[] nativeRawSourceSize();
+    private static native String nativeRawExifJson(long sessionHandle);
     private static native long nativeMaxPlaneBytes(long engineHandle);
     private static native String nativeProbeCanary(long engineHandle, long needBytes);
     private static native long nativeOpenRawSession(long engineHandle, String filePath, String paramsJson,
@@ -382,4 +448,10 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native int[] nativeExportTiff(long handle, String path, String tier);
     private static native int[] nativeExportDng(long handle, String path, String tier);
     private static native String nativeSolve(long handle, String target);
+
+    // Residency, for the export path: a whole frame's plane written to a
+    // scratch file and given back. Refused (non-zero) when the host named no
+    // writable scratch directory, which leaves the session as it was.
+    private static native int nativeSuspendSession(long sessionHandle);
+    private static native int nativeResumeSession(long sessionHandle);
 }

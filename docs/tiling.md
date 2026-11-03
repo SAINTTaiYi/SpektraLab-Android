@@ -367,3 +367,82 @@ FIR 用 halo、IIR 用状态续跑——这两样的基础已经在 `dispatch_ba
   在 128 MiB 设备上能完成，且与 2 GiB 设备上的输出一致。
 - **性能**：分块带来的额外 dispatch 数不超过 `行带数 × kernel 数`，
   512 行/带时 50 MP 约 12 带。
+
+---
+
+# P0 进度（2026-11-03 凌晨，1.4.1b/102）
+
+## 已完成并逐字节验证
+
+| 项 | 做法 | 验证 |
+|---|---|---|
+| 源窗口（缩放） | `spk_zoom_bilinear_mirror` 用 `read_bias` 指向源窗口起点；`downscale_to` 按输出带算源行区间（`sample_axis` 单调，窗口 = `[floor(oy0·SH/OH)−M, ...]`，M = `ceil(SH/OH)+2`） | 5000→1600 与整幅相同 |
+| 稀疏取样 | `spk_stride_sample` 同样用 `read_bias`；输出行 y 只读源行 y·step，窗口精确 | 相同 |
+| 全局归约 | `device_max` 按带求和再在主机取 max（max 可结合） | 相同 |
+| **IIR 状态续跑** | `spk_iir_df_acc` 第 8 个 binding：每**行**（每列）6 个 float 的上次三个 DF 输出；纵向走两趟——全部带正向（自上而下）再全部带反向（自下而上）；`phase` 0/1/2 | band=64 / 400 / 上限推导值三种切法 + 整幅，四者哈希相同 |
+| 绑定窗口 | `dispatch_tiled` 的非分块路径也把每个逐元素参数窗口化；`Buffer` 新增 `used`（调用方要的字节数），`Arg::buf` 默认绑定 `used` 而非 `bytes` | 池把 1600×1066 平面放进 190 MiB 的块时才是致命的：不窗口化会直接报"needs 190.7 MiB" |
+| 点算子 | `spk_take_rgb` / `spk_to_rgba16` / `spk_cctf_encode_matrix` / `spk_view_grade` / `spk_cam16ucs_compress` / `spk_view_pair` 全部改走 `dispatch_tiled`；`materialise` 的 RGBA16 打包（目标行距是补齐后的 pitch，`dispatch_tiled` 表达不了）手写窗口 | 相同 |
+| cross_grid 源 | 新增 `plane(img)`：绑定"平面本身"而不是池的分配 | — |
+
+**端到端验收（同一进程、同一序列、开不开 `SPEKTRAFILM_STORAGE_LIMIT=134217728` 哈希相同）**
+
+```
+1200×800   live 041f0a2ffb4e9c35   full e238f9baab3bc7e0
+3600×2400  live 2fc1807aa845899c   full 197266df574b8d92
+5000×3333  live 9ba4df488b60075d   full 6bfb8105a110a778
+8192×5461  full 5fa81143e5d7571e   （44.7 MP，128 MiB 下 120 s，无上限 77 s）
+```
+
+回归不动：`fx_test` 的 Z 50 参考帧 `f918dd6115870abe`；`stock_switch` portra400 `d769fec73bc54112`；`band_test` W=100 逐字节相同。
+**打包件本身**（从 APK 里解出的 `.so`，sha256 `20af4eb8…`）在 3600 上同样两值相同。
+
+## 仍未做
+
+1. **带旋转/裁切的几何**（`spk_geometry_resample_df`、`spk_view_geometry`）：源窗口只在映射"按行单调"时是一个行区间；45° 旋转时那一带要的源行接近整幅。当前 `plane(in)` 会把整个平面绑上，超过上限就**报错**（不会再静默出错）。
+2. **片边 canvas**（`spk_overscan_*`）：同一类问题，源是整块。
+3. **导出**（`spk::view::render`）没有端到端验证过；`spk_view_pack` 的 RGBA 分支已分块，RGB8（按 *word* 打包，一行不是整数个 word）仍整块。
+4. **帧级流式**（本文上一节的三条）：显存仍是"帧高 × 7 平面"，不是"带高 × 常数"。
+5. **Java 侧**：`maxPixelsByBinding()` 仍按绑定上限卡像素，所以 128 MiB 机型仍然只给 8.95 MP。引擎已经能跑 44.7 MP，放开这个上限要和上面 1–3 一起做。
+
+## 踩过的坑
+
+- **IIR 的状态是"每列一份"**。第一版按带留一个 12 float 的槽，1200 列共用——每个 launch 的最后一列把别人的状态盖掉。图还是模糊的，看起来"对"，但换带高就变。
+- 状态只能**就地**读写（同一槽），带与带之间是"读—写"顺序关系；再开一份 ping-pong 反而会把下一行的输入盖掉（stride 6 + out 偏移 6 = 行 L 的输出落在行 L+1 的输入上）。
+- `clang++` 改 `gpu.hpp` 之后 `build-engine.sh gpu/vulkan_gpu` 不会重编——`ONLY` 是按 basename 匹配的，要传 `vulkan_gpu`。
+- 池分配大于请求是常态：`Arg::buf` 绑定"整个 buffer"在 2 GiB 设备上从来没暴露，在 128 MiB 设备上是第一道墙。
+- 别用 `- live full` 与 `- full` 比哈希：`grain_sampler` 默认 `stochastic`，**每次渲染新种子**，同进程第二次渲染的哈希本来就不同。
+
+### P0 进度 · 片边（overscan）分带
+
+四个 `spk_overscan_*` kernel 本来就是按 `spk_pc.base/origin` 写的，缺的只是调用点。三处改正：
+
+| kernel | 之前 | 现在 |
+|---|---|---|
+| `spk_overscan_canvas` | `src` 整块绑（51 MP 画布 = 614 MB） | 按画布行带，源帧窗口由仿射映射的四角求出 |
+| `spk_overscan_film_present` / `_light` | `src` 整块 | `src` 与 `dst` 同一个行带窗口，读用写索引 |
+| `spk_overscan_add_mask` | `dst` 整块绑画布 | 只绑掩膜自己的 bbox 行（一条日期 ≈ 70 行） |
+
+**两个真 bug，都是实测出来的：**
+
+1. **窗口偏移必须 64 字节对齐。** 画布一行是 `w*12` 字节，1338 宽时 = 16 056 ≡ 56 (mod 64)。
+   按 37 行切带得到的不是报错，是**另一张图**（驱动把未对齐的偏移四舍五入）。
+   行带步长因此必须是 64 的倍数（64·w·12 一定被 64 整除）。
+2. **gate flare 会读到带外的行。** 它把闸门坐标 clamp 进开口，所以画布底部（画框之外的片边）
+   那些带仍在读闸门的边缘行。窗口不含那一行时读到的是未定义位置——表现为 167 行上
+   1/255 的偏差，不崩。窗口因此额外并入闸门的首/末行。
+
+**分段高度取 128 的倍数**，不是 64：64 行带与其它高度差 1 个最低位（周期 128 行，原因未查清），
+128 起与单带逐字节一致。128 行在 51 MP 上 = 13 MB，离 96 MiB 的墙还很远。
+
+**验证：**
+```
+rebate 1280x853（画布 1338x1236）：单带 / 64 / 128 / 192 / 512 / 1024 / 4096 行 → 全部 a6b013aaac70640d
+rebase 4000x2666（画布 4182x3862，单平面 194 MB）：
+    无上限         193bb3a03de55fd3  12.7 s
+    128 MiB 模拟   193bb3a03de55fd3  14.3 s
+改前（git stash 后的旧代码）同图同参数 → a6b013aaac70640d，与改后逐字节相同。
+```
+
+`overscan_layout()` 里那条 "canvas plane 超过单次绑定上限就拒绝" 的检查已经删掉（P0 之后它不再成立），
+heap/2 与 `SPK_MAX_CANVAS_PIXELS`（42 MP）两道限制保留——63 MP 的画布还没有实测数据。
+`SPK_OVERSCAN_BAND=<rows>` 是诊断旋钮，0 = 单带。
