@@ -42,8 +42,12 @@ public final class DeviceProbe {
      * The dispatch wall is fixed, so what is left is memory: the pool peaks at
      * 6.3 live planes, 76 bytes per pixel. On the SM8735 here that is 37.5 MP
      * in 2.7 GB (32 s), 42.7 MP in 57 s, and 44.8 MP loses the device inside
-     * `spk_iir_df_acc`. A device with more free memory can go higher, but not
-     * past this until the number is re-measured on it.
+     * `spk_iir_df_acc`.
+     *
+     * <p>**No longer an import ceiling.** It survives as the canary's target
+     * ({@link #CANARY_NEED_BYTES}) and as the answer when free memory cannot be
+     * read at all. A frame above it is not refused: the user is asked whether
+     * to shrink or to force the original size.
      */
     public static final int HARD_PIXEL_CAP = 42_000_000;
 
@@ -208,9 +212,12 @@ public final class DeviceProbe {
         return Math.max(0, availableBytes - reserve) / (12L * 7 + 16);
     }
 
-    /** Largest frame imported without asking. */
+    /**
+     * Largest frame the *driver's range* allows. Not an import ceiling any
+     * more: memory is (`maxPixelsByMemory`), and above that the user is asked.
+     */
     public long maxPixels() {
-        return Math.min(maxPixelsByBinding(), HARD_PIXEL_CAP);
+        return maxPixelsByBinding();
     }
 
     /**
@@ -220,7 +227,14 @@ public final class DeviceProbe {
      */
     public boolean isLimited() {
         if (!valid) return true;
-        return maxStorageBufferRange > 0 && maxPixelsByBinding() < DISPATCH_PIXEL_CAP;
+        // **A binding range is not a frame limit any more.** Every pass that
+        // would once have needed a whole plane is banded (docs/tiling.md, P0),
+        // and the canary lifts the reported range on devices that enforce more
+        // than they advertise. What is left is memory, and `maxPixelsByMemory`
+        // reports that on its own. Keeping the old test here told 34.5% of
+        // devices they were capped at 8.95 MP while the renderer would have
+        // taken three times that.
+        return false;
     }
 
     /** Megapixels the device can take, for a label. */
@@ -233,8 +247,11 @@ public final class DeviceProbe {
         if (!valid) return "设备信息读取失败";
         StringBuilder sb = new StringBuilder(device == null || device.isEmpty() ? "GPU" : device);
         if (maxStorageBufferRange > 0) {
-            sb.append(" · 单缓冲 ").append(Math.round(maxStorageBufferRange / 1048576.0)).append(" MiB");
-            sb.append(" · 上限 ").append(String.format(java.util.Locale.US, "%.1f", maxMegapixels())).append(" MP");
+            // "上限 X MP" used to be printed here from the binding range and
+            // read as a hard ceiling. There is none: the renderer bands a frame
+            // that does not fit one binding, and the import asks before it
+            // shrinks anything.
+            sb.append(" · 单缓冲 ").append(Math.round(maxStorageBufferRange / 1048576.0)).append(" MiB（分块）");
             if (canaryMeasured()) {
                 sb.append(" · 实测可到 ").append(Math.round(effectiveStorageRange() / 1048576.0)).append(" MiB");
             } else if (canaryRan && canaryPassed) {

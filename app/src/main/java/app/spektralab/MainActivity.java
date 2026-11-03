@@ -30,6 +30,13 @@ public class MainActivity extends Activity {
     /** The canary runs once per process, on its own thread. */
     private boolean canaryStarted = false;
     /** Set by the long-press on 导入: keep the decoder's own size and say it may fail. */
+    // **Native by default.** The memory number is a suggestion, and a
+    // suggestion that silently shrinks the file is a limit wearing a different
+    // name. A frame above it still renders -- slower, and on a small device it
+    // may fail -- but the user asked for their photograph, not for a downscale.
+    // **Set by the import sheet, for that import only.** Every import larger
+    // than the memory estimate asks again: the number is advice, and the answer
+    // is the user's.
     private boolean importAtNativeSize = false;
     /** A cap the last E-1001 offered, good for exactly one import. */
     private int pendingCapPixels = 0;
@@ -73,6 +80,40 @@ public class MainActivity extends Activity {
     // Composition is part of the frame's Look, and goes through the engine's
     // geometry node -- never a second bitmap transform at export time.
     private int geometryTurns = 0;
+    /** 构图 page: which sub-page is showing (0 crop, 1 rotate). */
+    private int composeSubPage = 0;
+    /** The crop card that is lit: -1 original, otherwise an EDGE_* index. */
+    private int cropRatioIndex = -1;
+    // **A crop is a proposal until you press 应用.** Dragging the frame used
+    // to write `geometry_crop_*` and render on release, which had two costs:
+    // the picture changed under the frame you were still adjusting, and once
+    // the canvas showed the *cropped* result the frame -- drawn in the same
+    // normalised space as the engine's window -- was applied a second time and
+    // sat off the image ("裁切后边框没有跟着图片"). So the frame edits these,
+    // relative to whatever the canvas is showing right now, and 应用 folds
+    // them into `geometryCrop*` once.
+    private float pendingCropX = 0f, pendingCropY = 0f, pendingCropW = 1f, pendingCropH = 1f;
+    private boolean geometryFlipH = false, geometryFlipV = false;
+    private LinearLayout composeBody;
+    private TextView composeCropTab, composeRotateTab;
+    /** The ratio strip, kept so choosing a card does not scroll back to zero. */
+    private HorizontalScrollView cropScroll;
+    private int cropScrollX = 0;
+    /** The before/after toggle, bottom-right of the canvas. */
+    private TextView comparePill;
+    /** The canvas itself, so a window-level pinch knows where the picture is. */
+    private android.widget.FrameLayout canvasStage;
+
+    // **The pinch lives at the window, not in a child view.** Two attempts to
+    // put it inside `CompareView` produced no movement at all, which means the
+    // second pointer never reached that view -- whatever sits above it, this
+    // override is above that too.
+    private boolean canvasPinching = false;
+    private float canvasPinchStartSpan = 0f, canvasPinchStartZoom = 1f;
+    private float canvasPinchStartCx = 0f, canvasPinchStartCy = 0f;
+    private float canvasPinchStartPanX = 0f, canvasPinchStartPanY = 0f;
+    /** The draggable frame over the canvas, alive only on 构图 → 裁切. */
+    private CropOverlay cropOverlay;
     private float geometryRotation = 0.0f;
     private float geometryCropW = 1.0f, geometryCropH = 1.0f;
     private float geometryCropX = 0.0f, geometryCropY = 0.0f;
@@ -94,6 +135,27 @@ public class MainActivity extends Activity {
     private String filmStock = null;
     private String printStock = "kodak_portra_endura";
     private float printExposure = 1.0f;
+    /**
+     * The engine's `camera.auto_exposure`, which is also the "As Shot" switch.
+     *
+     * <p>On (the default, and the original app's default): the meter picks the
+     * film exposure, `balanced` at that. Off: the meter contributes nothing and
+     * the frame is exposed as the camera recorded it -- `setFilmExposureAsShot`
+     * upstream, and the only way back to the dim frame the file actually holds.
+     */
+    private boolean metering = false;
+    private TextView meterOn, meterOff;
+
+    // ── undo ──────────────────────────────────────────────────────
+    /** One JSON snapshot per settled edit, newest first. */
+    private final java.util.ArrayDeque<String> undoStack = new java.util.ArrayDeque<>();
+    private static final int UNDO_LIMIT = 400;
+    /** The last snapshot pushed, so a re-render of the same state is free. */
+    private String undoLast = null;
+    private final android.os.Handler undoHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable undoPush = this::pushUndoNow;
+    private TextView undoPill;
     private float grainAmount = 1.0f;      // 0..2, engine default 1
     private float halationAmount = 1.0f;   // 0..4
     // The paper's own veil is 1.0 on the wire (`GlareParams::amount`), and the
@@ -286,6 +348,10 @@ public class MainActivity extends Activity {
      *  frame that fits it. */
     private static final float[] EDGE_MM = {
             36f, 24f, 65f, 56f, 56f, 69.5f, 76f, 84f, 112f, 168f};
+    /** Each gate's frame as a ratio caption. Read off `EDGE_RATIOS`, rounded to
+     *  what the eye calls it -- 69.5/56 is 1.241, and everyone says 5:4. */
+    private static final String[] EDGE_RATIO_LABELS = {
+            "3:2", "4:3", "65:24", "4:3", "1:1", "5:4", "4:3", "3:2", "2:1", "3:1"};
 
     /** The gate's frame length, by id (not by position -- `edgeIds` is a
      *  filtered subset of EDGE_IDS). */
@@ -450,6 +516,7 @@ public class MainActivity extends Activity {
         String filmStock;
         String printStock;
         float printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm;
+        boolean metering;
         /** RFC-023's highlight room, in stops; 0 leaves the stage off. */
         float highlightRoom;
         /** RFC-023's shadow side: lift the toe instead of the shoulder. */
@@ -475,6 +542,8 @@ public class MainActivity extends Activity {
         float geometryRotation = 0.0f;
         float geometryCropW = 1.0f, geometryCropH = 1.0f;
         float geometryCropX = 0.0f, geometryCropY = 0.0f;
+        int cropRatioIndex = -1;
+        boolean geometryFlipH, geometryFlipV;
         float yFilter, mFilter;
         /** CC value those two shifts are scaled to. */
         float filterScale;
@@ -538,6 +607,7 @@ public class MainActivity extends Activity {
             o.put("film", l.filmStock == null ? "" : l.filmStock);
             o.put("print", l.printStock == null ? "" : l.printStock);
             o.put("exp", (double) l.printExposure);
+            o.put("meter", l.metering);
             o.put("grain", (double) l.grainAmount);
             o.put("halation", (double) l.halationAmount);
             o.put("glare", (double) l.glareAmount);
@@ -569,6 +639,9 @@ public class MainActivity extends Activity {
             o.put("gch", (double) l.geometryCropH);
             o.put("gcx", (double) l.geometryCropX);
             o.put("gcy", (double) l.geometryCropY);
+            o.put("gcri", l.cropRatioIndex);
+            o.put("gfh", l.geometryFlipH);
+            o.put("gfv", l.geometryFlipV);
             o.put("yf", (double) l.yFilter);
             o.put("mf", (double) l.mFilter);
             o.put("fscale", (double) l.filterScale);
@@ -620,6 +693,7 @@ public class MainActivity extends Activity {
         final String paper = o.optString("print", "");
         l.printStock = paper.isEmpty() ? "kodak_portra_endura" : paper;
         l.printExposure = (float) o.optDouble("exp", 1.0);
+        l.metering = o.optBoolean("meter", false);
         l.grainAmount = (float) o.optDouble("grain", 1.0);
         l.halationAmount = (float) o.optDouble("halation", 1.0);
         l.glareAmount = (float) o.optDouble("glare", 1.0);
@@ -651,6 +725,9 @@ public class MainActivity extends Activity {
         l.geometryCropH = (float) o.optDouble("gch", 1.0);
         l.geometryCropX = (float) o.optDouble("gcx", 0.0);
         l.geometryCropY = (float) o.optDouble("gcy", 0.0);
+        l.cropRatioIndex = o.optInt("gcri", -1);
+        l.geometryFlipH = o.optBoolean("gfh", false);
+        l.geometryFlipV = o.optBoolean("gfv", false);
         l.yFilter = (float) o.optDouble("yf", 0.0);
         l.mFilter = (float) o.optDouble("mf", 0.0);
         l.filterScale = (float) o.optDouble("fscale", 1.0);
@@ -867,13 +944,12 @@ public class MainActivity extends Activity {
     private static final int CONTROLS_CLOSED_DP = 58;
     /** 反馈群：the one place a user can reach a human. Shown once per build. */
     private static final String QQ_GROUP = "1134320449";
-    // **A hidden pixel ceiling, for one purpose: letting a tester ask this
-    // device for a frame it would otherwise refuse.** `maxImportPixels` divides
-    // by the driver's binding range, which on an Adreno 7xx is 128 MiB -- 8.95
-    // MP -- even though the engine renders such a frame in row bands now
-    // (docs/tiling.md, P0). Nothing ships with this on. It replaces the
-    // *binding* ceiling only: the memory ceiling and HARD_PIXEL_CAP stay,
-    // because those are what keep the low-memory killer out of the render.
+    // **A hidden pixel ceiling, for one purpose: letting a tester name a size
+    // the device's free-memory estimate would not pick.** `maxImportPixels`
+    // no longer consults the driver's binding range at all -- the engine bands
+    // every pass that would need a whole plane (docs/tiling.md, P0) -- so what
+    // this overrides is the memory suggestion and nothing else. A frame above
+    // it is still the user's call: the import sheet offers shrink or force.
     private static final String DEBUG_PREFS = "debug";
     private static final String DEBUG_CAP_MP = "pixel_cap_mp";
     private static final String DEBUG_SIM_MIB = "storage_limit_mib";
@@ -885,9 +961,9 @@ public class MainActivity extends Activity {
     private static final String[] BRAND_NAMES = {"全部", "KODAK", "FUJIFILM", "ILFORD", "CINESTILL"};
     private static final String[] FORMAT_NAMES = {"135 全画幅", "135 半格", "135 XPan", "645", "6×6", "6×7", "6×9", "6×12", "6×17"};
     private static final float[] FORMAT_MM = {36f, 24f, 65f, 56f, 56f, 70f, 84f, 120f, 170f};
-    private final View[] tabCells = new View[5];
-    private final View[] tabBars = new View[5];
-    private final TextView[] tabLabels = new TextView[5];
+    private final View[] tabCells = new View[6];
+    private final View[] tabBars = new View[6];
+    private final TextView[] tabLabels = new TextView[6];
     private android.widget.FrameLayout uiRoot;
     private TextView inAppToast;
     private final Runnable hideUiToast = () -> {
@@ -896,7 +972,7 @@ public class MainActivity extends Activity {
         inAppToast.animate().alpha(0f).translationY(dp(6)).setDuration(160)
                 .withEndAction(() -> { if (inAppToast != null) inAppToast.setVisibility(View.GONE); }).start();
     };
-    private final View[] panels = new View[5];
+    private final View[] panels = new View[6];
 
     private void loadUiFonts() {
         try {
@@ -1069,7 +1145,8 @@ public class MainActivity extends Activity {
 
         // The photograph is the page. The brand and Export float over it, the
         // source strip sits below it, and the tool panels sit below that.
-        android.widget.FrameLayout stage = new android.widget.FrameLayout(this);
+        final android.widget.FrameLayout stage = new android.widget.FrameLayout(this);
+        canvasStage = stage;
         stage.setBackgroundColor(UI_STAGE);
         stage.setClipChildren(false);
 
@@ -1125,8 +1202,58 @@ public class MainActivity extends Activity {
         busyLabel.setVisibility(View.GONE);
         stage.addView(busyLabel, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
+        cropOverlay = new CropOverlay();
+        cropOverlay.setVisibility(View.GONE);
+        stage.addView(cropOverlay, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
         addCanvasChrome(stage);
         addPreviewFooter(stage);
+
+        comparePill = label("↔", 15, UI_INK, tfBody);
+        comparePill.setGravity(android.view.Gravity.CENTER);
+        comparePill.setVisibility(View.GONE);
+        comparePill.setOnClickListener(v -> {
+            if (compare == null) return;
+            final boolean on = !compare.isSplitMode();
+            compare.setSplitMode(on);
+            comparePill.setTextColor(on ? UI_BLUE : UI_INK);
+            comparePill.setBackground(comparePillBg(on));
+        });
+        // **Hold it to see the original, tap it to arm the divider.** Both are
+        // "compare", so both live on the same button -- and neither is a
+        // gesture on the picture, which is what used to fight the pinch.
+        comparePill.setOnTouchListener(new View.OnTouchListener() {
+            private boolean held = false;
+            private final Runnable arm = () -> {
+                held = true;
+                if (compare != null) compare.setHolding(true);
+            };
+            @Override public boolean onTouch(View v, android.view.MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                        held = false;
+                        v.postDelayed(arm, 320);
+                        return true;
+                    case android.view.MotionEvent.ACTION_UP:
+                        v.removeCallbacks(arm);
+                        if (compare != null) compare.setHolding(false);
+                        if (!held) v.performClick();
+                        return true;
+                    case android.view.MotionEvent.ACTION_CANCEL:
+                        v.removeCallbacks(arm);
+                        if (compare != null) compare.setHolding(false);
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        });
+        final android.widget.FrameLayout.LayoutParams pillLp =
+                new android.widget.FrameLayout.LayoutParams(dp(40), dp(40),
+                        android.view.Gravity.BOTTOM | android.view.Gravity.END);
+        pillLp.rightMargin = dp(12);
+        pillLp.bottomMargin = dp(30);
+        stage.addView(comparePill, pillLp);
 
         shelfHandle = buildShelfHandle();
         android.widget.FrameLayout.LayoutParams handleLp = new android.widget.FrameLayout.LayoutParams(
@@ -1167,6 +1294,7 @@ public class MainActivity extends Activity {
         panelHolder.addView(buildOpticsPanel(), new LinearLayout.LayoutParams(-1, -2));
         panelHolder.addView(buildViewPanel(), new LinearLayout.LayoutParams(-1, -2));
         panelHolder.addView(buildFormatPanel(), new LinearLayout.LayoutParams(-1, -2));
+        panelHolder.addView(buildComposePanel(), new LinearLayout.LayoutParams(-1, -2));
         panelHolder.addView(buildEdgePanel(), new LinearLayout.LayoutParams(-1, -2));
         for (int i = 0; i < panels.length; ++i) panels[i] = panelHolder.getChildAt(i);
 
@@ -1260,6 +1388,19 @@ public class MainActivity extends Activity {
         wordRow.addView(version, versionLp);
         brand.addView(wordRow);
         top.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        undoPill = label("↶", 14, UI_BLUE, tfBody);
+        undoPill.setGravity(android.view.Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable undoBg = new android.graphics.drawable.GradientDrawable();
+        undoBg.setColor(UI_PAPER);
+        undoBg.setAlpha(220);
+        undoPill.setBackground(undoBg);
+        undoPill.setPadding(dp(12), 0, dp(12), 0);
+        undoPill.setVisibility(View.GONE);
+        undoPill.setOnClickListener(v -> undoStep());
+        LinearLayout.LayoutParams undoLp = new LinearLayout.LayoutParams(-2, dp(32));
+        undoLp.rightMargin = dp(6);
+        top.addView(undoPill, undoLp);
 
         sharePill = label("分享", 10, UI_BLUE, tfHan);
         sharePill.setGravity(android.view.Gravity.CENTER);
@@ -1410,6 +1551,7 @@ public class MainActivity extends Activity {
         look.filmStock = filmStock;
         look.printStock = printStock;
         look.printExposure = printExposure;
+        look.metering = metering;
         look.grainAmount = grainAmount;
         look.halationAmount = halationAmount;
         look.glareAmount = glareAmount;
@@ -1441,6 +1583,9 @@ public class MainActivity extends Activity {
         look.geometryCropH = geometryCropH;
         look.geometryCropX = geometryCropX;
         look.geometryCropY = geometryCropY;
+        look.cropRatioIndex = cropRatioIndex;
+        look.geometryFlipH = geometryFlipH;
+        look.geometryFlipV = geometryFlipV;
         look.yFilter = yFilter;
         look.mFilter = mFilter;
         look.filterScale = filterScale;
@@ -1492,6 +1637,7 @@ public class MainActivity extends Activity {
         filmStock = look.filmStock;
         printStock = look.printStock;
         printExposure = look.printExposure;
+        metering = look.metering;
         grainAmount = look.grainAmount;
         halationAmount = look.halationAmount;
         glareAmount = look.glareAmount;
@@ -1525,6 +1671,16 @@ public class MainActivity extends Activity {
         geometryCropH = look.geometryCropH;
         geometryCropX = look.geometryCropX;
         geometryCropY = look.geometryCropY;
+        cropRatioIndex = look.cropRatioIndex;
+        geometryFlipH = look.geometryFlipH;
+        geometryFlipV = look.geometryFlipV;
+        // **The page has a picture of its own state.** Restoring a Look sets
+        // the numbers; without this the crop cards and the rotation readout
+        // still showed the previous photograph's values.
+        // A restored Look describes the file's crop, not a proposal.
+        pendingCropX = 0f; pendingCropY = 0f;
+        pendingCropW = 1f; pendingCropH = 1f;
+        if (composeBody != null) showComposePage(composeSubPage);
         yFilter = look.yFilter;
         mFilter = look.mFilter;
         filterScale = look.filterScale;
@@ -1593,6 +1749,7 @@ public class MainActivity extends Activity {
         look.filmStock = null;
         look.printStock = "kodak_portra_endura";
         look.printExposure = 1.0f;
+        look.metering = false;
         look.grainAmount = 1.0f;
         look.halationAmount = 1.0f;
         look.glareAmount = 1.0f;
@@ -1613,6 +1770,9 @@ public class MainActivity extends Activity {
         look.geometryCropH = 1.0f;
         look.geometryCropX = 0.0f;
         look.geometryCropY = 0.0f;
+        look.cropRatioIndex = -1;
+        look.geometryFlipH = false;
+        look.geometryFlipV = false;
         look.yFilter = 0.0f;
         look.mFilter = 0.0f;
         look.filterScale = 1.0f;
@@ -1710,11 +1870,17 @@ public class MainActivity extends Activity {
             return;
         }
         if (reopeningFrame) {
-            // A chip asked for this frame. It is already in the list; only the
-            // highlight and the freshly decoded pixels changed.
             reopeningFrame = false;
-            rebuildFrameChips();
-            return;
+            // **The chip may have been deleted while this decode ran.**
+            // Deleting it (or every chip) during the load left `reopeningFrame`
+            // set, this branch took the early return, and the new pixels were
+            // filed under a frame that no longer exists -- the canvas stayed on
+            // "Decoding RAW…" with nothing ever taking its place. If the index
+            // is gone, fall through and add the frame for real.
+            if (currentFrame >= 0 && currentFrame < frames.size()) {
+                rebuildFrameChips();
+                return;
+            }
         }
         final Frame frame = new Frame(uri, isRawFile, name);
         frame.look = captureLook();
@@ -1728,6 +1894,7 @@ public class MainActivity extends Activity {
         }
         frames.add(frame);
         currentFrame = frames.size() - 1;
+        resetUndo();             // a new photograph starts its own history
         persistThumb(frame);
         rebuildFrameChips();
         saveSessionState();
@@ -1786,6 +1953,7 @@ public class MainActivity extends Activity {
     private void removeFrame(int index) {
         if (index < 0 || index >= frames.size()) return;
         frames.remove(index);
+        if (frames.isEmpty()) stopPrefetch();
         if (index == currentFrame) {
             currentFrame = -1;
             lastRenderedBitmap = null;
@@ -1824,7 +1992,7 @@ public class MainActivity extends Activity {
         if (originalLabel != null) originalLabel.setTextColor(on ? UI_PAPER : UI_BLUE);
     }
 
-    private View sectionHead(String title, Runnable reset) {
+    private LinearLayout sectionHead(String title, Runnable reset) {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -1839,11 +2007,134 @@ public class MainActivity extends Activity {
         return head;
     }
 
+
+    /**
+     * The pinch, caught at the window.
+     *
+     * <p>Two attempts to put it inside `CompareView` -- a hand-rolled pointer
+     * sequence, then the platform's `ScaleGestureDetector` -- moved nothing at
+     * all. That is not a maths problem: the second pointer never reached that
+     * view. Catching it here is upstream of everything on the canvas, so there
+     * is nothing left to eat it.
+     */
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent ev) {
+        // **Two fingers is the whole condition, on every event.** The first
+        // version only armed the pinch on ACTION_POINTER_DOWN and relied on
+        // that one event having been seen; the status bar proved it was, but
+        // nothing after it moved the picture. Re-arming on any two-finger
+        // event removes the state machine from the path entirely.
+        if (compare != null && ev.getPointerCount() >= 2) {
+            final int action = ev.getActionMasked();
+            if (action == android.view.MotionEvent.ACTION_POINTER_UP
+                    || action == android.view.MotionEvent.ACTION_UP
+                    || action == android.view.MotionEvent.ACTION_CANCEL) {
+                if (canvasPinching) {
+                    canvasPinching = false;
+                    try {
+                        DebugSink.text("zoom", "pinch end at "
+                                + String.format(java.util.Locale.US, "%.2f", compare.zoomLevel()));
+                    } catch (Throwable ignored) { }
+                }
+                return true;
+            }
+
+            final float span = Math.max(1f, spanOf(ev));
+            if (!canvasPinching || canvasPinchStartSpan <= 1f) {
+                canvasPinching = true;
+                canvasPinchStartSpan = span;
+                canvasPinchStartZoom = compare.zoomLevel();
+                canvasPinchStartCx = (ev.getX(0) + ev.getX(1)) / 2f;
+                canvasPinchStartCy = (ev.getY(0) + ev.getY(1)) / 2f;
+                canvasPinchStartPanX = compare.panXLevel();
+                canvasPinchStartPanY = compare.panYLevel();
+                try {
+                    DebugSink.text("zoom", "pinch begin span=" + Math.round(span)
+                            + " at=" + (int) ev.getRawX() + "," + (int) ev.getRawY());
+                } catch (Throwable ignored) { }
+                statusText.setText("ZOOM " + String.format(java.util.Locale.US, "%.2f", canvasPinchStartZoom)
+                        + " · 0%");
+                return true;
+            }
+
+            // **Incremental, so it shrinks as well as grows.** Anchored to the
+            // span at the instant the pinch began, the ratio could never drop
+            // below 1 if the session started with the fingers far apart, so
+            // the picture could only get bigger. Each frame is now its own
+            // baseline.
+            final float ratio = span / Math.max(1f, canvasPinchStartSpan);
+            final float want = Math.max(0.2f, Math.min(8f, canvasPinchStartZoom * ratio));
+            final float cx = (ev.getX(0) + ev.getX(1)) / 2f;
+            final float cy = (ev.getY(0) + ev.getY(1)) / 2f;
+            final float k = want / Math.max(1e-4f, canvasPinchStartZoom);
+            final float px = (canvasPinchStartPanX - (canvasPinchStartCx - compare.getWidth() / 2f)) * k
+                    + (cx - compare.getWidth() / 2f);
+            final float py = (canvasPinchStartPanY - (canvasPinchStartCy - compare.getHeight() / 2f)) * k
+                    + (cy - compare.getHeight() / 2f);
+            compare.setView(want, px, py);
+            canvasPinchStartZoom = Math.max(0.2f, Math.min(8f, want));
+            canvasPinchStartSpan = span;
+            canvasPinchStartCx = cx;
+            canvasPinchStartCy = cy;
+            canvasPinchStartPanX = compare.panXLevel();
+            canvasPinchStartPanY = compare.panYLevel();
+            statusText.setText("ZOOM " + String.format(java.util.Locale.US, "%.2f", canvasPinchStartZoom));
+            return true;
+        }
+
+        if (canvasPinching) {
+            // The pinch ended without a clean up event on the two-finger path.
+            canvasPinching = false;
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    /** Is this touch inside the canvas rectangle? */
+    private boolean overCanvas(android.view.MotionEvent ev) {
+        if (canvasStage == null) return false;
+        final android.graphics.Rect r = new android.graphics.Rect();
+        if (!canvasStage.getGlobalVisibleRect(r)) return false;
+        final float x = ev.getRawX(), y = ev.getRawY();
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    }
+
+    private static float spanOf(android.view.MotionEvent e) {
+        return (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+    }
+
     private View buildFilmPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead("FILM & PAPER / 胶片与相纸", this::resetFilmPanel),
-                new LinearLayout.LayoutParams(-1, dp(38)));
+        final LinearLayout filmHead = sectionHead("FILM & PAPER / 胶片与相纸", this::resetFilmPanel);
+        // **The "As Shot" switch, where the original app puts the same choice.**
+        // On: the meter decides the film exposure. Off: the frame keeps the
+        // exposure the camera recorded, which is the only way a lamp in a dark
+        // room comes back dark instead of being lifted five stops onto Dmax.
+        final TextView meterLabel = label("自动测光", 8.5f, UI_MUTED, tfHan);
+        meterOn = label("开启", 8.5f, UI_INK, tfHan);
+        meterOff = label("关闭", 8.5f, UI_INK, tfHan);
+        for (TextView t : new TextView[]{meterOn, meterOff}) {
+            t.setGravity(android.view.Gravity.CENTER);
+            // **48dp, not 40x20.** The old chip was smaller than the minimum
+            // touch target, so a tap that landed two pixels off did nothing --
+            // which is what "点了没反应" was.
+            t.setPadding(dp(12), dp(6), dp(12), dp(6));
+            t.setMinWidth(dp(48));
+            t.setMinHeight(dp(30));
+        }
+        meterOn.setOnClickListener(v -> setMetering(true));
+        meterOff.setOnClickListener(v -> setMetering(false));
+        final LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(-2, -2);
+        labelLp.rightMargin = dp(6);
+        filmHead.addView(meterLabel, 1, labelLp);
+        final LinearLayout.LayoutParams onLp = new LinearLayout.LayoutParams(-2, -2);
+        onLp.rightMargin = dp(4);
+        filmHead.addView(meterOn, 2, onLp);
+        final LinearLayout.LayoutParams offLp = new LinearLayout.LayoutParams(-2, -2);
+        offLp.rightMargin = dp(10);
+        filmHead.addView(meterOff, 3, offLp);
+        refreshMeterChip();
+        panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
 
         HorizontalScrollView brandScroll = new HorizontalScrollView(this);
         brandScroll.setHorizontalScrollBarEnabled(false);
@@ -2206,6 +2497,8 @@ public class MainActivity extends Activity {
     /** Every row knows how to re-read its own field, so a Look can move them. */
     private final java.util.List<Runnable> viewRefreshers = new java.util.ArrayList<>();
     private final LinearLayout[] viewPages = new LinearLayout[5];
+    /** Which 光学 sub-page is showing; 重置 acts on this one only. */
+    private int viewPage = 0;
     private TextView[] viewCatChips;
 
     private LinearLayout buildViewPanel() {
@@ -2256,6 +2549,7 @@ public class MainActivity extends Activity {
     private final CappedScroll[] viewScrolls = new CappedScroll[5];
 
     private void showViewPage(int page) {
+        viewPage = page;
         for (int i = 0; i < viewPages.length; ++i) {
             final boolean on = i == page;
             if (viewPages[i] != null) viewPages[i].setVisibility(on ? View.VISIBLE : View.GONE);
@@ -2481,6 +2775,8 @@ public class MainActivity extends Activity {
         private Bitmap disc;
         private int discSize = 0;
         private int dragZone = -1;
+        /** 1 = the rim (hue only), 2 = the handle (saturation only). */
+        private int dragMode = 0;
 
         ColorWheel() { super(MainActivity.this); }
 
@@ -2519,13 +2815,51 @@ public class MainActivity extends Activity {
             canvas.drawBitmap(disc, cx - radius(), cy - radius(), null);
             final float hue = (float) Math.toRadians(cbHue[cbZone]);
             final float sat = Math.max(0f, Math.min(1f, cbSat[cbZone]));
+
+            // **The radius is a track, so draw it.** A dashed line from the
+            // centre out along the current hue is what makes "slide this dot
+            // inward for less colour" legible; without it the handle looks
+            // like it is floating.
+            final android.graphics.Paint track = new android.graphics.Paint();
+            track.setStyle(android.graphics.Paint.Style.STROKE);
+            track.setStrokeWidth(dp(1));
+            track.setColor(0x55FFFFFF);
+            track.setPathEffect(new android.graphics.DashPathEffect(new float[]{dp(3), dp(4)}, 0f));
+            canvas.drawLine(cx, cy,
+                    cx + (float) Math.cos(hue) * radius(), cy - (float) Math.sin(hue) * radius(), track);
+
+            // The rim handle: hue, at full saturation, so its own colour says
+            // which hue it is.
+            final float hx = cx + (float) Math.cos(hue) * radius();
+            final float hy = cy - (float) Math.sin(hue) * radius();
+            final android.graphics.Paint rimFill = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            rimFill.setColor(android.graphics.Color.HSVToColor(new float[]{
+                    (cbHue[cbZone] + 360f) % 360f, 1f, 1f}));
+            canvas.drawCircle(hx, hy, dp(8), rimFill);
+            final android.graphics.Paint rimEdge = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            rimEdge.setStyle(android.graphics.Paint.Style.STROKE);
+            rimEdge.setStrokeWidth(dp(1.6f));
+            rimEdge.setColor(0xFFFFFFFF);
+            canvas.drawCircle(hx, hy, dp(8), rimEdge);
+
+            // The inner handle: saturation, hollow, wherever the radius says.
             final float px = cx + (float) Math.cos(hue) * radius() * sat;
             final float py = cy - (float) Math.sin(hue) * radius() * sat;
-            final android.graphics.Paint ring = new android.graphics.Paint();
+            final android.graphics.Paint hole = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            hole.setStyle(android.graphics.Paint.Style.FILL);
+            hole.setColor(0x33000000);
+            canvas.drawCircle(px, py, dp(9), hole);
+            final android.graphics.Paint ring = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
             ring.setStyle(android.graphics.Paint.Style.STROKE);
             ring.setStrokeWidth(dp(2));
             ring.setColor(UI_INK);
-            canvas.drawCircle(px, py, dp(6), ring);
+            canvas.drawCircle(px, py, dp(9), ring);
+            final android.graphics.Paint ring2 = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            ring2.setStyle(android.graphics.Paint.Style.STROKE);
+            ring2.setStrokeWidth(dp(1));
+            ring2.setColor(0xAAFFFFFF);
+            canvas.drawCircle(px, py, dp(9), ring2);
+
             final android.graphics.Paint centre = new android.graphics.Paint();
             centre.setStyle(android.graphics.Paint.Style.STROKE);
             centre.setStrokeWidth(dp(1));
@@ -2541,18 +2875,25 @@ public class MainActivity extends Activity {
                     // the panel threw the grading handle wherever the finger
                     // happened to pass.
                     final float cx = getWidth() / 2f, cy = getHeight() / 2f;
-                    if (Math.hypot(e.getX() - cx, e.getY() - cy) > radius() + dp(12)) return false;
+                    final float d = (float) Math.hypot(e.getX() - cx, e.getY() - cy);
+                    if (d > radius() + dp(12)) return false;
+                    // **Two rings, two jobs.** The outer band is the hue; the
+                    // disc inside it is saturation along that hue's radius.
+                    // One drag used to move both, so "change the hue" quietly
+                    // changed the strength as well.
                     dragZone = cbZone;
-                    return applyWheelTouch(e);
+                    dragMode = d > radius() * 0.84f ? 1 : 2;
+                    return applyWheelTouch(e, dragMode);
                 }
                 case android.view.MotionEvent.ACTION_MOVE: {
-                    if (dragZone != cbZone) return false;
-                    return applyWheelTouch(e);
+                    if (dragZone != cbZone || dragMode == 0) return false;
+                    return applyWheelTouch(e, dragMode);
                 }
                 case android.view.MotionEvent.ACTION_UP:
                 case android.view.MotionEvent.ACTION_CANCEL: {
                     if (dragZone >= 0) {
                         dragZone = -1;
+                        dragMode = 0;
                         pushViewAdjust();
                         applyParams();
                         if (uiReady && session != null) {
@@ -2568,14 +2909,19 @@ public class MainActivity extends Activity {
             }
         }
 
-        private boolean applyWheelTouch(android.view.MotionEvent e) {
+        private boolean applyWheelTouch(android.view.MotionEvent e, int mode) {
             final float cx = getWidth() / 2f, cy = getHeight() / 2f;
             final float dx = e.getX() - cx, dy = cy - e.getY();
-            final float d = (float) Math.hypot(dx, dy) / Math.max(1f, radius());
-            float hue = (float) Math.toDegrees(Math.atan2(dy, dx));
-            if (hue < 0) hue += 360f;
-            cbHue[cbZone] = hue > 180f ? hue - 360f : hue;
-            cbSat[cbZone] = Math.min(1f, d);
+            final float d = (float) Math.hypot(dx, dy);
+            if (mode == 1) {
+                float hue = (float) Math.toDegrees(Math.atan2(dy, dx));
+                if (hue < 0) hue += 360f;
+                cbHue[cbZone] = hue > 180f ? hue - 360f : hue;
+            } else {
+                // Distance only: the hue stays where the rim put it, so a
+                // slightly-off drag inward cannot swing the colour.
+                cbSat[cbZone] = Math.max(0f, Math.min(1f, d / Math.max(1f, radius())));
+            }
             refreshCbReadout();
             invalidate();
             return true;
@@ -2664,17 +3010,35 @@ public class MainActivity extends Activity {
         refreshCbReadout();
     }
 
+    /**
+     * 重置 on 光学 resets **the sub-page in front**: 亮度 leaves 颜色 alone,
+     * 曲线 leaves 分级 alone. The chips are five different tools that happen
+     * to share a page; one button that wipes all of them is a trap, because
+     * the user is looking at one of them when they press it.
+     */
     private void resetViewPanel() {
-        viewTemperature = viewTint = viewExposure = 0f;
-        viewContrast = viewBrightness = viewSaturation = 0f;
-        viewHighlights = viewShadows = viewBlack = viewWhite = viewVignette = 0f;
-        viewVibrance = 0f;
-        cameraEv = 0f;
-        for (int z = 0; z < 4; ++z) { cbHue[z] = 0f; cbSat[z] = 0f; cbLum[z] = 0f; }
-        for (int i = 0; i < curvePoints.length; ++i) {
-            curvePoints[i].clear();
-            curvePoints[i].add(new float[]{0f, 0f});
-            curvePoints[i].add(new float[]{1f, 1f});
+        switch (viewPage) {
+            case 1:   // 颜色
+                viewTemperature = viewTint = viewSaturation = viewVibrance = 0f;
+                break;
+            case 2:   // 效果
+                viewVignette = 0f;
+                break;
+            case 3:   // 曲线
+                for (int i = 0; i < curvePoints.length; ++i) {
+                    curvePoints[i].clear();
+                    curvePoints[i].add(new float[]{0f, 0f});
+                    curvePoints[i].add(new float[]{1f, 1f});
+                }
+                break;
+            case 4:   // 分级
+                for (int z = 0; z < 4; ++z) { cbHue[z] = 0f; cbSat[z] = 0f; cbLum[z] = 0f; }
+                break;
+            default:  // 亮度
+                cameraEv = 0f;
+                viewExposure = viewContrast = viewBrightness = 0f;
+                viewHighlights = viewShadows = viewBlack = viewWhite = 0f;
+                break;
         }
         refreshViewPanel();
         pushViewAdjust();
@@ -3264,6 +3628,581 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    // ──────────────────────────────────────────────────────────────────
+    // 构图: crop and rotate, out of the 尺度 page and into their own.
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * The 构图 page.
+     *
+     * <p>Crop and rotate used to be three dropdowns at the bottom of 尺度,
+     * under a row of film-format cards, and the page read as "physical size,
+     * and also these other things". They are not a size -- they are what the
+     * frame *is*, and they change the picture's shape, not its scale. So they
+     * get their own page, laid out the way a picture editor does it: ratios as
+     * shapes you can see, rotation as a dial you can feel.
+     */
+    private LinearLayout buildComposePanel() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.addView(sectionHead("COMPOSITION / 构图", this::resetComposePanel),
+                new LinearLayout.LayoutParams(-1, dp(38)));
+
+        LinearLayout sub = new LinearLayout(this);
+        sub.setOrientation(LinearLayout.HORIZONTAL);
+        composeCropTab = composeTabView("裁切", 0);
+        composeRotateTab = composeTabView("旋转", 1);
+        sub.addView(composeCropTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        sub.addView(composeRotateTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        panel.addView(sub, new LinearLayout.LayoutParams(-1, dp(32)));
+
+        composeBody = new LinearLayout(this);
+        composeBody.setOrientation(LinearLayout.VERTICAL);
+        panel.addView(composeBody, new LinearLayout.LayoutParams(-1, -2));
+        showComposePage(0);      // the page is built hidden; it must still have content
+        return panel;
+    }
+
+    private TextView composeTabView(String text, int page) {
+        final TextView tv = label(text, 12, UI_MUTED, tfHan);
+        tv.setGravity(android.view.Gravity.CENTER);
+        tv.setOnClickListener(v -> showComposePage(page));
+        return tv;
+    }
+
+    private static void underline(TextView tv, boolean on) {
+        final int flags = tv.getPaintFlags();
+        tv.setPaintFlags(on ? (flags | android.graphics.Paint.UNDERLINE_TEXT_FLAG)
+                : (flags & ~android.graphics.Paint.UNDERLINE_TEXT_FLAG));
+    }
+
+    private void showComposePage(int page) {
+        composeSubPage = page;
+        if (composeBody == null) return;
+        composeCropTab.setTextColor(page == 0 ? UI_INK : UI_MUTED);
+        composeRotateTab.setTextColor(page == 1 ? UI_INK : UI_MUTED);
+        underline(composeCropTab, page == 0);
+        underline(composeRotateTab, page == 1);
+        if (cropScroll != null) cropScrollX = cropScroll.getScrollX();
+        composeBody.removeAllViews();
+        if (page == 0) buildCropPage(); else buildRotatePage();
+        if (cropOverlay != null) {
+            // **Only while 构图 → 裁切 is the page in front.** The page is
+            // built during `onCreate`, long before `setTab` runs, so keying on
+            // `page == 0` alone left the frame drawn over every other page --
+            // which is exactly what "裁切框一直在画布上" was.
+            final boolean show = activeTabIndex == 4 && page == 0;
+            cropOverlay.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) {
+                cropOverlay.sync(pendingCropX, pendingCropY, pendingCropW, pendingCropH,
+                        cropAspectForSelection());
+            }
+        }
+    }
+
+    /** The frame's own aspect, which is what "原始" means. */
+    private float originalAspect() {
+        final int w = importedWidth > 0 ? importedWidth : sourceWidth;
+        final int h = importedHeight > 0 ? importedHeight : sourceHeight;
+        return (w > 0 && h > 0) ? (float) w / h : 1.5f;
+    }
+
+    private void buildCropPage() {
+        final HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.setClipToPadding(false);
+        final LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        // **Room for the border on the bottom edge.** The cards are 94 dp and
+        // the strip used to be 94 dp tall with a 10 dp top pad, so the bottom
+        // of every card -- and with it the selected card's outline -- was
+        // clipped away. The strip is as tall as its children plus both pads.
+        strip.setPadding(0, dp(8), 0, dp(6));
+
+        for (int i = -1; i < EDGE_LABELS.length; ++i) {
+            final int index = i;
+            final boolean original = i < 0;
+            final boolean active = cropRatioIndex == index;
+            final float ratio = original ? originalAspect() : (float) EDGE_RATIOS[i];
+
+            final LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+            card.setBackground(cardBorder(active));
+            card.setPadding(dp(3), dp(6), dp(3), dp(4));
+
+            card.addView(new RatioMark(this, ratio, active ? UI_BLUE : UI_INK),
+                    new LinearLayout.LayoutParams(-1, dp(44)));
+
+            final TextView caption = label(original ? "原始" : EDGE_RATIO_LABELS[i],
+                    8.5f, active ? UI_INK : UI_MUTED, tfBody);
+            caption.setGravity(android.view.Gravity.CENTER);
+            card.addView(caption, new LinearLayout.LayoutParams(-1, -2));
+
+            final TextView gate = label(original ? "整幅" : EDGE_LABELS[i], 6.5f, UI_MUTED, tfHan);
+            gate.setGravity(android.view.Gravity.CENTER);
+            card.addView(gate, new LinearLayout.LayoutParams(-1, -2));
+
+            card.setOnClickListener(v -> applyCropRatio(index));
+            final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(76), dp(94));
+            lp.rightMargin = dp(6);
+            strip.addView(card, lp);
+        }
+        scroll.addView(strip, new android.widget.FrameLayout.LayoutParams(-2, dp(108)));
+        cropScroll = scroll;
+        composeBody.addView(scroll, new LinearLayout.LayoutParams(-1, dp(108)));
+        // Restore where the strip was before this rebuild: picking a card
+        // rebuilt the page and threw the scroll back to the first card.
+        scroll.post(() -> scroll.scrollTo(cropScrollX, 0));
+
+        final LinearLayout footRow = new LinearLayout(this);
+        footRow.setOrientation(LinearLayout.HORIZONTAL);
+        footRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        final TextView foot = label(cropSummary(), 8.5f, UI_MUTED, tfHan);
+        footRow.addView(foot, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        // **Nothing happens to the picture until 应用.** 取消 throws the
+        // proposal away; the frame goes back to the whole canvas.
+        final TextView cancel = label("取消", 9, UI_MUTED, tfHan);
+        cancel.setGravity(android.view.Gravity.CENTER);
+        cancel.setBackground(cardBorder(false));
+        cancel.setOnClickListener(v -> {
+            pendingCropX = 0f; pendingCropY = 0f;
+            pendingCropW = 1f; pendingCropH = 1f;
+            cropRatioIndex = -1;
+            showComposePage(0);
+        });
+        final LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(58), dp(30));
+        cancelLp.rightMargin = dp(6);
+        footRow.addView(cancel, cancelLp);
+
+        final TextView apply = label("应用裁切", 9, UI_BLUE, tfHan);
+        apply.setGravity(android.view.Gravity.CENTER);
+        apply.setBackground(cardBorder(true));
+        apply.setOnClickListener(v -> commitPendingCrop());
+        footRow.addView(apply, new LinearLayout.LayoutParams(dp(84), dp(30)));
+
+        composeBody.addView(footRow, new LinearLayout.LayoutParams(-1, dp(38)));
+    }
+
+    private android.graphics.drawable.GradientDrawable comparePillBg(boolean on) {
+        final android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        bg.setColor(on ? 0xFFFFFFFF : 0xDDF1F1EE);
+        bg.setStroke(dp(on ? 2 : 1), on ? UI_BLUE : UI_LINE);
+        return bg;
+    }
+
+    /** Shown only when there is something to compare against. */
+    private void refreshComparePill() {
+        if (comparePill == null) return;
+        final boolean can = compare != null && lastRenderedBitmap != null;
+        comparePill.setVisibility(can ? View.VISIBLE : View.GONE);
+        if (!can && compare != null && compare.isSplitMode()) compare.setSplitMode(false);
+        final boolean on = compare != null && compare.isSplitMode();
+        comparePill.setTextColor(on ? UI_BLUE : UI_INK);
+        comparePill.setBackground(comparePillBg(on));
+    }
+
+    /** The aspect of what the canvas is showing: the file, after any crop
+     *  already applied. The pending frame is measured in that space. */
+    private float currentAspect() {
+        return originalAspect() * (geometryCropW / Math.max(1e-4f, geometryCropH));
+    }
+
+    /** The picture-pixel ratio the drag is held to; 0 means free. */
+    private float cropAspectForSelection() {
+        return cropRatioIndex >= 0 && cropRatioIndex < EDGE_RATIOS.length
+                ? (float) EDGE_RATIOS[cropRatioIndex] : 0f;
+    }
+
+    private String cropSummary() {
+        if (pendingCropW >= 0.999f && pendingCropH >= 0.999f
+                && pendingCropX <= 0.001f && pendingCropY <= 0.001f) return "整幅 · 未裁切";
+        return String.format(java.util.Locale.US, "保留 %.0f%% × %.0f%%（按对角缩放）",
+                pendingCropW * 100, pendingCropH * 100);
+    }
+
+    /**
+     * Cut the frame to a gate's ratio, centred.
+     *
+     * <p>The engine takes a normalised window, so the job here is only to find
+     * the largest window of the wanted shape inside the picture: wider than the
+     * frame means full width and a shorter window; narrower means the reverse.
+     * There is no free-drag box yet -- the four numbers can carry one, but the
+     * gesture does not exist, and a card that promised one would be lying.
+     */
+    private void applyCropRatio(int index) {
+        cropRatioIndex = index;
+        if (index < 0) {
+            pendingCropW = 1f; pendingCropH = 1f;
+            pendingCropX = 0f; pendingCropY = 0f;
+        } else {
+            final float want = (float) EDGE_RATIOS[index];   // gate long / short
+            final float have = currentAspect();
+            if (want >= have) { pendingCropW = 1f; pendingCropH = have / want; }
+            else { pendingCropW = want / have; pendingCropH = 1f; }
+            pendingCropX = (1f - pendingCropW) * 0.5f;
+            pendingCropY = (1f - pendingCropH) * 0.5f;
+        }
+        showComposePage(0);
+    }
+
+    /**
+     * Fold the pending frame into the engine's window and render.
+     *
+     * <p>Composed, not replaced: the pending frame is measured against what
+     * the canvas currently shows, which may itself already be a crop. Two
+     * nested windows are one window in the original file's coordinates.
+     */
+    private void commitPendingCrop() {
+        if (pendingCropW >= 0.999f && pendingCropH >= 0.999f
+                && pendingCropX <= 0.001f && pendingCropY <= 0.001f) {
+            showInAppToast("还没有裁切");
+            return;
+        }
+        final float nw = geometryCropW * pendingCropW;
+        final float nh = geometryCropH * pendingCropH;
+        final float nx = geometryCropX + pendingCropX * geometryCropW;
+        final float ny = geometryCropY + pendingCropY * geometryCropH;
+        geometryCropW = Math.min(1f, nw);
+        geometryCropH = Math.min(1f, nh);
+        geometryCropX = Math.max(0f, Math.min(1f - geometryCropW, nx));
+        geometryCropY = Math.max(0f, Math.min(1f - geometryCropH, ny));
+        pendingCropX = 0f; pendingCropY = 0f;
+        pendingCropW = 1f; pendingCropH = 1f;
+        cropRatioIndex = -1;
+        commitCompose();
+        showComposePage(0);
+    }
+
+    private void buildRotatePage() {
+        final TextView readout = label(String.format(java.util.Locale.US, "%.1f°", geometryRotation),
+                16, UI_INK, tfBody);
+        readout.setGravity(android.view.Gravity.CENTER);
+        composeBody.addView(readout, new LinearLayout.LayoutParams(-1, dp(32)));
+
+        final ScrubBar bar = new ScrubBar(this);
+        bar.setMax(900);
+        bar.setProgress(Math.round((geometryRotation + 45f) * 10f));
+        bar.setPadding(dp(5), dp(11), dp(5), dp(11));
+        bar.setResetTarget(450, () -> {
+            geometryRotation = 0f;
+            bar.setProgress(450);
+            readout.setText("0.0°");
+            commitCompose();
+        });
+        bar.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar sb, int value, boolean fromUser) {
+                geometryRotation = (value - 450) / 10f;
+                readout.setText(String.format(java.util.Locale.US, "%.1f°", geometryRotation));
+            }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar sb) { }
+            @Override public void onStopTrackingTouch(android.widget.SeekBar sb) { commitCompose(); }
+        });
+        composeBody.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
+
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(12), 0, 0);
+
+        final LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, -2, 1f);
+        row.addView(circleAction("↺", "向左 90°", () -> turnBy(-1)), cell);
+        row.addView(circleAction("↻", "向右 90°", () -> turnBy(1)),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(circleAction("⇆", "水平翻转", () -> {
+            geometryFlipH = !geometryFlipH;
+            showComposePage(1);
+            commitCompose();
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(circleAction("⇅", "垂直翻转", () -> {
+            geometryFlipV = !geometryFlipV;
+            showComposePage(1);
+            commitCompose();
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
+        composeBody.addView(row, new LinearLayout.LayoutParams(-1, -2));
+
+        final TextView foot = label("角度 ±45°；双击滑杆上的圆点归零。翻转和 90° 是整幅换向，画面不变形。",
+                8f, UI_MUTED, tfHan);
+        foot.setPadding(0, dp(4), 0, 0);
+        composeBody.addView(foot, new LinearLayout.LayoutParams(-1, dp(30)));
+    }
+
+    private View circleAction(String glyph, String caption, Runnable tap) {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+
+        final TextView circle = label(glyph, 15, UI_INK, tfBody);
+        circle.setGravity(android.view.Gravity.CENTER);
+        final android.graphics.drawable.GradientDrawable ring =
+                new android.graphics.drawable.GradientDrawable();
+        ring.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        ring.setColor(0x00000000);
+        ring.setStroke(dp(1), UI_LINE);
+        circle.setBackground(ring);
+        circle.setOnClickListener(v -> tap.run());
+        box.addView(circle, new LinearLayout.LayoutParams(dp(46), dp(46)));
+
+        final TextView name = label(caption, 8, UI_MUTED, tfHan);
+        name.setGravity(android.view.Gravity.CENTER);
+        name.setOnClickListener(v -> tap.run());
+        box.addView(name, new LinearLayout.LayoutParams(-1, -2));
+        return box;
+    }
+
+    private void turnBy(int direction) {
+        geometryTurns = ((geometryTurns + direction) % 4 + 4) % 4;
+        commitCompose();
+    }
+
+    /** One write, one render: every control on this page ends here. */
+    private void commitCompose() {
+        applyParams();
+        if (uiReady && session != null) {
+            showingOriginal = false;
+            setOriginalVisual(false);
+            renderImage();
+        }
+    }
+
+    /**
+     * Reset **the sub-page you are looking at**, not the whole page.
+     *
+     * <p>One 重置 at the top of 构图 used to wipe the crop and the rotation
+     * together, so nudging the angle back to zero also threw away a crop the
+     * user had just framed. Each sub-page owns its own numbers now.
+     */
+    private void resetComposePanel() {
+        if (composeSubPage == 0) {
+            geometryCropW = 1f; geometryCropH = 1f;
+            geometryCropX = 0f; geometryCropY = 0f;
+            pendingCropX = 0f; pendingCropY = 0f;
+            pendingCropW = 1f; pendingCropH = 1f;
+            cropRatioIndex = -1;
+        } else {
+            geometryTurns = 0;
+            geometryRotation = 0f;
+            geometryFlipH = false;
+            geometryFlipV = false;
+        }
+        showComposePage(composeSubPage);
+        commitCompose();
+    }
+
+    /**
+     * The crop frame on the picture, dragged by hand.
+     *
+     * <p>The ratio cards are a starting point; this is the rest of it. Once a
+     * card has fixed a shape, the corners keep that shape while they scale
+     * (the opposite corner is the anchor, the pointer picks the size, and the
+     * missing dimension follows from the ratio). With 原始 or a hand-dragged
+     * frame the ratio is free and the corners move independently.
+     *
+     * <p>Everything is normalised to the picture, so it holds at any canvas
+     * size -- the same numbers `geometry_crop_*` takes.
+     */
+    private final class CropOverlay extends View {
+        private final android.graphics.RectF image = new android.graphics.RectF();
+        private float nx = 0f, ny = 0f, nw = 1f, nh = 1f;
+        private float aspect = 0f;                 // picture w/h; 0 = free
+        private int drag = 0;                      // 0 none, 1 move, 2 TL, 3 TR, 4 BL, 5 BR
+        private float downX, downY, sx, sy, sw, sh;
+
+        CropOverlay() { super(MainActivity.this); }
+
+        void sync(float x, float y, float w, float h, float a) {
+            nx = x; ny = y; nw = w; nh = h; aspect = a;
+            invalidate();
+        }
+
+        private void pullImage() {
+            if (compare != null) image.set(compare.imageRect());
+        }
+
+        private float px(float n) { return image.left + n * image.width(); }
+        private float py(float n) { return image.top + n * image.height(); }
+
+        @Override protected void onDraw(android.graphics.Canvas canvas) {
+            pullImage();
+            if (image.isEmpty() || image.width() <= 0f) return;
+
+            final float l = px(nx), t = py(ny), r = px(nx + nw), b = py(ny + nh);
+
+            final android.graphics.Paint dim = new android.graphics.Paint();
+            dim.setColor(0x99000000);
+            canvas.drawRect(0, 0, getWidth(), t, dim);
+            canvas.drawRect(0, b, getWidth(), getHeight(), dim);
+            canvas.drawRect(0, t, l, b, dim);
+            canvas.drawRect(r, t, getWidth(), b, dim);
+
+            final android.graphics.Paint edge =
+                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            edge.setStyle(android.graphics.Paint.Style.STROKE);
+            edge.setStrokeWidth(dp(1.4f));
+            edge.setColor(0xFFFFFFFF);
+            canvas.drawRect(l, t, r, b, edge);
+
+            final android.graphics.Paint thirds =
+                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            thirds.setStyle(android.graphics.Paint.Style.STROKE);
+            thirds.setStrokeWidth(dp(0.8f));
+            thirds.setColor(0x66FFFFFF);
+            for (int i = 1; i < 3; ++i) {
+                final float x = l + (r - l) * i / 3f;
+                final float y = t + (b - t) * i / 3f;
+                canvas.drawLine(x, t, x, b, thirds);
+                canvas.drawLine(l, y, r, y, thirds);
+            }
+
+            final android.graphics.Paint grip =
+                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            grip.setStyle(android.graphics.Paint.Style.STROKE);
+            grip.setStrokeWidth(dp(3f));
+            grip.setColor(0xFFFFFFFF);
+            final float arm = Math.min(dp(22), Math.min(r - l, b - t) * 0.28f);
+            canvas.drawLine(l, t, l + arm, t, grip);
+            canvas.drawLine(l, t, l, t + arm, grip);
+            canvas.drawLine(r, t, r - arm, t, grip);
+            canvas.drawLine(r, t, r, t + arm, grip);
+            canvas.drawLine(l, b, l + arm, b, grip);
+            canvas.drawLine(l, b, l, b - arm, grip);
+            canvas.drawLine(r, b, r - arm, b, grip);
+            canvas.drawLine(r, b, r, b - arm, grip);
+        }
+
+        private int cornerAt(float x, float y) {
+            final float tolerance = dp(30);
+            final float l = px(nx), t = py(ny), r = px(nx + nw), b = py(ny + nh);
+            if (Math.hypot(x - l, y - t) < tolerance) return 2;
+            if (Math.hypot(x - r, y - t) < tolerance) return 3;
+            if (Math.hypot(x - l, y - b) < tolerance) return 4;
+            if (Math.hypot(x - r, y - b) < tolerance) return 5;
+            if (x > l && x < r && y > t && y < b) return 1;
+            return 0;
+        }
+
+        @Override public boolean onTouchEvent(android.view.MotionEvent e) {
+            pullImage();
+            if (image.width() <= 0f) return false;
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN: {
+                    final int hit = cornerAt(e.getX(), e.getY());
+                    if (hit == 0) return false;
+                    drag = hit;
+                    downX = e.getX(); downY = e.getY();
+                    sx = nx; sy = ny; sw = nw; sh = nh;
+                    final android.view.ViewParent parent = getParent();
+                    if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
+                    return true;
+                }
+                case android.view.MotionEvent.ACTION_POINTER_DOWN:
+                    // **A second finger is a pinch, and returning false here
+                    // would not hand it over** -- this view already owns the
+                    // gesture, and Android does not re-dispatch to a sibling.
+                    // So the pinch is forwarded explicitly.
+                    drag = 0;
+                    return compare != null && compare.onTouchEvent(e);
+                case android.view.MotionEvent.ACTION_MOVE: {
+                    if (e.getPointerCount() > 1 && compare != null) return compare.onTouchEvent(e);
+                    if (drag == 0) return false;
+                    applyDrag(e.getX(), e.getY());
+                    return true;
+                }
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL: {
+                    if (e.getPointerCount() > 1 && compare != null) return compare.onTouchEvent(e);
+                    if (drag != 0) {
+                        drag = 0;
+                        commitCrop();
+                    } else if (compare != null) {
+                        compare.onTouchEvent(e);        // close a pinch cleanly
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void applyDrag(float x, float y) {
+            final float dxN = (x - downX) / Math.max(1f, image.width());
+            final float dyN = (y - downY) / Math.max(1f, image.height());
+            final float min = 0.04f;
+
+            if (drag == 1) {
+                nx = Math.max(0f, Math.min(1f - sw, sx + dxN));
+                ny = Math.max(0f, Math.min(1f - sh, sy + dyN));
+            } else {
+                // The opposite corner is the anchor.
+                final float ax = (drag == 2 || drag == 4) ? sx + sw : sx;
+                final float ay = (drag == 2 || drag == 3) ? sy + sh : sy;
+                float mx = (drag == 2 || drag == 4) ? sx + dxN : sx + sw + dxN;
+                float my = (drag == 2 || drag == 3) ? sy + dyN : sy + sh + dyN;
+                mx = Math.max(0f, Math.min(1f, mx));
+                my = Math.max(0f, Math.min(1f, my));
+
+                float w = Math.abs(mx - ax);
+                float h = Math.abs(my - ay);
+                if (aspect > 0.0001f && image.width() > 0f) {
+                    // The ratio is in picture pixels; normalised space is
+                    // stretched by the picture's own aspect.
+                    final float aspN = aspect * (image.height() / image.width());
+                    if (w / Math.max(1e-5f, h) > aspN) h = w / aspN; else w = h * aspN;
+                }
+                w = Math.max(min, Math.min(1f, w));
+                h = Math.max(min, Math.min(1f, h));
+
+                nx = Math.max(0f, Math.min(1f - w, (mx < ax) ? ax - w : ax));
+                ny = Math.max(0f, Math.min(1f - h, (my < ay) ? ay - h : ay));
+                nw = w; nh = h;
+            }
+            invalidate();
+        }
+
+        private void commitCrop() {
+            // **A proposal, not a render.** The picture only changes when 应用
+            // is pressed; dragging keeps the frame and the photograph in the
+            // same space, which is what makes them line up.
+            pendingCropX = nx; pendingCropY = ny;
+            pendingCropW = nw; pendingCropH = nh;
+            cropRatioIndex = -2;        // hand-dragged: no card owns this shape
+            showComposePage(0);
+        }
+    }
+
+    /** A crop ratio drawn at that shape: 3:2 is a wide box, 1:1 a square,
+     *  6:17 a slash. The card's caption says which gate it came from. */
+    private static final class RatioMark extends View {
+        private final float aspect;
+        private final int colour;
+        private final float density;
+
+        RatioMark(android.content.Context c, float aspect, int colour) {
+            super(c);
+            this.aspect = aspect > 0.01f ? aspect : 1f;
+            this.colour = colour;
+            this.density = c.getResources().getDisplayMetrics().density;
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas canvas) {
+            final float pad = density * 7f;
+            final float boxW = Math.max(0f, getWidth() - pad * 2f);
+            final float boxH = Math.max(0f, getHeight() - pad * 2f);
+            float w = boxW;
+            float h = boxW / aspect;
+            if (h > boxH) { h = boxH; w = boxH * aspect; }
+            final float cx = getWidth() / 2f, cy = getHeight() / 2f;
+            final android.graphics.Paint paint =
+                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(density * 1.1f);
+            paint.setColor(colour);
+            canvas.drawRect(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f, paint);
+        }
+    }
+
     private LinearLayout buildFormatPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -3282,50 +4221,11 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        foot.addView(label("物理尺度 + 裁切旋转 · 预览与导出一致", 8.5f, UI_MUTED, tfHan),
+        foot.addView(label("物理尺幅 · 裁切与旋转在「构图」页", 8.5f, UI_MUTED, tfHan),
                 new LinearLayout.LayoutParams(0, -2, 1f));
         formatFootValue = label("36 mm", 9, UI_BLUE, tfBody);
         foot.addView(formatFootValue);
         panel.addView(foot, new LinearLayout.LayoutParams(-1, dp(28)));
-
-        addChoice(panel, "旋转", geometryTurns == 0 ? "不旋转" : ("顺时针 " + (geometryTurns * 90) + "°"),
-                tv -> showChoiceMapping("旋转照片", new String[]{"不旋转", "顺时针 90°", "180°", "顺时针 270°"},
-                        new String[]{"0", "1", "2", "3"}, String.valueOf(geometryTurns), id -> {
-                            geometryTurns = Integer.parseInt(id);
-                            tv.setText(geometryTurns == 0 ? "不旋转" : ("顺时针 " + (geometryTurns * 90) + "°"));
-                            applyParams();
-                            if (uiReady && session != null) { showingOriginal = false; setOriginalVisual(false); renderImage(); }
-                        }));
-        addChoice(panel, "任意角度", String.format(java.util.Locale.US, "%.1f°", geometryRotation),
-                tv -> showChoiceMapping("任意角度旋转", new String[]{"0°", "左 15°", "左 5°", "右 5°", "右 15°"},
-                        new String[]{"0", "-15", "-5", "5", "15"}, String.valueOf(geometryRotation), id -> {
-                            geometryRotation = Float.parseFloat(id);
-                            tv.setText(String.format(java.util.Locale.US, "%.1f°", geometryRotation));
-                            applyParams();
-                            if (uiReady && session != null) { showingOriginal = false; setOriginalVisual(false); renderImage(); }
-                        }));
-        addChoice(panel, "居中裁切", geometryCropW >= 0.999f && geometryCropH >= 0.999f ? "完整画面" :
-                        String.format(java.util.Locale.US, "%.0f%% × %.0f%%", geometryCropW * 100, geometryCropH * 100),
-                tv -> showChoiceMapping("居中裁切", new String[]{"完整画面", "保留 90%", "保留 75%", "保留 50%", "方形居中裁切"},
-                        new String[]{"full", "90", "75", "50", "square"}, "full", id -> {
-                            if (!"square".equals(id)) {
-                                final float size = "full".equals(id) ? 1f : Float.parseFloat(id) / 100f;
-                                geometryCropW = size; geometryCropH = size;
-                            } else {
-                                final int w = importedWidth > 0 ? importedWidth : sourceWidth;
-                                final int h = importedHeight > 0 ? importedHeight : sourceHeight;
-                                if (w > 0 && h > 0) {
-                                    if (w >= h) { geometryCropW = (float) h / w; geometryCropH = 1f; }
-                                    else { geometryCropW = 1f; geometryCropH = (float) w / h; }
-                                }
-                            }
-                            geometryCropX = (1f - geometryCropW) * 0.5f;
-                            geometryCropY = (1f - geometryCropH) * 0.5f;
-                            tv.setText(geometryCropW >= 0.999f && geometryCropH >= 0.999f ? "完整画面" :
-                                    String.format(java.util.Locale.US, "%.0f%% × %.0f%%", geometryCropW * 100, geometryCropH * 100));
-                            applyParams();
-                            if (uiReady && session != null) { showingOriginal = false; setOriginalVisual(false); renderImage(); }
-                        }));
 
         rebuildFormatCards();
         return panel;
@@ -3805,7 +4705,7 @@ public class MainActivity extends Activity {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setBackgroundColor(UI_PAPER);
-        final String[] names = {"胶片", "冲印", "光学", "尺度", "边框"};
+        final String[] names = {"胶片", "冲印", "光学", "尺度", "构图", "边框"};
         for (int i = 0; i < names.length; ++i) {
             final int index = i;
             android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
@@ -4196,10 +5096,33 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void setMetering(boolean on) {
+        // **No early return.** Pressing the already-selected side still means
+        // "draw it again": the earlier press can have landed while a render
+        // held the session (`pendingRender`), and swallowing the second press
+        // made the chip look dead -- "点开启没反应，得先点关闭再点开启".
+        metering = on;
+        refreshMeterChip();
+        if (uiReady && session != null) {
+            applyParams(PREVIEW_LONG_EDGE);
+            renderImage();
+        }
+    }
+
+    private void refreshMeterChip() {
+        if (meterOn == null || meterOff == null) return;
+        meterOn.setTextColor(metering ? UI_BLUE : UI_MUTED);
+        meterOn.setBackground(outlineBox(metering));
+        meterOff.setTextColor(metering ? UI_MUTED : UI_BLUE);
+        meterOff.setBackground(outlineBox(!metering));
+    }
+
     private void resetFilmPanel() {
         // 原图 is the reset: no stock, no render, the imported frame as it was.
         filmStock = null;
         printStock = "kodak_portra_endura";
+        metering = false;
+        refreshMeterChip();
         brandFilter = "all";
         showingOriginal = false;
         rebuildBrandRow();
@@ -4235,51 +5158,64 @@ public class MainActivity extends Activity {
     private void resetFormatPanel() {
         formatIndex = 0;
         filmFormatMm = FORMAT_MM[0];
-        geometryTurns = 0;
-        geometryRotation = 0.0f;
-        geometryCropW = 1.0f; geometryCropH = 1.0f;
-        geometryCropX = 0.0f; geometryCropY = 0.0f;
         if (formatFootValue != null) formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", FORMAT_MM[0]));
         rebuildFormatCards();
         if (session != null) { applyParams(); renderImage(); }
     }
 
+    /**
+     * 重置 on 边框 resets **the sub-page in front of you**: the 片边 page
+     * leaves the date alone, and the 日期 page leaves the rebate alone. From
+     * the two entry cards it resets both, because there is no narrower thing
+     * to mean.
+     */
     private void resetEdgePanel() {
+        if (edgePageIndex == 0) { resetOverscanPage(); return; }
+        if (edgePageIndex == 1) { resetDatePage(); return; }
+        resetOverscanPage();
+        resetDatePage();
+    }
+
+    private void resetOverscanPage() {
         overscanOn = false;
-        dateOn = false;
         overscanMark.setLit(false);
-        dateMark.setLit(false);
         edgeFog = 1.0f;
         edgeLeaks = 0.0f;
         frameNumber = 0.0f;
         edgeFNumber = 0.0f;
-        dateSize = 1.0f;
-        dateEv = 3.5f;
-        dateInsetX = 3.0f;
-        dateInsetY = 2.4f;
         edgeMode = "strip";
         edgeGate = "auto";
         edgeTextOn = true;
         edgeHoles = "white";
         edgeCarrier = "none";
-        datePlacement = "frame";
-        dateCorner = "br";
-        dateStyle = "lcd";
         cameraFilter = "";
         sceneNorm = "power";
-        dataText = "";
-        dateTextB = "";
         cameraSeed = 1;
         frameSeed = 1;
         setBarProgress(edgeFogBar, 0f, 4f, edgeFog);
         setBarProgress(edgeLeaksBar, 0f, 4f, edgeLeaks);
         setBarProgress(frameNoBar, 0f, 99f, frameNumber);
         setBarProgress(edgeFNumBar, 0f, 64f, edgeFNumber);
+        refreshKnob();
+        if (session != null) onEdgeChanged();
+    }
+
+    private void resetDatePage() {
+        dateOn = false;
+        dateMark.setLit(false);
+        dateSize = 1.0f;
+        dateEv = 3.5f;
+        dateInsetX = 3.0f;
+        dateInsetY = 2.4f;
+        datePlacement = "frame";
+        dateCorner = "br";
+        dateStyle = "lcd";
+        dataText = "";
+        dateTextB = "";
         setBarProgress(dateSizeBar, 0.4f, 3f, dateSize);
         setBarProgress(dateEvBar, -2f, 8f, dateEv);
         setBarProgress(dateInsetXBar, 0f, 30f, dateInsetX);
         setBarProgress(dateInsetYBar, 0f, 30f, dateInsetY);
-        refreshKnob();
         if (session != null) onEdgeChanged();
     }
 
@@ -4506,8 +5442,17 @@ public class MainActivity extends Activity {
                 // shelf and the canvas were developing two different recipes.
                 // The card is "this film on its own paper": a black-and-white
                 // stock gets Ilford whatever the canvas is printing on.
-                final String cardPaper = filmTargetPrints.containsKey(stock)
-                        ? filmTargetPrints.get(stock) : printStock;
+                // **Monochrome keeps its own paper; everything else follows the
+                // canvas.** A black-and-white stock on Portra Endura comes out
+                // sepia, so it gets Ilford. The rest used to fall back to the
+                // catalogue's `target_print`, and the difference read as the
+                // film being wrong: C200 on Crystal Archive is visibly cyan
+                // beside the same frame on Endura, and the paper was the only
+                // variable. A card is "this film, on the paper you are using".
+                final String targetPaper = filmTargetPrints.get(stock);
+                final String cardPaper = "ilford_multigrade_iv_rc".equals(targetPaper)
+                        ? targetPaper
+                        : (printStock == null ? "kodak_portra_endura" : printStock);
                 applyParams(stock, cardPaper, PREFETCH_LONG_EDGE);
                 // `live` honours preview_long_edge (800 here); `preview` is a
                 // fixed 3400 px and made every card an export-sized print.
@@ -4874,8 +5819,11 @@ public class MainActivity extends Activity {
     private void setTab(int active) {
         activeTabIndex = active;
         // Arriving at the frame page always starts from the two entry cards.
-        if (active == 4) openEdgePage(-1);
+        if (active == 5) openEdgePage(-1);
         else if (edgePageIndex >= 0) openEdgePage(-1);
+        if (cropOverlay != null) {
+            cropOverlay.setVisibility(active == 4 && composeSubPage == 0 ? View.VISIBLE : View.GONE);
+        }
         for (int i = 0; i < panels.length; ++i) {
             panels[i].setVisibility(i == active ? View.VISIBLE : View.GONE);
             tabBars[i].setVisibility(i == active ? View.VISIBLE : View.INVISIBLE);
@@ -4920,6 +5868,7 @@ public class MainActivity extends Activity {
     /** Which of the three things on the stage is showing. */
     private void setStage(int mode, String name) {
         if (mode == 0) compare.clear();
+        refreshComparePill();
         emptyState.setVisibility(mode == 0 ? View.VISIBLE : View.GONE);
         compare.setVisibility(mode == 1 ? View.VISIBLE : View.GONE);
         rawState.setVisibility(mode == 2 ? View.VISIBLE : View.GONE);
@@ -4998,10 +5947,10 @@ public class MainActivity extends Activity {
         }
         final String full = (sourceWidth > 0 && sourceHeight > 0)
                 ? "全尺寸 " + sourceWidth + "×" + sourceHeight : "全尺寸";
-        final String fullNote = probe.isLimited()
-                ? "（本机上限约 " + String.format(java.util.Locale.US, "%.1f", maxImportPixels() / 1e6)
-                  + " MP，可能导出失败）"
-                : "（原图）";
+        // No ceiling to warn about: the export renders the frame that was
+        // imported, and that may be the file's own size. What is worth saying
+        // is that it takes time, not that it will be refused.
+        final String fullNote = "（原图 · 大尺寸会慢）";
         // What the driver says it can take, as opposed to what this build
         // currently lets through. The two were only ever visible as one number,
         // and it was always the smaller -- so a phone reporting 2 GiB of
@@ -5012,8 +5961,8 @@ public class MainActivity extends Activity {
             final double driverMp = probe.maxStorageBufferRange / 12.0 * 0.80 / 1e6;
             final double budgetMp = maxImportPixels() / 1e6;
             driverLine = String.format(java.util.Locale.US,
-                    "驱动单缓冲 %.0f MiB，可达 %.0f MP；当前版本按 %.1f MP 预算（分块引擎优化中）",
-                    probe.maxStorageBufferRange / 1048576.0, driverMp, budgetMp);
+                    "驱动单缓冲 %.0f MiB（分块后不再限制单帧）；本机按可用内存建议 %.1f MP",
+                    probe.maxStorageBufferRange / 1048576.0, budgetMp);
         } else {
             driverLine = probe.valid ? "驱动未报单缓冲上限" : "设备信息读取失败";
         };
@@ -5097,14 +6046,51 @@ public class MainActivity extends Activity {
         private Bitmap before, after;
         private boolean holding, dragging;
         private float split, downX, downY;
+        // **The canvas zooms.** A 20 MP frame is inspected at fit size only
+        // down to the whole picture; pinch says "let me see that corner".
+        // Everything stays in `dst`, so the crop frame and any other overlay
+        // that asks `imageRect()` follows the zoom for free.
+        private float zoom = 1f, panX = 0f, panY = 0f;
+        private boolean panning;
+        private long lastTapMs = 0;
+        /** **The divider is opt-in.** Any single-finger drag used to become
+         *  a comparison split, which is what "一直在跟分割线抢手势" was: the
+         *  canvas could not pan without dragging the line instead. Now the
+         *  pill in the corner turns it on. */
+        private boolean splitMode = false;
 
+        // **Pinch, by hand.** `ScaleGestureDetector` refuses to start until the
+        // fingers are `getScaledMinimumScalingSpan()` apart -- about 27 mm on
+        // this class of phone -- and that value is not configurable. Holding
+        // two fingers closer than that (the natural way to pinch a phone) did
+        // nothing at all: not the zoom, and not the fallback either, because
+        // `isInProgress()` stayed false and the switch below has no
+        // multi-pointer branch any more. So the span is measured here.
+        private boolean pinching = false;
+        private float pinchStartSpan = 0f, pinchStartZoom = 1f;
+        private float pinchStartCx = 0f, pinchStartCy = 0f;
+        private float pinchStartPanX = 0f, pinchStartPanY = 0f;
+        // **The platform's detector, not a hand-rolled one.** Tracking
+        // pointer ids by hand got the sequence wrong: the pinch never moved
+        // the picture and the leftover finger became a comparison drag.
+        // `ScaleGestureDetector` owns that state and reports a factor.
+
+
+        /** Retired: the long press lives on the pill now. Kept so the
+         *  `removeCallbacks` calls stay valid, never posted. */
         private final Runnable press = new Runnable() {
-            @Override public void run() {
-                if (dragging || after == null || before == null) return;
-                holding = true;
-                invalidate();
-            }
+            @Override public void run() { }
         };
+
+        /** **The pill owns "show me the original".** A press on the picture
+         *  used to arm a 500 ms timer that fired in the middle of every pinch,
+         *  which is the "一直跟长按对比功能冲突" report. */
+        void setHolding(boolean on) {
+            final boolean wanted = on && before != null && after != null;
+            if (holding == wanted) return;
+            holding = wanted;
+            invalidate();
+        }
 
         CompareView(android.content.Context context) {
             super(context);
@@ -5112,8 +6098,73 @@ public class MainActivity extends Activity {
             slop = android.view.ViewConfiguration.get(context).getScaledTouchSlop();
         }
 
+        /** Two fingers down: remember the span, the centre and where we were. */
+        private void beginPinch(android.view.MotionEvent e) {
+            if (e.getPointerCount() < 2) return;
+            pinchStartSpan = Math.max(1f, twoFingerSpan(e));
+            pinchStartZoom = zoom;
+            pinchStartCx = (e.getX(0) + e.getX(1)) / 2f;
+            pinchStartCy = (e.getY(0) + e.getY(1)) / 2f;
+            pinchStartPanX = panX;
+            pinchStartPanY = panY;
+            pinching = true;
+            handler.removeCallbacks(press);
+            holding = false;
+            dragging = false;
+            panning = false;
+            split = 0f;
+        }
+
+        private void updatePinch(android.view.MotionEvent e) {
+            if (e.getPointerCount() < 2 || pinchStartSpan <= 1f) return;
+            final float span = Math.max(1f, twoFingerSpan(e));
+            final float want = Math.max(0.2f, Math.min(8f, pinchStartZoom * span / pinchStartSpan));
+            // Keep the point between the fingers under the fingers.
+            final float cx = (e.getX(0) + e.getX(1)) / 2f;
+            final float cy = (e.getY(0) + e.getY(1)) / 2f;
+            final float k = want / Math.max(1e-4f, pinchStartZoom);
+            panX = (pinchStartPanX - (pinchStartCx - getWidth() / 2f)) * k + (cx - getWidth() / 2f);
+            panY = (pinchStartPanY - (pinchStartCy - getHeight() / 2f)) * k + (cy - getHeight() / 2f);
+            zoom = want;
+            if (zoom <= 1.005f) { panX = 0f; panY = 0f; }
+            clampPan();
+            invalidate();
+        }
+
+        private void endPinch() {
+            if (!pinching) return;
+            pinching = false;
+            pinchStartSpan = 0f;
+        }
+
+        private float twoFingerSpan(android.view.MotionEvent e) {
+            return (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+        }
+
         void setBefore(Bitmap b) { before = b; invalidate(); }
         void setAfter(Bitmap b) { after = b; invalidate(); }
+
+        boolean isSplitMode() { return splitMode; }
+
+        float zoomLevel() { return zoom; }
+        float panXLevel() { return panX; }
+        float panYLevel() { return panY; }
+
+        /** Set the view outright; the caller has already worked out the pan. */
+        void setView(float z, float px, float py) {
+            zoom = Math.max(0.2f, Math.min(8f, z));
+            panX = px;
+            panY = py;
+            if (zoom <= 1.005f) { panX = 0f; panY = 0f; }
+            clampPan();
+            invalidate();
+        }
+
+        void setSplitMode(boolean on) {
+            splitMode = on;
+            if (!on) split = 0f;
+            invalidate();
+        }
 
         void clear() {
             before = null;
@@ -5121,6 +6172,10 @@ public class MainActivity extends Activity {
             holding = false;
             dragging = false;
             split = 0f;
+            splitMode = false;
+            zoom = 1f;
+            panX = 0f;
+            panY = 0f;
             invalidate();
         }
 
@@ -5141,14 +6196,41 @@ public class MainActivity extends Activity {
             }
         }
 
+        /** The rectangle the picture occupies on screen, for overlays. */
+        android.graphics.RectF imageRect() { return new android.graphics.RectF(dst); }
+
         private void drawFit(android.graphics.Canvas canvas, Bitmap bmp) {
             final float vw = getWidth(), vh = getHeight();
             if (vw <= 0 || vh <= 0 || bmp.getWidth() == 0) return;
-            final float scale = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight());
+            final float scale = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight()) * zoom;
             final float w = bmp.getWidth() * scale, h = bmp.getHeight() * scale;
-            final float left = (vw - w) / 2f, top = (vh - h) / 2f;
+            final float left = (vw - w) / 2f + panX, top = (vh - h) / 2f + panY;
             dst.set(left, top, left + w, top + h);
             canvas.drawBitmap(bmp, null, dst, paint);
+        }
+
+        /** Keep the picture from being dragged off its own frame. */
+        private void clampPan() {
+            final Bitmap base = after != null ? after : before;
+            if (base == null || base.getWidth() == 0) return;
+            final float vw = getWidth(), vh = getHeight();
+            if (vw <= 0 || vh <= 0) return;
+            final float scale = Math.min(vw / base.getWidth(), vh / base.getHeight()) * zoom;
+            final float w = base.getWidth() * scale, h = base.getHeight() * scale;
+            final float maxX = Math.max(0f, (w - vw) / 2f);
+            final float maxY = Math.max(0f, (h - vh) / 2f);
+            panX = Math.max(-maxX, Math.min(maxX, panX));
+            panY = Math.max(-maxY, Math.min(maxY, panY));
+        }
+
+        private float span(android.view.MotionEvent e) {
+            return (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
+        }
+
+        /** Back to fit. Double-tap, or call it when a frame is replaced. */
+        void resetView() {
+            zoom = 1f; panX = 0f; panY = 0f;
+            invalidate();
         }
 
         private void drawDivider(android.graphics.Canvas canvas, float x) {
@@ -5166,27 +6248,91 @@ public class MainActivity extends Activity {
         }
 
         @Override public boolean onTouchEvent(android.view.MotionEvent e) {
-            if (after == null || before == null) return false;
-            switch (e.getActionMasked()) {
+            // Zooming only needs *a* picture; the before/after divider needs
+            // both, and says so where it uses them.
+            if (after == null && before == null) return false;
+
+            final int action = e.getActionMasked();
+
+            // **The second finger starts the pinch immediately.** No slop, no
+            // minimum span: two fingers on the glass is the whole condition.
+            if (action == android.view.MotionEvent.ACTION_POINTER_DOWN
+                    && e.getPointerCount() >= 2) {
+                beginPinch(e);
+                try { DebugSink.text("zoom", "pinch begin span=" + Math.round(pinchStartSpan)); }
+                catch (Throwable ignored) { }
+                return true;
+            }
+            if (pinching) {
+                if (action == android.view.MotionEvent.ACTION_MOVE) {
+                    updatePinch(e);
+                    return true;
+                }
+                if (action == android.view.MotionEvent.ACTION_POINTER_UP) {
+                    endPinch();
+                    try { DebugSink.text("zoom", "pinch end at " + String.format(java.util.Locale.US, "%.2f", zoom)); }
+                    catch (Throwable ignored) { }
+                    return true;
+                }
+                if (action == android.view.MotionEvent.ACTION_UP
+                        || action == android.view.MotionEvent.ACTION_CANCEL) {
+                    endPinch();
+                    lastTapMs = 0;
+                    return true;
+                }
+                return true;
+            }
+
+            switch (action) {
                 case android.view.MotionEvent.ACTION_DOWN:
                     downX = e.getX();
                     downY = e.getY();
                     dragging = false;
                     holding = false;
-                    handler.postDelayed(press, android.view.ViewConfiguration.getLongPressTimeout());
+                    panning = false;
+                    // no long press on the picture: the pill owns it
+                    return true;
+                case android.view.MotionEvent.ACTION_POINTER_DOWN:
+                case android.view.MotionEvent.ACTION_POINTER_UP:
                     return true;
                 case android.view.MotionEvent.ACTION_MOVE:
-                    if (holding) return true;
-                    if (!dragging) {
-                        if (Math.abs(e.getX() - downX) < slop && Math.abs(e.getY() - downY) < slop) return true;
-                        dragging = true;
-                        handler.removeCallbacks(press);
+                    // **The divider only moves while its pill is lit.**
+                    if (splitMode) {
+                        if (before == null || after == null) return true;
+                        if (!dragging) {
+                            if (Math.abs(e.getX() - downX) < slop && Math.abs(e.getY() - downY) < slop) return true;
+                            dragging = true;
+                            handler.removeCallbacks(press);
+                        }
+                        split = Math.max(0.02f, Math.min(0.98f, e.getX() / Math.max(1, getWidth())));
+                        invalidate();
+                        return true;
                     }
-                    split = Math.max(0.02f, Math.min(0.98f, e.getX() / Math.max(1, getWidth())));
-                    invalidate();
+                    // **One finger pans only once there is something to pan.**
+                    if (zoom > 1.01f) {
+                        if (!panning) {
+                            if (Math.abs(e.getX() - downX) < slop && Math.abs(e.getY() - downY) < slop) return true;
+                            panning = true;
+                            handler.removeCallbacks(press);
+                        }
+                        panX += e.getX() - downX;
+                        panY += e.getY() - downY;
+                        downX = e.getX();
+                        downY = e.getY();
+                        clampPan();
+                        invalidate();
+                        return true;
+                    }
                     return true;
-                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_UP: {
                     handler.removeCallbacks(press);
+                    final long now = android.os.SystemClock.uptimeMillis();
+                    if (!splitMode && !dragging && !panning && !holding && split == 0f && now - lastTapMs < 320) {
+                        resetView();
+                        lastTapMs = 0;
+                    } else {
+                        lastTapMs = (dragging || panning || holding) ? 0 : now;
+                    }
                     if (holding) {
                         holding = false;
                         invalidate();
@@ -5196,11 +6342,14 @@ public class MainActivity extends Activity {
                         invalidate();
                     }
                     dragging = false;
+                    panning = false;
                     return true;
+                }
                 case android.view.MotionEvent.ACTION_CANCEL:
                     handler.removeCallbacks(press);
                     holding = false;
                     dragging = false;
+                    panning = false;
                     invalidate();
                     return true;
                 default:
@@ -5257,19 +6406,53 @@ public class MainActivity extends Activity {
         final double fit = importScale(w, h, capPixels);
         final int sw = Math.max(1, (int) Math.round(w * fit));
         final int sh = Math.max(1, (int) Math.round(h * fit));
-        final String budgetMessage = "原图 " + w + "×" + h + "（" + megapixels(w, h) + " MP），这台机器一次能渲染约 "
+        final String budgetMessage = "原图 " + w + "×" + h + "（" + megapixels(w, h) + " MP）。"
+                + "\n\n按原图：渲染约 " + Math.max(5, (int) Math.round((double) w * h / 1e6 * 1.4))
+                + " 秒；内存不够时应用会直接闪退。"
+                + "\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
+                + "\n\n本机按可用内存建议约 "
                 + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
-                + (overscanOn ? "（已按片边预留画布，片边会把画布再撑大约 1.5 倍）" : "") + "。"
-                + "\n\n按 " + sw + "×" + sh + " 导入一定出得来；按原尺寸可能在本机渲染失败（E-1001）。";
-        showActionSheet("这张图超过本机预算", budgetMessage, new String[]{
-                "按 " + sw + "×" + sh + " 导入", "按原尺寸", "取消"
+                + (overscanOn ? "（已按片边预留画布）" : "") + "。";
+        showActionSheet("按多大的尺寸导入", budgetMessage, new String[]{
+                "按原图 " + w + "×" + h, "缩到 " + sw + "×" + sh, "取消"
         }, which -> {
             if (which == 0) {
-                importBudgetAccepted = true;
-                loadImage(uri);
-            } else if (which == 1) {
                 importAtNativeSize = true;
                 loadImage(uri);
+            } else if (which == 1) {
+                importBudgetAccepted = true;
+                loadImage(uri);
+            }
+        });
+    }
+
+    /**
+     * The RAW sheet, shown *before* the decode.
+     *
+     * The size comes from the container header (`nativeRawDimensions`), so the
+     * question is asked while the memory is still unspent -- which is the whole
+     * difference between this and the old post-decode notice.
+     */
+    private void showRawBudgetDialog(final Uri uri, final int w, final int h, final int capPixels) {
+        final double fit = importScale(w, h, capPixels);
+        final int sw = Math.max(1, (int) Math.round(w * fit));
+        final int sh = Math.max(1, (int) Math.round(h * fit));
+        final int seconds = Math.max(5, (int) Math.round((double) w * h / 1e6 * 1.4));
+        final String message = "这张 RAW 是 " + w + "×" + h + "（" + megapixels(w, h) + " MP）。"
+                + "\n\n按原图：渲染约 " + seconds + " 秒；内存不够时应用会直接闪退。"
+                + "\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
+                + "\n\n本机按可用内存建议约 "
+                + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
+                + (overscanOn ? "（已按片边预留画布）" : "") + "。";
+        showActionSheet("按多大的尺寸导入", message, new String[]{
+                "按原图 " + w + "×" + h, "缩到 " + sw + "×" + sh, "取消"
+        }, which -> {
+            if (which == 0) {
+                importAtNativeSize = true;
+                loadRawImage(uri);
+            } else if (which == 1) {
+                pendingCapPixels = capPixels;
+                loadRawImage(uri);
             }
         });
     }
@@ -5292,6 +6475,18 @@ public class MainActivity extends Activity {
             if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
         }
         return Math.min(k, 1.0);
+    }
+
+    /**
+     * The line that replaces a refusal: how big this frame is, and what the
+     * memory estimate would have picked. It never changes the import.
+     */
+    private String importSizeNote(int w, int h) {
+        final long area = (long) w * (long) h;
+        final long suggest = maxImportPixels();
+        if (area <= suggest) return "";
+        return " · " + megapixels(w, h) + " MP（建议 "
+                + String.format(java.util.Locale.US, "%.1f", suggest / 1e6) + " MP，渲染会慢）";
     }
 
     private static String megapixels(int w, int h) {
@@ -5795,6 +6990,9 @@ public class MainActivity extends Activity {
             // that decision on the user's behalf, and it shows up later as an
             // export that is smaller than the file. The header gives the size
             // without decoding anything, so the question is free.
+            // **Ask before shrinking.** The header gives the size without
+            // decoding anything, so the question is free -- and the answer
+            // belongs to the user, not to a memory estimate.
             if (!importAtNativeSize && !importBudgetAccepted && !suppressBudgetDialog) {
                 final int[] full = sniffImageSize(uri);
                 if (full != null) {
@@ -5855,8 +7053,10 @@ public class MainActivity extends Activity {
             final int forcedCap = pendingCapPixels;
             pendingCapPixels = 0;
             e1001Offered = false;
-            final int capPixels = nativeSize ? Integer.MAX_VALUE
-                    : (forcedCap > 0 ? forcedCap : maxImportPixels());
+            // An explicit "render smaller" from the failure sheet outranks the
+            // native default: the user asked for that one.
+            final int capPixels = forcedCap > 0 ? forcedCap
+                    : (nativeSize ? Integer.MAX_VALUE : maxImportPixels());
             final int edgeCap = nativeSize ? Integer.MAX_VALUE : IMPORT_LONG_EDGE;
             sourceBitmap = decodeImport(uri, capPixels, edgeCap);
             if (sourceBitmap == null) {
@@ -5883,13 +7083,19 @@ public class MainActivity extends Activity {
             // an OutOfMemoryError (an Error, so the old `catch (Exception)`
             // never saw it and the process died) into a smaller import.
             double k = 1.0;
-            if (area > capPixels) k = Math.min(k, Math.sqrt((double) capPixels / (double) area));
-            if (longEdge > edgeCap) k = Math.min(k, (double) edgeCap / longEdge);
+            // **Nothing is scaled when the user asked for the original.** The
+            // memory test below used to run even with `nativeSize`, so "force
+            // original" still came back smaller -- the one place where the
+            // suggestion was a ceiling in disguise.
             final long availBytes = availableMemoryBytes();
-            if (availBytes > 0) {
-                final long budget = Math.max(1L << 20, availBytes - (128L << 20));
-                final double wantBytes = (double) area * 12.0;
-                if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
+            if (!nativeSize) {
+                if (area > capPixels) k = Math.min(k, Math.sqrt((double) capPixels / (double) area));
+                if (longEdge > edgeCap) k = Math.min(k, (double) edgeCap / longEdge);
+                if (availBytes > 0) {
+                    final long budget = Math.max(1L << 20, availBytes - (128L << 20));
+                    final double wantBytes = (double) area * 12.0;
+                    if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
+                }
             }
             if (k < 1.0) {
                 final int nw = Math.max(1, (int) Math.round(sourceBitmap.getWidth() * k));
@@ -5953,7 +7159,7 @@ public class MainActivity extends Activity {
                 updateFilmSelection();
                 renderImage();
             } else {
-                statusText.setText("未渲染 · 选择胶片开始");
+                statusText.setText("未渲染 · 选择胶片开始" + importSizeNote(sourceWidth, sourceHeight));
                 startPrefetch();
             }
         } catch (Throwable t) {
@@ -6086,15 +7292,22 @@ public class MainActivity extends Activity {
             final int byNative = engine == null ? 0 : engine.maxFramePixels();
             if (byNative > 0) byBinding = byNative;
         } catch (Throwable ignored) { }
-        if (byBinding == Long.MAX_VALUE) byBinding = probe.maxPixelsByBinding();
-        // The hidden override (long-press the version in 关于) replaces this
-        // ceiling and only this one.
-        final int debugMp = debugPixelCapMp();
-        if (debugMp > 0) byBinding = (long) debugMp * 1_000_000L;
+        // **No fallback to `probe.maxPixelsByBinding()`.** `maxFramePixels()`
+        // answers 0 on purpose -- the renderer bands every pass that would
+        // otherwise bind a whole plane -- and falling back here silently put
+        // the 8.95 MP ceiling back on every 128 MiB device, which is exactly
+        // the number that release claimed to have removed.
         final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
-        // The hard cap is measured, not chosen: 42.7 MP renders here, 44.8 MP
-        // takes the device down, and the pool's peak is 6.3 planes (76 B/px).
-        long px = Math.min(Math.min(byBinding, byMemory), DeviceProbe.HARD_PIXEL_CAP);
+        // **No hard 42 MP ceiling.** It was measured on one 12 GB phone while a
+        // canvas plane still had to fit a binding; the banded renderer and a
+        // larger device both outgrew it. What is left is memory, and the user
+        // gets asked before a frame is shrunk -- see `showImportBudgetDialog`.
+        long px = Math.min(byBinding, byMemory);
+        // The hidden override (long-press the version in 关于) replaces this
+        // suggestion outright: it exists so a tester can name a size neither the
+        // driver nor the free-memory estimate would pick.
+        final int debugMp = debugPixelCapMp();
+        if (debugMp > 0) px = (long) debugMp * 1_000_000L;
         if (withRebate) px = (long) (px / 1.6);
         return (int) Math.min(Math.max(px, 1_000_000L), Integer.MAX_VALUE);
     }
@@ -6147,7 +7360,25 @@ public class MainActivity extends Activity {
                 showInAppToast("无法获取RAW文件路径");
                 return;
             }
-            
+
+            // **Ask before the decode.** `open_file` reads the container header
+            // in milliseconds; the decode that follows commits 12 bytes per
+            // pixel before anyone is consulted, and at 50 MP that is 600 MB. A
+            // sheet that appears after that memory is spent is a post-mortem,
+            // not a choice.
+            if (!suppressBudgetDialog && !importAtNativeSize && pendingCapPixels <= 0) {
+                final int[] dims = SpektraLabEngine.rawDimensions(filePath);
+                if (dims != null && dims[0] > 0 && dims[1] > 0) {
+                    final long area = (long) dims[0] * (long) dims[1];
+                    final int cap = maxImportPixels();
+                    if (area > cap || Math.max(dims[0], dims[1]) > IMPORT_LONG_EDGE) {
+                        statusText.setText("选择导入尺寸");
+                        showRawBudgetDialog(uri, dims[0], dims[1], cap);
+                        return;
+                    }
+                }
+            }
+
             statusText.setText("Decoding RAW…");
             // **The same three things the JPEG path does, for the same three
             // reasons** — and this path had none of them, which is why a RAW
@@ -6340,42 +7571,25 @@ public class MainActivity extends Activity {
                     sourceHeight = h;
                     try { DebugSink.text("raw-dims", "w=" + w + " h=" + h); } catch (Throwable ignored) {}
 
-                    // Say when the device, not the photo, set the size. Silent
-                    // downscaling reads as a bug the next time the user exports.
-                    final int[] src = SpektraLabEngine.rawSourceSize();
-                    final boolean shrunk = src != null && src.length == 2
-                            && (long) src[0] * src[1] > (long) w * h;
+                    // **The session's own size, not `rawSourceSize()`.** That
+                    // legacy query answers {0,0} on purpose -- its comment says
+                    // callers must ask the session -- and reading it put
+                    // "RAW 0×0 · 0.0 MP" on the status bar.
+                    final boolean capped = importCapPixels > 0;
                     try {
-                        DebugSink.text("raw-cap", shrunk
-                                ? "source " + src[0] + "x" + src[1] + " -> session " + w + "x" + h
-                                : "not capped " + w + "x" + h);
+                        DebugSink.text("raw-cap", (capped ? "capped at " + importCapPixels : "native")
+                                + " -> session " + w + "x" + h);
                     } catch (Throwable ignored) {}
 
                     runOnUiThread(() -> {
                         refreshEdgeFormats();
                         setStep(1);
-                        if (shrunk && !suppressBudgetDialog) {
-                            // The raw has to be decoded before its size is known,
-                            // so this asks afterwards -- but it still asks, and
-                            // it offers the escape hatch the long-press used to
-                            // hide.
-                            final int rawW = src[0], rawH = src[1];
-                            final String budgetMessage = "原图 " + rawW + "×" + rawH + "（" + megapixels(rawW, rawH)
-                                            + " MP），这台机器一次能渲染约 "
-                                            + String.format(java.util.Locale.US, "%.1f",
-                                                    (importCapPixels > 0 ? importCapPixels : maxImportPixels()) / 1e6)
-                                            + " MP，已按 " + w + "×" + h + " 导入。"
-                                            + "\n\n按原尺寸导入可能渲染失败（E-1001）。";
-                                    showActionSheet("原图超过本机预算", budgetMessage,
-                                            new String[]{"就这样", "按原尺寸重来"}, which -> {
-                                                if (which == 1) {
-                                                    importAtNativeSize = true;
-                                                    retryingNativeSize = true;
-                                                    loadRawImage(uri);
-                                                }
-                                            });
-                        }
-                        statusText.setText("RAW metadata loaded");
+                        // **No sheet.** The raw arrives at the size it was
+                        // imported at; the suggestion is a line in the status
+                        // bar, not a gate.
+                        statusText.setText("RAW " + w + "×" + h
+                                + " · " + megapixels(w, h) + " MP"
+                                + importSizeNote(w, h));
                     });
                 } catch (Throwable t) {
                     final String said = describeImportFailure(t);
@@ -6888,6 +8102,76 @@ public class MainActivity extends Activity {
         applyParamsTo(session, stock, paper, longEdge);
     }
 
+    // ── undo ──────────────────────────────────────────────────────
+
+    /**
+     * Take a snapshot once the edit settles.
+     *
+     * <p>Debounced, because a slider fires `renderImage` on every release and
+     * a burst of them would fill the stack with near-identical states. The
+     * dedupe on the serialised Look means a render that changed nothing costs
+     * nothing, which is what makes "one entry per real edit" hold.
+     */
+    private void scheduleUndo() {
+        undoHandler.removeCallbacks(undoPush);
+        undoHandler.postDelayed(undoPush, 600);
+    }
+
+    private void pushUndoNow() {
+        if (session == null || filmStock == null) return;
+        final String now;
+        try { now = lookToJson(captureLook()).toString(); }
+        catch (Throwable t) { return; }
+        if (now.equals(undoLast)) return;
+        undoLast = now;
+        undoStack.push(now);
+        while (undoStack.size() > UNDO_LIMIT) undoStack.removeLast();
+        refreshUndoPill();
+    }
+
+    /**
+     * Back one edit.
+     *
+     * <p>The stack holds the state *after* each edit, so undoing is: drop the
+     * top (where we are), restore the new top. The first entry is the import,
+     * which is why the button hides once `size() <= 1` -- there is nothing
+     * before the import to go back to.
+     */
+    private void undoStep() {
+        undoHandler.removeCallbacks(undoPush);
+        if (undoStack.size() <= 1) {
+            showInAppToast("已经回到最初的编辑");
+            return;
+        }
+        undoStack.pop();
+        final String previous = undoStack.peek();
+        if (previous == null) return;
+        try {
+            applyLook(lookFromJson(new org.json.JSONObject(previous)));
+        } catch (Throwable ignored) { }
+        undoLast = previous;
+        refreshUndoPill();
+        applyParams();
+        if (uiReady && session != null) {
+            showingOriginal = false;
+            setOriginalVisual(false);
+            renderImage();
+        }
+    }
+
+    /** A new photograph starts its own history. */
+    private void resetUndo() {
+        undoHandler.removeCallbacks(undoPush);
+        undoStack.clear();
+        undoLast = null;
+        refreshUndoPill();
+    }
+
+    private void refreshUndoPill() {
+        if (undoPill == null) return;
+        undoPill.setVisibility(undoStack.size() > 1 ? View.VISIBLE : View.GONE);
+    }
+
     /** Build the one Look delta and send it to the named session. Export uses
      * this directly; it never borrows the global preview-session field. */
     private void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper, int longEdge) {
@@ -6901,10 +8185,10 @@ public class MainActivity extends Activity {
             DebugSink.text("params", "draw film=" + stock + " print=" + paper
                     + " render=" + rendering + " long=" + longEdge);
         } catch (Throwable ignored) { }
-        target.setParams(String.format(java.util.Locale.US,
+        final String delta = String.format(java.util.Locale.US,
             "{\"film_stock\":\"%s\",\"print_stock\":\"%s\","
             + "\"input_color_space\":\"%s\",\"input_cctf_decoding\":%s,\"auto_exposure\":%s,"
-            + "\"auto_exposure_method\":\"balanced\","
+            + "\"auto_exposure_method\":\"%s\","
             + "\"scan_film\":%s,"
             + "\"output_color_space\":\"sRGB\",\"preview_long_edge\":%d,"
             + "\"print_exposure\":%.2f,\"grain_amount\":%.3f,\"grain_sublayers_active\":%s,"
@@ -6926,6 +8210,7 @@ public class MainActivity extends Activity {
             + "\"geometry_crop_x\":%.6f,\"geometry_crop_y\":%.6f,"
             + "\"geometry_crop_w\":%.6f,\"geometry_crop_h\":%.6f,"
             + "\"geometry_rotation_deg\":%.3f,\"geometry_quarter_turns\":%d,"
+            + "\"geometry_flip_h\":%s,\"geometry_flip_v\":%s,"
             + "\"m_filter_shift\":%.3f,\"y_filter_shift\":%.3f,\"filter_shift_scale\":%.1f,"
             + "\"preflash_exposure\":%.4f,"
             + "\"overscan_active\":%s,\"overscan_format\":\"%s\",\"overscan_edge_text\":\"%s\","
@@ -6941,7 +8226,20 @@ public class MainActivity extends Activity {
             stock, paper,
             isRawFile ? "ProPhoto RGB" : "sRGB",
             isRawFile ? "false" : "true",
-            isRawFile ? "true" : "false",
+            (isRawFile && metering) ? "true" : "false",
+            // **`protect_highlights`, not `balanced`, while the meter is on.**
+            // `balanced` aimed a lamp-in-a-dark-room at mid-grey and put 19 % of
+            // the frame past the paper's white; `protect_highlights` is the same
+            // meter with the highlight end held, two stops lower on this scene
+            // (+2.41 vs +5.41). The default (meter off) keeps `balanced` so the
+            // value is identical to what the reference sends.
+            //
+            // **Order matters and this is the bug that ate a build:** the
+            // format string reads `auto_exposure`, `auto_exposure_method`,
+            // `scan_film`, so these two argument lines are method-then-scan.
+            // Swapping them shifted every later argument by one and the JSON
+            // died at byte 205 -- E-9000 on every RAW import.
+            metering ? "protect_highlights" : "balanced",
             isPositiveStock(stock) ? "true" : "false",
             longEdge,
             printExposure, wireGrain(stock),
@@ -6966,6 +8264,7 @@ public class MainActivity extends Activity {
             lensBlur,
             geometryCropX, geometryCropY, geometryCropW, geometryCropH,
             geometryRotation, geometryTurns,
+            geometryFlipH ? "true" : "false", geometryFlipV ? "true" : "false",
             mFilter, yFilter, filterScale,
             // **0..1 on the slider, 0..0.04 in the engine.** Measured on a
             // real frame: 0.05 already takes the top 5 % down by 24 %, and
@@ -6980,7 +8279,20 @@ public class MainActivity extends Activity {
             esc(dateTextB), esc(dataText),
             datePlacement, dateCorner, dateInsetX, dateInsetY, dateSize, dateEv,
             cameraEv
-        ));
+        );
+        // **A JSON that does not parse is a build error, not a user error.**
+        // A `%s` added to the format without its argument in the same slot
+        // shifts every later value by one, and the engine answers
+        // "expected a value at byte N" -- which the app then surfaced as
+        // E-9000 on every import. Parsing here turns that into a log line
+        // naming the exact string.
+        try {
+            new org.json.JSONObject(delta);
+        } catch (Throwable bad) {
+            try { DebugSink.textNow("params-bad", bad + "\n" + delta); }
+            catch (Throwable ignored) { }
+        }
+        target.setParams(delta);
     }
 
     /** Same set, at whatever long edge the caller is rendering. The catalogue
@@ -7064,7 +8376,14 @@ public class MainActivity extends Activity {
             showInAppToast("正在渲染，完成后按新选择再画一次…");
             return;
         }
+        scheduleUndo();          // one entry per settled edit
         final String renderedStock = filmStock;
+        // **The frame this render belongs to.** Deleting the chips (or opening
+        // another photo) while a render is in flight used to let its callback
+        // call setStage(1) on a canvas that no longer had a frame: the empty
+        // state -- and with it the 选择照片 button -- vanished, which is the
+        // "删掉全部缩略图后导入按钮有时候会消失" report.
+        final int renderedFrame = currentFrame;
         rendering = true;
         progressBar.setVisibility(View.VISIBLE);
         busyLabel.setVisibility(View.VISIBLE);
@@ -7130,11 +8449,17 @@ public class MainActivity extends Activity {
                     DebugSink.text("preview-timing", "jpeg_ms=" + (System.currentTimeMillis() - t0));
                 } catch (Throwable ignored) {}
                 runOnUiThread(() -> {
+                    if (currentFrame != renderedFrame || session == null) {
+                        try { DebugSink.text("render", "frame changed mid-render; dropped"); }
+                        catch (Throwable ignored) { }
+                        return;
+                    }
                     showingOriginal = false;
                     compare.setAfter(bmp);
                     setStage(1, null);
                     setStep(2);
                     lastRenderedBitmap = bmp;
+                    refreshComparePill();
                     cacheFilmThumb(renderedStock, bmp);
                     updateCardThumb(renderedStock);
                     updateFilmSelection();

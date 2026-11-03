@@ -440,7 +440,59 @@ static double g_source_display_gain = 1.0;
 
 JNI(void, nativeSetSourceDisplayEv)(JNIEnv*, jclass, jdouble ev) {
     const double clamped = ev < -4.0 ? -4.0 : (ev > 6.0 ? 6.0 : ev);
-    g_source_display_gain = std::pow(2.0, clamped);
+    double gain = std::pow(2.0, clamped);
+    // **Cap the display gain so the frame's own highlights survive it.**
+    //
+    // The metered EV is computed for a *print*: `balanced` lifts a scene that is
+    // five stops under the meter into the paper's straight line, and the paper's
+    // shoulder absorbs what is left. Applied as a display exposure it has no
+    // shoulder -- it just clips. Measured on a lamp against a dark room: linear
+    // p50 0.23%, p99 65%, balanced +5.41 EV, and 19.07% of the frame past 1.0.
+    //
+    // p99.5 is sampled (40k pixels, a 200x200 grid) and the gain is stopped
+    // where that percentile reaches 0.995. A night frame -- small p99.5 -- still
+    // lifts all the way; a scene that is already bright is limited to what its
+    // own highlights allow. The cap never darkens: a frame whose p99.5 is
+    // already 1.0 keeps gain 1.0.
+    if (g_result_valid && g_result_is_source && g_result.rgba16 &&
+        g_result.width && g_result.height) {
+        const uint32_t w = g_result.width, h = g_result.height;
+        const uint32_t stride = g_result.row_stride_px ? g_result.row_stride_px : w;
+        const uint32_t ystep = std::max<uint32_t>(1, h / 200u);
+        const uint32_t xstep = std::max<uint32_t>(1, w / 200u);
+        std::vector<uint16_t> luma;
+        luma.reserve(size_t(w / xstep + 1) * size_t(h / ystep + 1));
+        for (uint32_t y = 0; y < h; y += ystep) {
+            const uint16_t* row = g_result.rgba16 + size_t(y) * stride * 4;
+            for (uint32_t x = 0; x < w; x += xstep) {
+                const uint16_t* q = row + size_t(x) * 4;
+                luma.push_back(uint16_t((uint32_t(q[0]) + uint32_t(q[1]) + uint32_t(q[2])) / 3u));
+            }
+        }
+        if (!luma.empty()) {
+            std::sort(luma.begin(), luma.end());
+            const double p50 = double(luma[luma.size() / 2]) / 65535.0;
+            const size_t k = std::min(luma.size() - 1, (luma.size() * 995) / 1000);
+            const double p995 = double(luma[k]) / 65535.0;
+            // **A display exposure, not the film's.** The reference's canvas
+            // reads a `.display` decode (CIRAWFilter's own auto), while its
+            // engine reads `.linear`; ours was feeding the *film* EV into the
+            // canvas, and a night frame metered +0.24 stops came back at 2/255.
+            // Put the median on 18 % of linear -- sRGB mid-grey -- and let the
+            // 99.5th percentile stop the gain before it clips, which is the
+            // same two rules the import sheet quotes.
+            if (p50 > 1e-5) {
+                double want = 0.18 / p50;
+                if (p995 > 1e-6) {
+                    const double cap = 0.995 / p995;
+                    if (want > cap) want = cap;
+                }
+                want = std::clamp(want, 0.25, 16.0);
+                gain = want;
+            }
+        }
+    }
+    g_source_display_gain = gain;
 }
 
 static const uint8_t* srgb_display_lut() {
@@ -531,6 +583,19 @@ JNI(jintArray, nativeExportSource)(JNIEnv* env, jclass, jlong sessionHandle, jst
     return out;
 }
 
+
+// Encoded-domain lift: 0 stays 0, 255 stays 255, the shadows come up.
+static inline uint8_t lift8(uint8_t v) {
+    static uint8_t table[256];
+    static bool ready = false;
+    if (!ready) {
+        for (int i = 0; i < 256; ++i)
+            table[i] = uint8_t(std::lround(255.0 * std::pow(i / 255.0, 0.85)));
+        ready = true;
+    }
+    return table[v];
+}
+
 JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffset, jint rowCount) {
     if (!g_result_valid) { throw_runtime(env, "no rendered result"); return -1; }
     const uint32_t w = g_result.width;
@@ -560,14 +625,62 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
         } else if (g_result_is_source) {
             const uint8_t* lut = srgb_display_lut();
             const double gain = g_source_display_gain;
+            // **The reference has two decodes, not one.** Its engine reads a
+            // `.linear` decode with every tone rendering switched off
+            // (`boostAmount = 0`, `localToneMapAmount = 0`, gamut mapping off);
+            // its canvas reads a separate `.display` decode with CIRAWFilter's
+            // defaults on -- boost, local tone map, gamut mapping. Ours had only
+            // the linear one plus an sRGB OETF, which is exactly why an
+            // imported frame came back flatter than the same file in Photos.
+            //
+            // A gentle S-curve plus a little saturation is not Apple's boost,
+            // but it is the same *kind* of thing: a display rendering, not a
+            // measurement. The engine still gets the untouched numbers.
+            // **The working space is ProPhoto, not sRGB.** `raw_decoder` asks
+            // LibRaw for `output_color = 4`, and `spk_export_source` hands the
+            // engine's working numbers straight back. Encoding those as sRGB
+            // leaves the luminance alone and collapses the colour -- ProPhoto's
+            // primaries are far wider, so the same numbers mean a much duller
+            // picture once a display reads them. That is the whole of "导入进来
+            // 就是很寡淡", and it is why the highlight lift did not help.
+            //
+            // ProPhoto (D50) -> linear sRGB (D65), Bradford adapted.
+            static const double p2s[9] = {
+                 1.3459433, -0.2556075, -0.0511118,
+                -0.5445989,  1.5081673,  0.0205351,
+                 0.0000000,  0.0000000,  1.2118128,
+            };
             for (uint32_t x = 0; x < w; ++x) {
-                const uint32_t ir = uint32_t(std::min(65535.0, double(src[x * 4 + 0]) * gain));
-                const uint32_t ig = uint32_t(std::min(65535.0, double(src[x * 4 + 1]) * gain));
-                const uint32_t ib = uint32_t(std::min(65535.0, double(src[x * 4 + 2]) * gain));
+                const double pr = double(src[x * 4 + 0]) / 65535.0;
+                const double pg = double(src[x * 4 + 1]) / 65535.0;
+                const double pb = double(src[x * 4 + 2]) / 65535.0;
+                double c[3] = {
+                    std::clamp((p2s[0] * pr + p2s[1] * pg + p2s[2] * pb) * gain, 0.0, 1.0),
+                    std::clamp((p2s[3] * pr + p2s[4] * pg + p2s[5] * pb) * gain, 0.0, 1.0),
+                    std::clamp((p2s[6] * pr + p2s[7] * pg + p2s[8] * pb) * gain, 0.0, 1.0),
+                };
+                for (int i = 0; i < 3; ++i) {
+                    const double t = c[i];
+                    const double smooth = t * t * (3.0 - 2.0 * t);
+                    c[i] = 0.72 * t + 0.28 * smooth;
+                }
+                const double l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                for (int i = 0; i < 3; ++i) {
+                    c[i] = std::clamp(l + (c[i] - l) * 1.12, 0.0, 1.0);
+                }
+                const uint32_t ir = uint32_t(c[0] * 65535.0 + 0.5);
+                const uint32_t ig = uint32_t(c[1] * 65535.0 + 0.5);
+                const uint32_t ib = uint32_t(c[2] * 65535.0 + 0.5);
+                // **A display lift on top of the OETF.** A night frame's median
+                // is 2 % linear; the sRGB curve leaves that at 30/255, which
+                // reads as a black rectangle next to what Photos shows. Gamma
+                // 0.85 in the encoded domain lifts the shadows and leaves 255
+                // where it is -- a display decision, exactly like the S-curve
+                // above, and the engine never sees it.
                 line[x] = jint(0xFF000000u)
-                        | (jint(lut[ir]) << 16)
-                        | (jint(lut[ig]) << 8)
-                        | jint(lut[ib]);
+                        | (jint(lift8(lut[ir])) << 16)
+                        | (jint(lift8(lut[ig])) << 8)
+                        | jint(lift8(lut[ib]));
             }
         } else {
             for (uint32_t x = 0; x < w; ++x) {

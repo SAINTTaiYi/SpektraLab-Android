@@ -190,6 +190,17 @@ public class SpektraLabEngine implements AutoCloseable {
     }
 
     /**
+     * The same open, with the decode white balance chosen instead of taken from
+     * the camera's as-shot record. {@code mul} is R, G, B, G2 with green at 1.
+     */
+    public Session openRawSessionTuned(String filePath, String paramsJson, int maxPixels, int maxLongEdge,
+                                       float[] mul) {
+        long sessionHandle = nativeOpenRawSessionTuned(handle, filePath, paramsJson, maxPixels, maxLongEdge, mul);
+        if (sessionHandle == 0) throw new RuntimeException("Failed to open RAW session");
+        return new Session(sessionHandle, 0, 0);
+    }
+
+    /**
      * Largest frame this device can render, in pixels, from the GPU's
      * maxStorageBufferRange (0 when it has none). Every kernel binds a whole
      * plane and a plane is 12 bytes per pixel, so a frame past this fails at
@@ -430,8 +441,69 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native String nativeRawExifJson(long sessionHandle);
     private static native long nativeMaxPlaneBytes(long engineHandle);
     private static native String nativeProbeCanary(long engineHandle, long needBytes);
+    /** The RAW's own dimensions from its header. Does not decode. */
+    private static native int[] nativeRawDimensions(String path);
+
+    /**
+     * How big the file is, asked before it is unpacked so the import can tell
+     * the user what it will cost. Null when the container cannot be read.
+     */
+    public static int[] rawDimensions(String path) {
+        try { return nativeRawDimensions(path); } catch (Throwable t) { return null; }
+    }
+
     private static native long nativeOpenRawSession(long engineHandle, String filePath, String paramsJson,
                                                     int maxPixels, int maxLongEdge);
+    private static native long nativeOpenRawSessionTuned(long engineHandle, String filePath, String paramsJson,
+                                                         int maxPixels, int maxLongEdge, float[] mul);
+    private static native void nativeSetViewAdjust(double[] values);
+    private static native void nativeSetViewCurves(double[] packed);
+    private static native void nativeSetSourceDisplayEv(double ev);
+    private static native void nativeSetExportExif(String make, String model, String datetime,
+                                                   String shutter, String aperture, String iso, String focal);
+    private static native String nativeReadJpegExif(byte[] head);
+    private static native float[] nativeRawMulForKelvin(long sessionHandle, double kelvin, double tint);
+
+    /** The optical page's continuous controls, in the kernel's own order. */
+    public static void setViewAdjust(double[] values) {
+        try { nativeSetViewAdjust(values); } catch (Throwable ignored) { }
+    }
+
+    /** Five tone curves, eight control points each, as (x, y) pairs. */
+    public static void setViewCurves(double[] packed) {
+        try { nativeSetViewCurves(packed); } catch (Throwable ignored) { }
+    }
+
+    /** Display-only exposure for the "original" side; never touches an export. */
+    public static void setSourceDisplayEv(double ev) {
+        try { nativeSetSourceDisplayEv(ev); } catch (Throwable ignored) { }
+    }
+
+    /** Source EXIF for the next export; empty strings mean "do not write". */
+    public static void setExportExif(String make, String model, String datetime,
+                                     String shutter, String aperture, String iso, String focal) {
+        try { nativeSetExportExif(make, model, datetime, shutter, aperture, iso, focal); }
+        catch (Throwable ignored) { }
+    }
+
+    /** The source JPEG's own EXIF, seven fields; empty strings when unreadable. */
+    public static String[] readJpegExif(byte[] head) {
+        final String[] out = {"", "", "", "", "", "", ""};
+        try {
+            final String joined = nativeReadJpegExif(head);
+            if (joined == null || joined.isEmpty()) return out;
+            final String[] parts = joined.split("\u0001", -1);
+            for (int i = 0; i < 7 && i < parts.length; ++i) out[i] = parts[i] == null ? "" : parts[i];
+        } catch (Throwable ignored) { }
+        return out;
+    }
+
+    /** Channel gains for a blackbody at {@code kelvin}; null when the sensor has no matrix. */
+    public static float[] rawMulForKelvin(Session session, double kelvin, double tint) {
+        if (session == null) return null;
+        try { return nativeRawMulForKelvin(session.handle, kelvin, tint); }
+        catch (Throwable t) { return null; }
+    }
     private static native void nativeCloseSession(long sessionHandle);
     private static native void nativeSetParams(long sessionHandle, String paramsJson);
     private static native String nativeGetParams(long sessionHandle);

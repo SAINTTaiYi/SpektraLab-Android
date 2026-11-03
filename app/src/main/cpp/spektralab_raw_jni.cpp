@@ -18,6 +18,8 @@
 #endif
 
 #include "spektrafilm/spk_engine.h"
+#include <libraw/libraw.h>
+
 #include "io/raw_decoder.hpp"
 #include "export_metadata.hpp"
 
@@ -191,6 +193,37 @@ static jlong open_raw_impl(JNIEnv* env, jlong engineHandle, jstring filePath,
         g_raw_info[handle] = info;
     }
     return handle;
+}
+
+// **The sensor's own size, before anything is unpacked.**
+//
+// `open_file` reads the container header and nothing else -- a few milliseconds,
+// against 600 MB of float for a 50 MP decode. The import sheet needs the number
+// *before* the decode so it can say what the frame is and what it will cost; a
+// sheet that appears after the memory is already spent is a post-mortem, not a
+// choice.
+JNI(jintArray, nativeRawDimensions)(JNIEnv* env, jclass, jstring filePath) {
+    if (!filePath) return nullptr;
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    if (!path) return nullptr;
+    int w = 0, h = 0;
+    {
+        LibRaw probe;
+        if (probe.open_file(path) == LIBRAW_SUCCESS) {
+            w = int(probe.imgdata.sizes.width);
+            h = int(probe.imgdata.sizes.height);
+            if (w <= 0 || h <= 0) {
+                w = int(probe.imgdata.sizes.raw_width);
+                h = int(probe.imgdata.sizes.raw_height);
+            }
+        }
+    }
+    env->ReleaseStringUTFChars(filePath, path);
+    if (w <= 0 || h <= 0) return nullptr;
+    const jint dims[2] = {jint(w), jint(h)};
+    jintArray out = env->NewIntArray(2);
+    if (out) env->SetIntArrayRegion(out, 0, 2, dims);
+    return out;
 }
 
 JNI(jlong, nativeOpenRawSession)(JNIEnv* env, jclass, jlong engineHandle, jstring filePath,
