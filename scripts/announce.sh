@@ -91,9 +91,14 @@ if command -v gh >/dev/null 2>&1; then
   if [ "$APK" != "-" ]; then
     ASSET="$HOME/spk-debug/SpektraLab-$NAME-arm64-v8a.apk"
     cp "$APK" "$ASSET"
+    # A second copy under a name that never changes: the site (and the mirror)
+    # link at releases/latest/download/SpektraLab-arm64-v8a.apk, so one address
+    # serves every release without going stale.
+    STABLE="$HOME/spk-debug/SpektraLab-arm64-v8a.apk"
+    cp "$APK" "$STABLE"
   fi
   gh release create "v$NAME" -R "$REPO" \
-    --title "SpektraLab Android $NAME" --notes "$GH_NOTES" "$ASSET" || \
+    --title "SpektraLab Android $NAME" --notes "$GH_NOTES" "$ASSET" "${STABLE:-}" || \
     echo "(release creation failed; the update channel is already live)" >&2
 fi
 
