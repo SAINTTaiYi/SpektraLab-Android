@@ -105,12 +105,12 @@ inline bool read_jpeg_source_exif(const uint8_t* data, size_t size, SourceExif& 
             ExifView v;
             v.base = payload + 6;
             v.size = payload_size - 6;
-            if (v.size < 8) return false;
-            if (!(v.base[0] == 'I' && v.base[1] == 'I') && !(v.base[0] == 'M' && v.base[1] == 'M')) return false;
+            if (v.size < 8) { p += 2 + length; continue; }
+            if (!(v.base[0] == 'I' && v.base[1] == 'I') && !(v.base[0] == 'M' && v.base[1] == 'M')) { p += 2 + length; continue; }
             v.little = v.base[0] == 'I';
-            if (v.u16(2) != 42) return false;
+            if (v.u16(2) != 42) { p += 2 + length; continue; }
             const uint32_t ifd0 = v.u32(4);
-            if (!v.has(ifd0, 2)) return false;
+            if (!v.has(ifd0, 2)) { p += 2 + length; continue; }
             const uint16_t n0 = v.u16(ifd0);
             uint32_t exif_ifd = 0;
             for (uint16_t i = 0; i < n0; ++i) {
@@ -120,9 +120,15 @@ inline bool read_jpeg_source_exif(const uint8_t* data, size_t size, SourceExif& 
                 const uint16_t type = v.u16(e + 2);
                 const uint32_t count = v.u32(e + 4);
                 const uint32_t raw = v.u32(e + 8);
-                if (tag == 0x010F && type == 2) out.make = v.ascii(count, raw);
-                else if (tag == 0x0110 && type == 2) out.model = v.ascii(count, raw);
+                if (tag == 0x010F && (type == 2 || type == 7)) out.make = v.ascii(count, raw);
+                else if (tag == 0x0110 && (type == 2 || type == 7)) out.model = v.ascii(count, raw);
                 else if (tag == 0x8769) exif_ifd = raw;
+                // **0x0132 is DateTime, in IFD0, and it is perfectly legal.**
+                // Cameras write DateTimeOriginal (0x9003) in the Exif sub-IFD;
+                // plenty of phones write only 0x0132, and the reader used to
+                // skip the whole file as "no EXIF" because of it. ExifIFD is
+                // read after this loop, so 0x9003 still wins when both exist.
+                else if (tag == 0x0132 && type == 2) out.datetime = v.ascii(count, raw);
             }
             if (exif_ifd && v.has(exif_ifd, 2)) {
                 const uint16_t n1 = v.u16(exif_ifd);

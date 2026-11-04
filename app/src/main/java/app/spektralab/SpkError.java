@@ -146,6 +146,10 @@ public final class SpkError {
             case 1302: return "参数超出允许范围";
             case 1303: return "会话状态异常，请重新导入照片";
             case 1304: return IMPORT_PERMISSION;
+            // The gate and the picture disagree about their shape. A crop is
+            // the cure, and there are two ways to make one, so name both.
+            case 1305: return "片门与照片比例不符：到「边框」页换一个同比例的片门，" +
+                              "或到「构图」页裁成片门的比例";
             // 2xxx — the update channel
             case 2001: return "检查更新失败：网络不可用，或公告地址被当前网络拦截";
             case 2002: return "更新公告格式错误";
