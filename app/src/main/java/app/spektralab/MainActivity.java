@@ -7277,7 +7277,22 @@ public class MainActivity extends Activity {
         if (note != null && !note.isEmpty()) {
             TextView noteView = label(note, 8.5f, UI_MUTED, tfHan);
             noteView.setPadding(dp(16), 0, dp(16), dp(12));
-            sheet.addView(noteView);
+            // **A long note has to scroll.** The sheet is `WRAP_CONTENT`, so a
+            // full changelog (seventy lines) pushed the title and the action
+            // rows off the screen -- and the update dialog's first action is
+            // 「去更新」, so the announcement became a dead end. Capped at 46% of
+            // the window, and only for notes long enough to need it, so every
+            // short sheet looks exactly as it did.
+            if (note.split("\n", -1).length > 12) {
+                ScrollView noteScroll = new ScrollView(this);
+                noteScroll.setVerticalScrollBarEnabled(false);
+                noteScroll.addView(noteView, new android.widget.FrameLayout.LayoutParams(-1, -2));
+                final int h = (int) Math.min(dp(340),
+                        getResources().getDisplayMetrics().heightPixels * 0.46f);
+                sheet.addView(noteScroll, new LinearLayout.LayoutParams(-1, h));
+            } else {
+                sheet.addView(noteView);
+            }
         }
         for (int i = 0; i < items.length; ++i) {
             final int index = i;
