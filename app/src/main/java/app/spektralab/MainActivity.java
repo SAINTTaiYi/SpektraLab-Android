@@ -7237,6 +7237,20 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * The same sheet with a line that never scrolls away.
+     *
+     * <p>The update announcement is the one place where a line has to survive
+     * the reader: a seventy-item changelog scrolls, and the download address
+     * inside it scrolls with it. Pinned above the list, it is on screen from
+     * the moment the sheet opens until it closes.
+     */
+    void showActionSheet(String title, String note, String[] items,
+                         java.util.function.IntConsumer onPick, Runnable onTitleLongPress,
+                         String pinned) {
+        showSheetBody(title, note, items, onPick, onTitleLongPress, pinned);
+    }
+
+    /**
      * The same sheet, with a gesture on its title.
      *
      * <p>There is no EditText anywhere in this UI and no settings screen, so a
@@ -7246,6 +7260,13 @@ public class MainActivity extends Activity {
      */
     void showActionSheet(String title, String note, String[] items,
                          java.util.function.IntConsumer onPick, final Runnable onTitleLongPress) {
+        showActionSheet(title, note, items, onPick, onTitleLongPress, null);
+    }
+
+    /** The body. `pinned` (may be null) sits above the note and does not scroll. */
+    private void showSheetBody(String title, String note, String[] items,
+                               java.util.function.IntConsumer onPick, final Runnable onTitleLongPress,
+                               String pinned) {
         final android.app.Dialog dialog = new android.app.Dialog(this);
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
@@ -7274,6 +7295,16 @@ public class MainActivity extends Activity {
         head.addView(close);
         sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(54)));
 
+        final int pinHeight;
+        if (pinned != null && !pinned.isEmpty()) {
+            final TextView pinView = label(pinned, 9f, UI_BLUE, tfHan);
+            pinView.setTextIsSelectable(true);
+            pinView.setPadding(dp(16), 0, dp(16), dp(10));
+            sheet.addView(pinView);
+            pinHeight = dp(34);
+        } else {
+            pinHeight = 0;
+        }
         if (note != null && !note.isEmpty()) {
             TextView noteView = label(note, 8.5f, UI_MUTED, tfHan);
             noteView.setPadding(dp(16), 0, dp(16), dp(12));
@@ -7290,7 +7321,7 @@ public class MainActivity extends Activity {
             // The room is what the screen gives after the title and the items,
             // and the note scrolls inside exactly that.
             final int screenH = getResources().getDisplayMetrics().heightPixels;
-            final int reserved = dp(54) + items.length * dp(50) + dp(28);
+            final int reserved = dp(54) + pinHeight + items.length * dp(50) + dp(28);
             final int room = Math.max(dp(96), screenH - reserved);
             if (lines > 8 && room < lines * dp(16)) {
                 ScrollView noteScroll = new ScrollView(this);

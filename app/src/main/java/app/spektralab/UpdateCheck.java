@@ -109,13 +109,16 @@ final class UpdateCheck {
     }
 
     private static void show(Activity activity, Announcement a, SharedPreferences prefs) {
-        StringBuilder message = new StringBuilder();
-        // **The address is part of the announcement.** A screenshot of this
-        // sheet is how these reports arrive, and one without the URL cannot be
-        // acted on -- the reader has nothing to type.
-        message.append("下载地址 ").append(a.url).append("\n\n");
-        for (String note : a.notes) message.append("· ").append(note).append('\n');
-        if (a.notes.length > 0) message.append('\n');
+        final StringBuilder message = new StringBuilder();
+        for (String note : a.notes) {
+            // **The address is pinned, not scrolled.** It is passed to the sheet
+            // separately so it stays on screen while the changelog scrolls; a
+            // server-side copy of the same line is dropped here instead of
+            // being printed twice.
+            if (note != null && note.startsWith("下载地址")) continue;
+            message.append("· ").append(note).append('\n');
+        }
+        if (message.length() > 0) message.append('\n');
         message.append("点「去更新」打开下载页（开源免费）");
 
         if (!(activity instanceof MainActivity)) return;
@@ -138,8 +141,16 @@ final class UpdateCheck {
                     } else {
                         prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
                     }
-                });
+                }, null, ADDRESS_LINE);
     }
+
+    /**
+     * The one line the reader must be able to act on, pinned above the list.
+     *
+     * <p>Short on purpose: the full `url` is a hundred-character GitHub asset
+     * link, and it is what 「复制链接」 copies. This is what a person types.
+     */
+    private static final String ADDRESS_LINE = "下载地址  spektralab.workshop.skin/download";
 
     private static String fetch(String endpoint) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
