@@ -7283,13 +7283,20 @@ public class MainActivity extends Activity {
             // 「去更新」, so the announcement became a dead end. Capped at 46% of
             // the window, and only for notes long enough to need it, so every
             // short sheet looks exactly as it did.
-            if (note.split("\n", -1).length > 12) {
+            final int lines = note.split("\n", -1).length;
+            // **The action rows keep their space.** A fixed cap was still a
+            // guess: on a 640 dp screen the note took what was left and pushed
+            // 「去更新」 off the window, so the announcement had no way out.
+            // The room is what the screen gives after the title and the items,
+            // and the note scrolls inside exactly that.
+            final int screenH = getResources().getDisplayMetrics().heightPixels;
+            final int reserved = dp(54) + items.length * dp(50) + dp(28);
+            final int room = Math.max(dp(96), screenH - reserved);
+            if (lines > 8 && room < lines * dp(16)) {
                 ScrollView noteScroll = new ScrollView(this);
                 noteScroll.setVerticalScrollBarEnabled(false);
                 noteScroll.addView(noteView, new android.widget.FrameLayout.LayoutParams(-1, -2));
-                final int h = (int) Math.min(dp(340),
-                        getResources().getDisplayMetrics().heightPixels * 0.46f);
-                sheet.addView(noteScroll, new LinearLayout.LayoutParams(-1, h));
+                sheet.addView(noteScroll, new LinearLayout.LayoutParams(-1, Math.min(room, dp(420))));
             } else {
                 sheet.addView(noteView);
             }

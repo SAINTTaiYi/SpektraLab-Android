@@ -110,8 +110,12 @@ final class UpdateCheck {
 
     private static void show(Activity activity, Announcement a, SharedPreferences prefs) {
         StringBuilder message = new StringBuilder();
+        // **The address is part of the announcement.** A screenshot of this
+        // sheet is how these reports arrive, and one without the URL cannot be
+        // acted on -- the reader has nothing to type.
+        message.append("下载地址 ").append(a.url).append("\n\n");
         for (String note : a.notes) message.append("· ").append(note).append('\n');
-        if (message.length() > 0) message.append('\n');
+        if (a.notes.length > 0) message.append('\n');
         message.append("点「去更新」打开下载页（开源免费）");
 
         if (!(activity instanceof MainActivity)) return;
