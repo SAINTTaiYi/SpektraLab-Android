@@ -106,6 +106,17 @@ public class SpektraLabEngine implements AutoCloseable {
         this.handle = handle;
     }
 
+    /**
+     * Install the native signal handler that writes a backtrace to `path`.
+     *
+     * <p>A Java exception arrives with a stack; a SIGSEGV inside a dispatch
+     * arrives as "the process is gone", and this ROM does not report
+     * `ApplicationExitInfo` either. Idempotent: the first call wins.
+     */
+    public static void installCrashHandler(String path) {
+        try { nativeInstallCrashHandler(path); } catch (Throwable ignored) { }
+    }
+
     public static SpektraLabEngine create(String resourcesDir) {
         return create(resourcesDir, null);
     }
@@ -166,6 +177,33 @@ public class SpektraLabEngine implements AutoCloseable {
     public String memoryReport() {
         return nativeMemoryReport(handle);
     }
+
+    /**
+     * A direct buffer outside the runtime's native-allocation ledger.
+     *
+     * <p>{@code ByteBuffer.allocateDirect} is capped by the heap's growth limit
+     * -- 512 MB on most phones -- and a 50 MP frame's float32 is 600 MB, so the
+     * allocation is refused while the device still has gigabytes free. Free it
+     * with {@link #freeDirect}; there is no cleaner behind this one.
+     */
+    public static ByteBuffer allocDirect(long bytes) { return nativeAllocDirect(bytes); }
+
+    /** Release a buffer from {@link #allocDirect}. The caller must drop it too. */
+    public static void freeDirect(ByteBuffer buffer) { if (buffer != null) nativeFreeDirect(buffer); }
+
+    /**
+     * Drop the open RAW file's unpacked data.
+     *
+     * <p>Decoding keeps the LibRaw object alive so a white-balance change only
+     * re-runs `dcraw_process` (2.4 s instead of 3.0 s at 20 MP). That object
+     * holds the sensor plane and a demosaiced copy, so it is dropped when the
+     * picture changes rather than kept for a frame nobody is looking at.
+     */
+    public static void clearRawCache() { nativeClearRawCache(); }
+
+    private static native void nativeClearRawCache();
+    private static native ByteBuffer nativeAllocDirect(long bytes);
+    private static native void nativeFreeDirect(ByteBuffer buffer);
 
     public Session openSession(ByteBuffer pixels, int width, int height, int channels) {
         if (!pixels.isDirect()) throw new IllegalArgumentException("pixels must be direct");
@@ -276,6 +314,25 @@ public class SpektraLabEngine implements AutoCloseable {
 
         public boolean isSuspended() { return suspended; }
 
+        /**
+         * Apply `ev` stops of auto-exposure on this session instead of letting
+         * the meter decide.
+         *
+         * <p>Not the same thing as `exposure_compensation_ev`, even though both
+         * are a factor of 2^ev. That field is applied after the highlight
+         * rolloff; this one before it, in `film_prefix`, where the canvas'
+         * meter does its work. Moving an export from one to the other is what
+         * made a file look "as if the enlarger exposure never moved": on a
+         * 20 MP frame the two differ by 2.1x in mean and 13x in the shadows.
+         *
+         * <p>Pair it with `auto_exposure = true` in the params: the engine
+         * still gates the node on that flag.
+         */
+        public void pinAutoExposureEv(double ev) { nativePinAutoExposureEv(handle, ev); }
+
+        /** Undo {@link #pinAutoExposureEv}; the meter decides again. */
+        public void clearPinAutoExposureEv() { nativeClearPinAutoExposureEv(handle); }
+
         private boolean suspended;
 
         public int[] getDimensions() {
@@ -292,7 +349,24 @@ public class SpektraLabEngine implements AutoCloseable {
         // hand back another frame's dimensions. Rare, and it looks like a
         // randomly rotated or shifted picture rather than a crash.
         public int[] renderBegin(String tier) {
-            synchronized (RENDER_LOCK) { return nativeRenderBegin(handle, tier); }
+            synchronized (RENDER_LOCK) { return nativeRenderBegin(handle, tier, false); }
+        }
+
+        /**
+         * Render `tier` over the session's cached negative: the whole film side
+         * is skipped and only the print runs (`spk_reprint`).
+         *
+         * <p>Byte-identical to {@link #renderBegin(String)} when the negative is
+         * current -- verified with `live_probe` group H, grain and glare off,
+         * reprint == render on every parameter step. The engine drops that
+         * cache itself whenever a shoot-layer field changes, so this cannot
+         * bring back a stale negative; it just costs a full render that frame.
+         *
+         * <p>32 ms against 200 ms at an 800-pixel preview, which is the
+         * difference between a slider that tracks and a slider that waits.
+         */
+        public int[] renderBegin(String tier, boolean reprint) {
+            synchronized (RENDER_LOCK) { return nativeRenderBegin(handle, tier, reprint); }
         }
 
         /** Converts `rowCount` rows starting at `rowOffset` into opaque ARGB. */
@@ -313,6 +387,24 @@ public class SpektraLabEngine implements AutoCloseable {
          */
         public String progressJson() {
             synchronized (RENDER_LOCK) { return nativeProgressJson(handle); }
+        }
+
+        /**
+         * Where the render is, asked from another thread.
+         *
+         * **Deliberately not under `RENDER_LOCK`.** That lock is held for the
+         * whole of a render, so taking it here would make the watchdog wait for
+         * the very call it is watching -- it would return after the crash, not
+         * before it. The engine side is a lock-free seqlock for exactly this
+         * reason: 96 bytes, published with a release store, read under a
+         * sequence check.
+         *
+         * Null when no consistent read was possible in three tries, which means
+         * the render is crossing nodes quickly rather than sitting in one.
+         */
+        public String stageSnapshot() {
+            if (handle == 0) return null;
+            try { return nativeStageSnapshot(handle); } catch (Throwable t) { return null; }
         }
 
         public void renderEnd() {
@@ -441,6 +533,8 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native String nativeRawExifJson(long sessionHandle);
     private static native long nativeMaxPlaneBytes(long engineHandle);
     private static native String nativeProbeCanary(long engineHandle, long needBytes);
+
+    private static native void nativeInstallCrashHandler(String path);
     /** The RAW's own dimensions from its header. Does not decode. */
     private static native int[] nativeRawDimensions(String path);
 
@@ -458,11 +552,29 @@ public class SpektraLabEngine implements AutoCloseable {
                                                          int maxPixels, int maxLongEdge, float[] mul);
     private static native void nativeSetViewAdjust(double[] values);
     private static native void nativeSetViewCurves(double[] packed);
-    private static native void nativeSetSourceDisplayEv(double ev);
+    private static native void nativeSetSourceDisplayEv(double ev, boolean autoLevel);
     private static native void nativeSetExportExif(String make, String model, String datetime,
                                                    String shutter, String aperture, String iso, String focal);
     private static native String nativeReadJpegExif(byte[] head);
     private static native float[] nativeRawMulForKelvin(long sessionHandle, double kelvin, double tint);
+
+    /**
+     * The DNG display profile, as [baselineEV, x0, y0, x1, y1, ...].
+     *
+     * Null when the file ships no {@code ProfileToneCurve} -- which is the case
+     * for camera DNGs, NEF and RAF. The canvas uses it to show a phone's raw
+     * the way the phone asked for it; the engine never sees it.
+     */
+    public static float[] sourceDisplayProfile(String path) {
+        try { return nativeSourceDisplayProfile(path); } catch (Throwable t) { return null; }
+    }
+    private static native float[] nativeSourceDisplayProfile(String path);
+
+    /** Canvas-only: apply a vendor tone curve, or null to clear it. */
+    public static void setSourceToneCurve(float[] profile) {
+        try { nativeSetSourceToneCurve(profile); } catch (Throwable ignored) { }
+    }
+    private static native void nativeSetSourceToneCurve(float[] profile);
 
     /** The optical page's continuous controls, in the kernel's own order. */
     public static void setViewAdjust(double[] values) {
@@ -474,9 +586,16 @@ public class SpektraLabEngine implements AutoCloseable {
         try { nativeSetViewCurves(packed); } catch (Throwable ignored) { }
     }
 
-    /** Display-only exposure for the "original" side; never touches an export. */
-    public static void setSourceDisplayEv(double ev) {
-        try { nativeSetSourceDisplayEv(ev); } catch (Throwable ignored) { }
+    /**
+     * Display-only exposure for the "original" side; never touches an export.
+     *
+     * {@code autoLevel} is the old behaviour: put this frame's median on sRGB
+     * mid-grey and lift the encoded shadows. False shows the decode as
+     * measured -- which is what Lightroom's canvas does, and what the label
+     * "RAW 原始数据（未调色）" promises.
+     */
+    public static void setSourceDisplayEv(double ev, boolean autoLevel) {
+        try { nativeSetSourceDisplayEv(ev, autoLevel); } catch (Throwable ignored) { }
     }
 
     /** Source EXIF for the next export; empty strings mean "do not write". */
@@ -508,11 +627,13 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeSetParams(long sessionHandle, String paramsJson);
     private static native String nativeGetParams(long sessionHandle);
     private static native String nativeProgressJson(long sessionHandle);
+
+    private static native String nativeStageSnapshot(long sessionHandle);
     private static native int[] nativeGetSessionDimensions(long sessionHandle);
     private static native double nativeRenderToBuffer(long sessionHandle, String tier, ByteBuffer outBuffer, int outWidth, int outHeight);
     private static native int nativeGetLastRowStride();
     private static native int[] nativeGetLastRenderInfo();
-    private static native int[] nativeRenderBegin(long sessionHandle, String tier);
+    private static native int[] nativeRenderBegin(long sessionHandle, String tier, boolean reprint);
     private static native int[] nativeExportSource(long sessionHandle, String tier);
     private static native int nativeCopyArgbRange(int[] dst, int rowOffset, int rowCount);
     private static native void nativeRenderEnd();
@@ -524,6 +645,10 @@ public class SpektraLabEngine implements AutoCloseable {
     // Residency, for the export path: a whole frame's plane written to a
     // scratch file and given back. Refused (non-zero) when the host named no
     // writable scratch directory, which leaves the session as it was.
+    // The EV a second session must reproduce without metering again.
+    private static native void nativePinAutoExposureEv(long sessionHandle, double ev);
+    private static native void nativeClearPinAutoExposureEv(long sessionHandle);
+
     private static native int nativeSuspendSession(long sessionHandle);
     private static native int nativeResumeSession(long sessionHandle);
 }

@@ -53,8 +53,16 @@ public class MainActivity extends Activity {
     private boolean e1001Offered = false;
     /** A render is in flight: one native result buffer, one renderer. */
     private volatile boolean rendering = false;
-    private SpektraLabEngine.Session session;
+    // `volatile`: a batch export polls it from a worker while the UI thread
+    // assigns it after a decode.
+    private volatile SpektraLabEngine.Session session;
     private boolean isRawFile = false;
+    /** Set in `onPause`, cleared in `onResume`. `startPrefetch` refuses to open
+     *  a queue while this is set: the ring in the 1.5.0o report shows fifteen
+     *  `prefetch:card` lines *after* `app:paused`, which is fifteen small
+     *  renders holding the GPU while the system is deciding whether to reclaim
+     *  the process. */
+    private boolean appPaused = false;
     private String rawFilePath = null;
     // The last file that reached the gallery, so it can be handed straight to
     // another app. A picker that filters by MIME will not show a TIFF on a ROM
@@ -149,8 +157,35 @@ public class MainActivity extends Activity {
     // the noise comes with them ("RAW looks dirty"). JPEG ignores this flag
     // entirely: it is already display-encoded, so metering it twice is the bug
     // 1.2.9 fixed.
-    private boolean metering = true;
-    private TextView meterOn, meterOff;
+    /** **Which meter, not whether to meter.** `""` is off; every other value is
+     *  one of the seven names the engine implements (`balanced`, `center`,
+     *  `protect_highlights`, `protect_shadows`, `center_weighted`, `average`,
+     *  `median`). A switch could only offer two of those, and the two it offered
+     *  were not the interesting pair: on the dark-frame reference,
+     *  `balanced` lifts +5.4 EV and `protect_highlights` +2.4, so "on" meant
+     *  either a grey wash or a kept window depending on a constant nobody could
+     *  see. */
+    private String meterMethod = "protect_highlights";
+    private TextView meterChip;
+    /** The EDR switch in the print panel; `edrOn` is still the value. */
+    private Square edrMark;
+    private Square hueOwnMark;
+
+    /** Order is the sheet's order; `""` first so "off" is the first row. */
+    private static final String[] METER_IDS = {
+            "", "balanced", "protect_highlights", "protect_shadows",
+            "center", "center_weighted", "average", "median"};
+    private static final String[] METER_NAMES = {
+            "关闭", "平衡", "保护高光", "保留暗部", "中心", "中心加权", "平均", "中位数"};
+    private static final String[] METER_NOTES = {
+            "不测光，用文件自己的曝光",
+            "全幅中位数对准中灰；暗场景会被提亮好几挡",
+            "平衡再压住高光两挡；有灯的画面不会糊成一片白",
+            "平衡再抬起暗部；阴影留住，亮部跟着走",
+            "只按画面中心测，忽略四周",
+            "中心高斯加权后取平均——旧版默认，最容易被高光带跑",
+            "整幅算术平均，完全不加权",
+            "整幅中位亮度，最不容易被单个亮斑左右"};
 
     // ── undo ──────────────────────────────────────────────────────
     /** One JSON snapshot per settled edit, newest first. */
@@ -160,6 +195,28 @@ public class MainActivity extends Activity {
     private String undoLast = null;
     private final android.os.Handler undoHandler =
             new android.os.Handler(android.os.Looper.getMainLooper());
+
+    /**
+     * **The look goes to disk after every finished render, not on the way out.**
+     *
+     * <p>Swiping the app out of recents kills the process without `onPause` on
+     * this ROM, so the only place the edit was being written -- `onPause` --
+     * could simply never run. The chip survived (it had been saved when the
+     * sheet opened) but its Look did not: the next launch restored
+     * `filmStock = null` and showed the original. Debounced here instead, so
+     * "edit, then clear the background" keeps the edit.
+     */
+    private final android.os.Handler persistHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable persistSession = () -> {
+        try { saveLookIntoFrames(); } catch (Throwable ignored) { }
+        saveSessionState();
+    };
+
+    private void schedulePersist() {
+        persistHandler.removeCallbacks(persistSession);
+        persistHandler.postDelayed(persistSession, 1200);
+    }
     private final Runnable undoPush = this::pushUndoNow;
     private android.widget.ImageView undoPill;
     private float grainAmount = 1.0f;      // 0..2, engine default 1
@@ -204,12 +261,38 @@ public class MainActivity extends Activity {
     private float frameNumber = 0.0f;      // 0..99
     private float halationOn = 1f, grainOn = 1f, couplersOn = 1f, antihalationRemoved = 0f;
     private float scannerWhite = 0f, scannerBlack = 0f, edrOn = 0f;
+    // Five engine knobs that had no home in the app (see the schema diff):
+    // the scanner's own lens, the halo's headroom, the density curve's gamma,
+    // and the two switches that pick a different output path.
+    private float glareActive = 1f;
+    private float scannerLensBlur = 0f, halationHeadroom = 4f, densityGamma = 1f;
+    private boolean digitalIntermediate = false, outputCctf = true;
+    // 1 = undo the measured hue drift completely (greens land where the source
+    // had them); 0 = leave each stock's own colour alone. The correction is what
+    // made every stock converge on one palette -- the "no film character" report.
+    private float hueCorrection = 1f;
+    /**
+     * Stocks whose green drift the spectral model gets wrong by more than 20
+     * degrees on both test frames. Correcting them measures worse than leaving
+     * them alone -- Vision3 500T moves 52 -> 49 against a source of 77 -- so the
+     * correction is pinned off and the switch is read-only. The preference is
+     * kept in {@link #hueCorrection}; switching to a supported stock restores it.
+     */
+    private static final java.util.Set<String> HUE_FIX_UNSUPPORTED =
+            new java.util.HashSet<>(java.util.Arrays.asList(
+                    "kodak_vision3_200t", "kodak_vision3_250d", "kodak_vision3_500t",
+                    "kodak_vision3_50d", "cinestill_800t", "kodak_verita_200d",
+                    "fujifilm_pro_400h"));
     private float shadowRolloff = 2f, maxLift = 4f;
     private String cameraFilter = "", sceneNorm = "power";
     private String edgeMode = "strip", edgeGate = "auto", edgeHoles = "white", edgeCarrier = "none";
     private String datePlacement = "frame", dateCorner = "br", dateStyle = "lcd";
     private float dateInsetX = 3f, dateInsetY = 2.4f;
     private float edgeFNumber = 0f, dateSize = 1f, dateEv = 3.5f;
+    // A drag on the canvas: where the finger started, and where the imprint's
+    // centre was at that moment (both normalised to the picture).
+    private boolean dateDragOn = false;
+    private float dateDragU0, dateDragV0, dateDragCX, dateDragCY;
     private boolean edgeTextOn = true;
     private String dataText = "", dateTextB = "";
     private int cameraSeed = 1, frameSeed = 1;
@@ -222,7 +305,17 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // **Before anything logs, and before anything reports.** The ring lives
+        // in memory; init only opens the one-slot retry file. A crash report
+        // shipped from `uploadCrashFiles` needs that file when the network is
+        // down, so init has to come first.
+        DebugSink.init(this);
         installCrashLogger();
+        // **A native death leaves nothing for the Java handler.** Install the
+        // signal handler before the engine exists -- the first dispatch can
+        // crash -- and ship whatever the last death wrote.
+        installNativeCrashHandler();
+        uploadCrashFiles();
         // Before anything else touches the engine: what the last launch was
         // doing, and how it ended. See `reportPreviousExit`.
         // **Read before writing.** This used to mark first and report second, so
@@ -242,6 +335,10 @@ public class MainActivity extends Activity {
         String nativeDir = null;
         try { nativeDir = getApplicationInfo().nativeLibraryDir; } catch (Throwable ignored) {}
         try { SpektraLabEngine.prepare(nativeDir); } catch (Throwable e) { lastImportError = describe(e); }
+        // **Recorded, not uploaded.** `app-start` used to be a POST on every
+        // launch, and it alone was enough to fill the free D1 quota over a few
+        // hundred users. It now goes into the in-memory ring, which is what a
+        // report carries when something actually goes wrong.
         try { DebugSink.text("app-start", "buildInfo=" + SpektraLabEngine.buildInfo()); } catch (Throwable ignored) {}
         
         buildUi();
@@ -366,15 +463,27 @@ public class MainActivity extends Activity {
         final float lo, hi;
         final java.util.function.Consumer<Float> set;
         final java.util.function.Supplier<Float> get;
+        /**
+         * **A shoot-layer field, so a drag re-develops the film.**
+         *
+         * <p>The delta names only what moved, and the engine drops the cached
+         * negative for anything on the shoot layer -- grain, halation, the
+         * latitude pair, the couplers, the lens. Everything else reprints from
+         * that cache in about a thirtieth of a second. Without this the user
+         * has two sliders that behave differently and no way to know which is
+         * which; the readout row now says it.
+         */
+        final boolean heavy;
         Knob(String label, String glyph, float lo, float hi,
-             java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get) {
+             java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
+             boolean heavy) {
             this.label = label; this.glyph = glyph; this.lo = lo; this.hi = hi;
-            this.set = set; this.get = get;
+            this.set = set; this.get = get; this.heavy = heavy;
         }
     }
     private final java.util.List<Knob> knobs = new java.util.ArrayList<>();
     private int activeKnob = 0;
-    private TextView knobTitle, knobValue, knobHintView;
+    private TextView knobTitle, knobValue, knobHintView, knobCost;
     private SeekBar knobBar;
     private LinearLayout knobStrip;
     private SeekBar edgeFogBar, edgeLeaksBar, frameNoBar, edgeFNumBar, dateSizeBar, dateEvBar;
@@ -609,6 +718,13 @@ public class MainActivity extends Activity {
             }
         }
 
+        /** **`onProgressChanged`'s `fromUser` is always false here.** The bar
+         *  drives itself through `setProgress`, which `AbsSeekBar` forwards with
+         *  `fromUser = false`; the flag only means "the framework's own track
+         *  touch ran", and this bar overrides that. Dragging the thumb is the
+         *  real question a preview needs answered, so it is asked directly. */
+        boolean isDragging() { return dragging; }
+
         private boolean seekTo(float x) {
             final int usable = getWidth() - getPaddingLeft() - getPaddingRight();
             if (usable <= 0) return false;
@@ -623,7 +739,7 @@ public class MainActivity extends Activity {
         String filmStock;
         String printStock;
         float printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm;
-        boolean metering;
+        String meterMethod;
         /** RFC-023's highlight room, in stops; 0 leaves the stage off. */
         float highlightRoom;
         /** RFC-023's shadow side: lift the toe instead of the shoulder. */
@@ -644,6 +760,11 @@ public class MainActivity extends Activity {
         float viewVibrance;
         int wbPreset;
         float wbKelvin, wbTint;
+        /** The LibRaw gains that produced this frame's preview. White balance
+         *  lives in the demosaic, not in `spk_set_params`, so a frame reopened
+         *  from the strip has to carry them or it comes back as-shot while the
+         *  sliders still say 4000 K. Null = as-shot. */
+        float[] wbMul;
         /** Enlarger dichroic filters: -1 is 30 CC of the opposite colour. */
         int geometryTurns = 0;
         float geometryRotation = 0.0f;
@@ -661,6 +782,10 @@ public class MainActivity extends Activity {
         /** Switches: 1 is on. Kept as floats so one knob can drive them. */
         float halationOn = 1f, grainOn = 1f, couplersOn = 1f, antihalationRemoved = 0f;
         float scannerWhite = 0f, scannerBlack = 0f, edrOn = 0f;
+        float glareActive = 1f;
+        float scannerLensBlur = 0f, halationHeadroom = 4f, densityGamma = 1f;
+        boolean digitalIntermediate = false, outputCctf = true;
+        float hueCorrection = 1f;
         /** RFC-023's remaining curve shape. */
         float shadowRolloff = 2f, maxLift = 4f;
         /** Choices: lens filter, the norm, and the rebate/date layout. */
@@ -725,7 +850,7 @@ public class MainActivity extends Activity {
             o.put("film", l.filmStock == null ? "" : l.filmStock);
             o.put("print", l.printStock == null ? "" : l.printStock);
             o.put("exp", (double) l.printExposure);
-            o.put("meter", l.metering);
+            o.put("mtr", l.meterMethod == null ? "" : l.meterMethod);
             o.put("grain", (double) l.grainAmount);
             o.put("halation", (double) l.halationAmount);
             o.put("glare", (double) l.glareAmount);
@@ -751,6 +876,11 @@ public class MainActivity extends Activity {
             o.put("wb", l.wbPreset);
             o.put("wbK", (double) l.wbKelvin);
             o.put("wbT", (double) l.wbTint);
+            if (l.wbMul != null && l.wbMul.length == 4) {
+                final org.json.JSONArray wbArr = new org.json.JSONArray();
+                for (float v : l.wbMul) wbArr.put((double) v);
+                o.put("wbm", wbArr);
+            }
             o.put("gturn", l.geometryTurns);
             o.put("grot", (double) l.geometryRotation);
             o.put("gcw", (double) l.geometryCropW);
@@ -774,6 +904,13 @@ public class MainActivity extends Activity {
             o.put("scw", (double) l.scannerWhite);
             o.put("scb", (double) l.scannerBlack);
             o.put("edr", (double) l.edrOn);
+            o.put("gla", (double) l.glareActive);
+            o.put("slb", (double) l.scannerLensBlur);
+            o.put("hhe", (double) l.halationHeadroom);
+            o.put("dcg", (double) l.densityGamma);
+            o.put("dint", l.digitalIntermediate);
+            o.put("occtf", l.outputCctf);
+            o.put("hcor", l.hueCorrection);
             o.put("rolloff", (double) l.shadowRolloff);
             for (int i = 0; i < 4; ++i) {
                 o.put("cbh" + i, (double) l.cbHue[i]);
@@ -823,7 +960,14 @@ public class MainActivity extends Activity {
         final String paper = o.optString("print", "");
         l.printStock = paper.isEmpty() ? "kodak_portra_endura" : paper;
         l.printExposure = (float) o.optDouble("exp", 1.0);
-        l.metering = o.optBoolean("meter", true);
+        // `mm` is the name; an older state has only the boolean, and `true`
+        // there meant exactly this default.
+        // **Not `mm`** -- that key already belonged to `filmFormatMm`, and the
+        // two writes landed in the same object: the format (24.0) overwrote the
+        // meter name, and the next render sent `auto_exposure_method: "24"`,
+        // which the engine refuses. `mtr` is this field's own key.
+        l.meterMethod = sanitizeMeter(o.has("mtr") ? o.optString("mtr", "protect_highlights")
+                : (o.optBoolean("meter", true) ? "protect_highlights" : ""));
         l.grainAmount = (float) o.optDouble("grain", 1.0);
         l.halationAmount = (float) o.optDouble("halation", 1.0);
         l.glareAmount = (float) o.optDouble("glare", 1.0);
@@ -849,6 +993,11 @@ public class MainActivity extends Activity {
         l.wbPreset = o.optInt("wb", 0);
         l.wbKelvin = (float) o.optDouble("wbK", 5500.0);
         l.wbTint = (float) o.optDouble("wbT", 0.0);
+        final org.json.JSONArray wbArr = o.optJSONArray("wbm");
+        if (wbArr != null && wbArr.length() == 4) {
+            l.wbMul = new float[4];
+            for (int i = 0; i < 4; ++i) l.wbMul[i] = (float) wbArr.optDouble(i, 1.0);
+        }
         l.geometryTurns = o.optInt("gturn", 0);
         l.geometryRotation = (float) o.optDouble("grot", 0.0);
         l.geometryCropW = (float) o.optDouble("gcw", 1.0);
@@ -872,6 +1021,23 @@ public class MainActivity extends Activity {
         l.scannerWhite = (float) o.optDouble("scw", 0.0);
         l.scannerBlack = (float) o.optDouble("scb", 0.0);
         l.edrOn = (float) o.optDouble("edr", 0.0);
+        l.glareActive = (float) o.optDouble("gla", 1.0);
+        l.scannerLensBlur = (float) o.optDouble("slb", 0.0);
+        l.halationHeadroom = (float) o.optDouble("hhe", 4.0);
+        l.densityGamma = (float) o.optDouble("dcg", 1.0);
+        l.digitalIntermediate = o.optBoolean("dint", false);
+        l.outputCctf = o.optBoolean("occtf", true);
+        l.hueCorrection = (float) o.optDouble("hcor", 1.0);
+        // **1.5.4a shipped two wrong defaults for a few hours.** It sent
+        // `halation_headroom_ev` 0 (engine default 4) and `output_cctf_encoding`
+        // false (engine default true); either alone darkens every frame, and
+        // together they made the print look broken. No UI could reach those
+        // fields then, so a stored pair of exactly 0 + false can only be that
+        // build's fingerprint -- lift it to what the engine actually uses.
+        if (l.halationHeadroom <= 0f && !l.outputCctf) {
+            l.halationHeadroom = 4f;
+            l.outputCctf = true;
+        }
         l.shadowRolloff = (float) o.optDouble("rolloff", 2.0);
         for (int i = 0; i < 4; ++i) {
             l.cbHue[i] = (float) o.optDouble("cbh" + i, 0.0);
@@ -1006,6 +1172,12 @@ public class MainActivity extends Activity {
             suppressBudgetDialog = true;
             reopeningFrame = true;
             loadImage(frames.get(currentFrame).uri);
+            // **A frame that had a film gets its print back.** The decode is
+            // the whole of `loadImage`; without this an edit that was safely
+            // on disk still came back as the original, because nothing ever
+            // asked for a render. The strip already says "this is the
+            // photograph you were working on" -- the canvas has to agree.
+            if (filmStock != null) renderImage();
             return true;
         } catch (Throwable t) {
             try { DebugSink.text("session", "restore failed: " + t); } catch (Throwable ignored) { }
@@ -1030,6 +1202,13 @@ public class MainActivity extends Activity {
     private boolean panelCollapsed = false;
     /** The shelf opens on 原图, never on a stock the user did not pick. */
     private boolean showingOriginal = true;
+    /** Whether 原图 shows the decode as measured (off) or auto-levelled (on).
+     *  Off by default because the caption promises 未调色: measured against
+     *  Lightroom on a OnePlus 13 DNG, the old auto level sat 2.54 EV above it. */
+    private boolean rawAutoBright = false;
+    /** The DNG's own display profile ([baselineEV, x0, y0, ...]) for this
+     *  frame, or null. Phones ship `ProfileToneCurve`; cameras do not. */
+    private float[] sourceToneCurve = null;
     private String brandFilter = "all";
     private int formatIndex = 0;
     private final List<View> filmCards = new ArrayList<>();
@@ -1062,6 +1241,31 @@ public class MainActivity extends Activity {
     /** A stock change that arrived while a render held the session. Folded into
      *  one follow-up render when the current one lands. */
     private volatile boolean pendingRender = false;
+
+    // ── live preview ───────────────────────────────────────────────
+    /** A drag asked for a picture. `liveLoop` folds every request that lands
+     *  while a frame is being drawn into the one that follows it. */
+    private volatile boolean liveWanted = false;
+    /** Bumped for every live frame and every cancel, so a frame that lost a
+     *  race drops its bitmap instead of painting it over a newer one. */
+    private final java.util.concurrent.atomic.AtomicInteger liveGeneration =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** Bumped whenever a full-size render starts. A live frame that was already
+     *  queued behind `renderMutex` when that happened must never paint: it would
+     *  put 800 px back on top of the 2048 px result the user just waited for. */
+    private final java.util.concurrent.atomic.AtomicInteger fullGeneration =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** Which session `deltaSent` describes, and the last value sent for each
+     *  key. Written only under `renderMutex`, by the thread that draws. A
+     *  different session object clears both: a delta describes a session, not
+     *  the app. */
+    private SpektraLabEngine.Session deltaSession = null;
+    private final java.util.HashMap<String, String> deltaSent = new java.util.HashMap<>();
+    private final Object liveLock = new Object();
+    private Thread liveThread = null;
+    private long liveLastStart = 0;
+    /** Reused scratch for `copyArgbRange`: a 0.43 MP frame is 1.7 MB a tick. */
+    private int[] livePixels = null;
     /** How much of the meter's EV the decoded frame is shown at. */
     private static final double SOURCE_VIEW_EV_SCALE = 0.85;
 
@@ -1074,6 +1278,54 @@ public class MainActivity extends Activity {
     private float viewBlack = 0f, viewWhite = 0f, viewVignette = 0f;
     /** The camera's own exposure offset, in stops: applied by the engine. */
     private float cameraEv = 0f;
+    /**
+     * The exposure the engine's meter actually applied.
+     *
+     * <p>**It is not `exposure_ev_by_method.balanced`.** `node_exposure` uses
+     * `camera.exposure_compensation_ev`, and `spk_solve` puts the metered value
+     * for the *chosen* method there — `solved_params.exposure_compensation_ev`.
+     * `balanced` is a different number (0.52 vs 0.0756 on the frame that
+     * exposed this), and `spk_get_params` never sees either: the applied value
+     * is runtime, not part of the tree.
+     *
+     * <p>**Not the EV to hand an export.** This is the *enlarger* solution
+     * (`solved_params.exposure_compensation_ev`, 0.97 on the frame that
+     * started this); the meter's own answer is `lastAppliedEv`, and that is
+     * what {@link #appliedEvBelongsToCurrentFrame} guards. Kept for the log
+     * line, where the two numbers side by side are what showed they differ.
+     */
+    private double meteredEv = 0.0;
+    /**
+     * The EV the last **successful render** actually applied, read back from
+     * `progressJson()`'s `auto_exposure_ev`.
+     *
+     * <p>Three different numbers live around exposure and only one of them is
+     * the picture: `camera.exposure_compensation_ev` in the parameter tree is
+     * always 0 (the applied EV is runtime, not part of the tree),
+     * `solve`'s answer is what the meter *would* apply, and this one is what
+     * `node_auto_exposure` **did** apply to the frame on the canvas. An export
+     * that has to reproduce the preview pins this, and turns the meter off so
+     * the fresh session cannot decide a second time on a frame it sees
+     * differently -- that second decision is what printed a 20.9 MP negative as
+     * a white field with only the rebate left (ref SL-261107-503A: exported
+     * mean 224/223/217 against a canvas of 103, 67 % of it past 250).
+     */
+    private double lastAppliedEv = 0.0;
+    private boolean lastAppliedEvValid = false;
+    /**
+     * Which frame {@link #lastAppliedEv} belongs to, as that frame's URI.
+     *
+     * <p>**An EV without a frame is a number that will be applied to the wrong
+     * picture.** A batch export walks the strip: `reopenFrame` swaps the frames
+     * and closes the session, but nothing renders in between, so
+     * `lastAppliedEv` is still the *previous* frame's. Pinning that would give
+     * every file its neighbour's exposure. The URI makes the check exact, and
+     * the fallback -- no pin -- is simply the meter, which is what the canvas
+     * would have got anyway.
+     */
+    private String lastAppliedEvUri = null;
+    /** The last value already written to the sink, so a live drag stays quiet. */
+    private double loggedEv = Double.NaN;
     /** Vignette falloff start, as a percentage of the half-diagonal. */
     private static final float VIEW_VIGNETTE_MID = 50f;
 
@@ -1081,6 +1333,17 @@ public class MainActivity extends Activity {
     /** The engine refuses `preview_long_edge` below 800 (params.cpp), so the
      *  catalogue pass uses exactly that floor: the smallest legal frame. */
     private static final int PREFETCH_LONG_EDGE = 800;
+    /** The live-preview size: 800 is the floor the engine accepts, and it is
+     *  also the fastest this pipeline can draw. Measured with `live_probe` on
+     *  a 10.7 MP frame (Adreno 825): 430 ms a frame at 800 with the rebate on,
+     *  against 3.9 s at 2048 for the same frame. Releasing the thumb was the
+     *  only thing that used to draw, so every gesture ended in a two-to-four
+     *  second wait; a frame every 0.43 s is what makes the canvas track. */
+    private static final int LIVE_LONG_EDGE = 800;
+    /** Two live frames closer together than this are the same gesture. The
+     *  render itself is ten times this, so the gap only stops a burst of
+     *  requests from re-arming the loop right after a frame lands. */
+    private static final long LIVE_MIN_GAP_MS = 90;
     private final List<View> formatCards = new ArrayList<>();
     private static final int CONTROLS_OPEN_DP = 298;
     private static final int CONTROLS_CLOSED_DP = 58;
@@ -1152,7 +1415,14 @@ public class MainActivity extends Activity {
             getWindow().setStatusBarColor(UI_STAGE);
             getWindow().setNavigationBarColor(UI_PAPER);
             if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.view.WindowInsetsController c = getWindow().getInsetsController();
+                // **`Window.getInsetsController()` dereferences `mDecor`.** On
+                // a window that has not attached yet that is a null dereference
+                // *inside* the framework, before our own null check can run --
+                // the `bars` NPE in the 1.5.1c trace. Go through the decor we
+                // can null-check.
+                final android.view.View decor = getWindow() == null ? null : getWindow().getDecorView();
+                final android.view.WindowInsetsController c =
+                        decor == null ? null : decor.getWindowInsetsController();
                 if (c != null) {
                     // The canvas is behind the status bar, so its glyphs are white in
                     // both themes; the navigation bar sits on the panel, so its
@@ -1307,6 +1577,12 @@ public class MainActivity extends Activity {
         stage.setClipChildren(false);
 
         compare = new CompareView(this);
+        // **The date can be dragged onto the picture.** Its position is
+        // `corner` plus an inset in millimetres from the gate's edge -- exact,
+        // and impossible to aim with two sliders. While the date page is open a
+        // touch moves it; everywhere else this returns false and the canvas
+        // keeps its pinch, its pan and its compare handle.
+        compare.setOnTouchListener(this::onCanvasTouch);
         compare.setVisibility(View.GONE);
         stage.addView(compare, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
@@ -1490,60 +1766,160 @@ public class MainActivity extends Activity {
      * Written to `Android/data/<pkg>/files/crash/` so a user can send it without
      * any tooling, and to the sink when one is configured.
      */
+    /** The last exit's `ApplicationExitInfo` reason, or -1 when it could not be
+     *  read. The dialog needs it: a process the kernel reclaimed for memory is
+     *  not a crash, and telling the user "异常退出" sends them looking for a bug
+     *  that is really a 600 MB allocation. */
+    private int lastExitReason = -1;
+
     private void reportPreviousExit() {
         final StringBuilder body = new StringBuilder();
         final String trail = CrashTrail.previous(this);
-        // A trail that ends at `app:paused` means the user left; the process was
-        // killed in the background afterwards, which is not a crash. Only a
-        // trail that stops *before* the pause is news.
-        if (trail.startsWith("app:paused")) {
+        // **The last line, read from the same string the report carries.**
+        // `CrashTrail.last()` re-reads the preference and splits it itself; on
+        // the 1.5.0m build it returned a step that was not the last one, so a
+        // trail ending in `app:paused` still fell through to the exit-info
+        // branch and asked about a crash that never happened. One source, one
+        // answer, no second read.
+        final String trimmed = trail.trim();
+        final int nl = trimmed.lastIndexOf('\n');
+        final String lastStep = nl < 0 ? trimmed : trimmed.substring(nl + 1);
+        // **An empty ring is the one thing we can prove was not a crash.**
+        // `onDestroy` is the only path that clears it, and a process the
+        // system killed never reaches `onDestroy`. `ApplicationExitInfo` still
+        // has a row for that ordinary exit (reason 1 or 10), so reading it
+        // first turned every "swipe the app away, open it again" into
+        // "上次启动异常退出" -- with nothing in the trail, because it had been
+        // cleared on the way out.
+        if (trail.isEmpty()) {
+            Probe.log("exit", "skip=empty ring");
             CrashTrail.clear(this);
             return;
         }
-        if (!trail.isEmpty()) body.append("trail: ").append(trail).append('\n');
+        // A trail whose **last** line is `app:paused` means the user left; the
+        // process was killed in the background afterwards, which is not a
+        // crash. (It used to test `startsWith`, which was right when the trail
+        // held one line and is wrong now that it holds sixty-four.)
+        // **`app:onDestroy` counts too.** `onDestroy` marks it and then clears
+        // the ring; a process the system kills between those two lines leaves
+        // `app:onDestroy` as the last step. That is still a deliberate exit,
+        // not a crash -- and on this ROM the kill lands exactly there, so the
+        // trailing line is the only evidence left.
+        // **Look for the pause, not at the last line.** The shelf keeps
+        // painting cards after `onPause` -- a worker finishes the frame it
+        // already started and marks every card it touches -- so the ring's
+        // tail is `prefetch:card`, not `app:paused`. An `endsWith` test
+        // therefore missed every ordinary exit. What matters is whether the
+        // app came back to the foreground after the pause: a `render:begin`
+        // after it means the user returned and the process died during real
+        // work.
+        final int pausedAt = Math.max(trimmed.lastIndexOf("app:paused"),
+                                      trimmed.lastIndexOf("app:onDestroy"));
+        // **An export that started and never finished is a crash, whatever the
+        // pause says.** A 77 MP export takes long enough that people leave the
+        // app while it runs; `onPause` then sits in the ring, and the test below
+        // ("no `render:begin` after the pause") reads that as a deliberate exit
+        // and stays quiet -- which is exactly why the last one came back with no
+        // report at all. `export:written` is marked only after the file is on
+        // disk, so its absence is proof the process did not get that far.
+        final boolean exportUnfinished = trimmed.contains("export:begin")
+                && !trimmed.contains("export:written");
+        if (exportUnfinished) {
+            Probe.log("exit", "export began and never wrote; reporting");
+        } else if (pausedAt >= 0 && trimmed.indexOf("render:begin", pausedAt) < 0) {
+            Probe.log("exit", "skip=paused at " + pausedAt + " last=" + lastStep);
+            CrashTrail.clear(this);
+            return;
+        }
+        body.append("trail:\n").append(trail).append('\n');
         // Reflected, not called: `ApplicationExitInfo` arrived in API 30 and this
         // project compiles against an older SDK, where the symbol does not exist
         // even though the phone has it. Same reason `DeviceReport` reflects its
         // way to the advertising-id-free device name.
+        // **Not every exit is a crash.** 1 = exit_self, 10 = user requested,
+        // 16 = package updated (an overwrite install); the rest of the numbers
+        // outside 2..6 are ordinary lifecycle ends. `ApplicationExitInfo` has a
+        // row for all of them, and reporting on every row is what turned
+        // "覆盖安装" into "上次启动异常退出". 2..6 are the ones where the process
+        // did not get to finish: SIGNALED, LOW_MEMORY, Java crash, native
+        // crash, ANR. If the list cannot be read, the non-empty trail is
+        // evidence enough to ask.
+        boolean crashed = true;
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             try {
-                final Object am = getSystemService("activity");
-                if (am != null) {
-                    final Object list = am.getClass()
-                            .getMethod("getHistoricalProcessExitInfos").invoke(am);
-                    final int size = list instanceof java.util.List
-                            ? ((java.util.List<?>) list).size() : 0;
-                    if (size > 0) {
-                        final Object last = ((java.util.List<?>) list).get(0);
-                        final Class<?> cls = last.getClass();
-                        final int reason = (Integer) cls.getMethod("getReason").invoke(last);
-                        // 2 user-requested, 3 low-memory, 4 Java crash,
-                        // 5 native crash, 6 signalled. The last four are crashes.
-                        // 2 user-requested, 3 low-memory (a background kill,
-                        // not a crash), 4 Java crash, 5 native crash,
-                        // 6 signalled. Only the last three are ours.
-                        if (reason >= 4 && reason <= 6) {
-                            final Object status = cls.getMethod("getStatus").invoke(last);
-                            final Object desc = cls.getMethod("getDescription").invoke(last);
+                final android.app.ActivityManager am =
+                        (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+                if (am == null) {
+                    DebugSink.text("exit", "activity manager unavailable");
+                } else {
+                    // **`getHistoricalProcessExitReasons`, not ...ExitInfos.**
+                    // The latter has never existed on any Android release; it
+                    // was a guess inside a reflection loop, so it threw
+                    // NoSuchMethodException on every ROM and every report said
+                    // "no exit-info API". That one wrong name is why three
+                    // native deaths could not be told apart from the kernel
+                    // reclaiming the process -- and the two need different
+                    // fixes.
+                    final java.util.List<android.app.ApplicationExitInfo> list =
+                            am.getHistoricalProcessExitReasons(getPackageName(), 0, 8);
+                    android.app.ApplicationExitInfo last = null;
+                    if (list != null) {
+                        for (android.app.ApplicationExitInfo info : list) {
+                            if (info == null) continue;
+                            if (info.getPid() == android.os.Process.myPid()) continue;
+                            last = info;
+                            break;
+                        }
+                    }
+                    if (last == null) {
+                        DebugSink.text("exit", "exit-info API present, no record for this package");
+                    } else {
+                        final int reason = last.getReason();
+                        // **Every reason, not just the ones that say "crash".**
+                        // 1 exit_self, 2 SIGNALED, 3 LOW_MEMORY, 4 Java crash,
+                        // 5 native crash, 6 ANR, 9 excessive resources,
+                        // 10 user requested, 13 other. Keeping only 4..6 made a
+                        // kernel reclaim (3) or a SIGKILL (2) look like "the app
+                        // vanished for no reason".
+                        lastExitReason = reason;
+                        crashed = reason >= 2 && reason <= 6;
+                        if (crashed) {
                             body.append("exit: reason=").append(reason)
-                                .append(" status=").append(status)
-                                .append(" desc=").append(desc).append('\n');
-                            final Object stream = cls.getMethod("getTraceInputStream").invoke(last);
-                            if (stream instanceof InputStream) {
-                                final java.io.ByteArrayOutputStream buf =
-                                        new java.io.ByteArrayOutputStream();
-                                final byte[] chunk = new byte[4096];
-                                int n, total = 0;
-                                while ((n = ((InputStream) stream).read(chunk)) > 0 && total < 16384) {
-                                    buf.write(chunk, 0, n);
-                                    total += n;
+                                .append(" (").append(exitReasonName(reason)).append(')')
+                                .append(" status=").append(last.getStatus())
+                                .append(" pss=").append(last.getPss()).append("KB")
+                                .append(" rss=").append(last.getRss()).append("KB")
+                                .append(" desc=").append(last.getDescription()).append('\n');
+                            try (java.io.InputStream stream = last.getTraceInputStream()) {
+                                if (stream != null) {
+                                    final java.io.ByteArrayOutputStream buf =
+                                            new java.io.ByteArrayOutputStream();
+                                    final byte[] chunk = new byte[8192];
+                                    int n, total = 0;
+                                    // **A tombstone is not 16 KB.** Truncating
+                                    // kept the header and dropped the frame list.
+                                    while ((n = stream.read(chunk)) > 0 && total < 262144) {
+                                        buf.write(chunk, 0, n);
+                                        total += n;
+                                    }
+                                    body.append(buf.toString("UTF-8")).append('\n');
                                 }
-                                body.append(buf.toString("UTF-8")).append('\n');
-                            }
+                            } catch (Throwable ignored) { }
                         }
                     }
                 }
-            } catch (Throwable ignored) { }
+            } catch (Throwable e) {
+                // **Silence here is what made the first report unreadable.** An
+                // exit row that cannot be read looks exactly like one that was
+                // never written, and the two mean opposite things.
+                body.append("exit: 读不到 ApplicationExitInfo（").append(e).append("）\n");
+            }
+        }
+        // **A non-crashing exit reason leaves nothing to ask about.**
+        if (!crashed) {
+            Probe.log("exit", "skip=not-crash reason=" + lastExitReason);
+            CrashTrail.clear(this);
+            return;
         }
         if (body.length() == 0) { CrashTrail.clear(this); return; }
         try {
@@ -1559,13 +1935,21 @@ public class MainActivity extends Activity {
                 lastCrashFile = out.getAbsolutePath();
             }
         } catch (Throwable ignored) { }
-        try { DebugSink.textNow("previous-exit", body.toString()); } catch (Throwable ignored) { }
+        // **One row, and it is the whole report.** This used to be a
+        // previous-exit row plus a probe row on every launch that had died; the
+        // quota is counted in writes, and one is enough.
+        final String exitHead = "previous-exit\n" + reportHead() + "--- exit ---\n";
+        final String exitBody = body.toString();
         CrashTrail.clear(this);
+        new Thread(() -> DebugSink.send("crash", exitHead + exitBody),
+                "SpektraLab-report").start();
         // The report is only worth what reaches the developer. A crash on a
         // phone we do not own leaves this file and nothing else, so ask once,
         // late enough not to sit on top of the first layout, and make sending
         // it one tap.
-        final String summary = trail.isEmpty() ? "(no step recorded)" : trail;
+        Probe.now("exit", "report trail=" + trail.length() + "B last=" + lastStep
+                + " reason=" + lastExitReason);
+        final String summary = lastStep.isEmpty() ? "(no step recorded)" : lastStep;
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
                 () -> offerCrashReport(summary), 1500);
     }
@@ -1577,13 +1961,42 @@ public class MainActivity extends Activity {
      * and `ACTION_SEND` with `text/plain` needs no FileProvider grant -- which
      * on a vendor ROM is one more thing that can fail silently.
      */
+    /** `ApplicationExitInfo.REASON_*` in words. Kept here because the numeric
+     *  constants are API 30 and this project compiles against an older SDK. */
+    private static String exitReasonName(int reason) {
+        switch (reason) {
+            case 1:  return "exit_self";
+            case 2:  return "SIGNALED 被信号杀死";
+            case 3:  return "LOW_MEMORY 系统内存不足回收";
+            case 4:  return "Java crash";
+            case 5:  return "native crash";
+            case 6:  return "ANR";
+            case 7:  return "init failure";
+            case 9:  return "excessive resource usage";
+            case 10: return "user requested";
+            case 11: return "user stopped";
+            case 12: return "dependency died";
+            case 13: return "other";
+            default: return "reason " + reason;
+        }
+    }
+
     private void offerCrashReport(String where) {
         try {
             if (isFinishing() || isDestroyed()) return;
             final android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this);
-            b.setTitle("上次启动异常退出");
-            b.setMessage("最后一步：" + where
-                    + "\n\n这台机器的崩溃日志对定位很关键。要不要发我一份？");
+            // **Two different events, two different sentences.** 3 is the
+            // kernel reclaiming the process for memory and 2 is a signal kill;
+            // neither is a defect in the code path the trail names, and calling
+            // both "异常退出" is how a 600 MB import reads as a mystery crash.
+            final boolean reclaimed = lastExitReason == 3 || lastExitReason == 2;
+            b.setTitle(reclaimed ? "上次被系统回收了" : "上次启动异常退出");
+            b.setMessage(reclaimed
+                    ? "最后一步：" + where
+                        + "\n\n系统当时内存不够，把应用回收了——多半是这张图太大，不是程序出错。"
+                        + "\n\n把这份记录发我可以确认尺寸；也可以直接重开，导入时选「缩到建议尺寸」。"
+                    : "最后一步：" + where
+                        + "\n\n这台机器的崩溃日志对定位很关键。要不要发我一份？");
             b.setPositiveButton("发送日志", (d, w) -> shareCrashReport());
             b.setNegativeButton("关闭", null);
             b.show();
@@ -1595,7 +2008,13 @@ public class MainActivity extends Activity {
             final String body = lastCrashFile == null ? "" : readTextFile(lastCrashFile, 32768);
             final StringBuilder text = new StringBuilder("SpektraLab 崩溃报告\n");
             text.append("build=").append(SpektraLabEngine.buildInfo()).append('\n');
-            text.append("device=").append(probe.describe()).append("\n\n");
+            // `probe` is filled by `ensureEngine()`, and this report is offered
+            // on the launch *after* the exit -- before the user has imported
+            // anything. "设备信息读取失败" there is the engine simply not having
+            // been created yet, and it reads as a broken device probe.
+            text.append("device=").append(probe.valid ? probe.describe()
+                    : "（引擎本次启动尚未创建，无设备信息）").append("\n\n");
+            text.append("ref=").append(DebugSink.REF).append('\n');
             text.append(body);
             final Intent send = new Intent(Intent.ACTION_SEND);
             send.setType("text/plain");
@@ -1675,16 +2094,107 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * The engine's SIGSEGV handler writes a backtrace to this file. Installing
+     * it is the only way a native crash produces evidence on a ROM without
+     * `ApplicationExitInfo`: the Java handler never runs, and the sink queue is
+     * lost with the process.
+     */
+    private void installNativeCrashHandler() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), "native-crash.txt");
+            SpektraLabEngine.installCrashHandler(f.getAbsolutePath());
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * Ship whatever the last death left on disk.
+     *
+     * <p>Two files, because two different deaths: the signal handler writes a
+     * backtrace for a native crash, and {@link #installCrashLogger} writes the
+     * Java stack for an exception. Both are shipped **only when they exist**
+     * -- which is to say, only after a crash -- and one row each.
+     */
+    private void uploadCrashFiles() {
+        shipCrashFile("native-crash.txt", "native-crash");
+        shipCrashFile("java-crash.txt", "crash");
+    }
+
+    private void shipCrashFile(String name, String tag) {
+        final java.io.File f = new java.io.File(getFilesDir(), name);
+        if (!f.exists()) return;
+        new Thread(() -> {
+            try {
+                final long len = Math.min(f.length(), 64L * 1024);
+                if (len <= 0) { f.delete(); return; }
+                final byte[] buf = new byte[(int) len];
+                int off = 0, n;
+                try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+                    while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
+                }
+                final String body = "build=" + buildLine() + "\nversion=" + versionLine()
+                        + new String(buf, 0, off, java.nio.charset.StandardCharsets.UTF_8);
+                // `send` stashes the row when the network is down, so the file
+                // is not needed as a second copy once it has been attempted.
+                if (DebugSink.send(tag, body)) f.delete();
+            } catch (Throwable ignored) { }
+        }, "SpektraLab-crash-upload").start();
+    }
+
+    /**
+     * A Java crash never reaches the sink: the process is gone before anything
+     * asynchronous runs. So it writes a file, and the next launch ships that
+     * file -- the same route the native backtrace takes.
+     */
     private void installCrashLogger() {
         final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
             try {
                 final java.io.StringWriter text = new java.io.StringWriter();
                 error.printStackTrace(new java.io.PrintWriter(text));
-                DebugSink.textNow("crash", thread.getName() + " | " + text);
+                final String body = "ref=" + DebugSink.REF + "\nbuild=" + buildLine()
+                        + "\nversion=" + versionLine() + "thread=" + thread.getName()
+                        + "\n\n" + text;
+                DebugSink.text("crash", body);
+                final java.io.File f = new java.io.File(getFilesDir(), "java-crash.txt");
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(f, false)) {
+                    out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
             } catch (Throwable ignored) { }
             if (previous != null) previous.uncaughtException(thread, error);
         });
+    }
+
+    private String buildLine() {
+        try { return SpektraLabEngine.buildInfo(); } catch (Throwable t) { return "(native side not loaded)"; }
+    }
+
+    private String versionLine() {
+        return UpdateCheck.versionName(this) + " (" + UpdateCheck.versionCode(this) + ")\n";
+    }
+
+    /** build + version + device: the first three lines of every report. */
+    private String reportHead() {
+        return "build=" + buildLine() + "\n"
+                + "version=" + versionLine()
+                + "device=" + (probe.valid ? probe.describe() : "(engine not created this launch)") + "\n";
+    }
+
+    // **The only automatic upload that is not a crash.** At most one a minute,
+    // and never the same failure twice in a row: an error that repeats in a
+    // loop (a bad parameter on every drag) must not become a write per frame.
+    private long lastReportAt = 0L;
+    private String lastReportKey = "";
+
+    private void reportFailure(String title, String body) {
+        final long now = System.currentTimeMillis();
+        final String key = title + "|" + body;
+        if (key.equals(lastReportKey) && now - lastReportAt < 60_000L) return;
+        if (now - lastReportAt < 5_000L) return;
+        lastReportKey = key;
+        lastReportAt = now;
+        final String head = "error\n" + reportHead() + "title=" + title + "\n";
+        new Thread(() -> DebugSink.report("error", head, body), "SpektraLab-report").start();
     }
 
     /** All in-app messages use this paper/ink toast, never Android's Toast. */
@@ -1756,8 +2266,25 @@ public class MainActivity extends Activity {
         TextView word = label("SpektraLab", 18, uiOnCanvas(), tfDisplay);
         word.setLetterSpacing(-0.045f);
         word.setSingleLine(true);
-        word.setOnLongClickListener(v -> { showAbout(); return true; });
         wordRow.addView(word);
+        // **The menu is a drawn glyph, not a text "≡".** Next to a real icon a
+        // font character reads as a mistake; Material's `menu` path is the
+        // designed 24 dp shape. It replaces the long-press on the wordmark,
+        // which nothing on screen advertised.
+        final android.widget.ImageView menuPill = new android.widget.ImageView(this);
+        menuPill.setImageResource(getResources().getIdentifier(
+                "ic_menu_white", "drawable", getPackageName()));
+        menuPill.setAlpha(0.85f);
+        menuPill.setPadding(dp(6), dp(6), dp(6), dp(6));
+        menuPill.setContentDescription("设置");
+        menuPill.setOnClickListener(v -> showAbout());
+        // **Left of the wordmark, not between it and the version.** The menu
+        // belongs at the edge of the bar, where every other app puts it;
+        // between the name and its version number it reads as part of the name.
+        final LinearLayout.LayoutParams menuLp = new LinearLayout.LayoutParams(dp(30), dp(30));
+        menuLp.rightMargin = dp(10);
+        menuLp.topMargin = dp(1);
+        wordRow.addView(menuPill, 0, menuLp);
         TextView version = label("v" + UpdateCheck.versionName(this), 6.5f, uiOnCanvas(), tfBody);
         version.setAlpha(0.7f);
         LinearLayout.LayoutParams versionLp = new LinearLayout.LayoutParams(-2, -2);
@@ -1809,14 +2336,21 @@ public class MainActivity extends Activity {
         // one readout that is about *this* frame, so it sits where the frame is
         // and updates with it; behind it a 30% wash keeps a bright sky from
         // swallowing the traces.
+        // **Whether the histogram shows is a preference now.** It is the one
+        // readout that is about *this* frame, so it sits on the frame; but a
+        // plate over the top-left corner of a photograph is not always
+        // wanted, and the switch is in 光学 -> 亮度.
+        histogramOn = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("histogram", true);
+        rawAutoBright = getSharedPreferences("ui", MODE_PRIVATE)
+                .getBoolean("raw_auto_bright", false);
         histogram = new HistogramView(this);
-        histogram.setBackgroundColor(0x4D000000);
         final android.widget.FrameLayout.LayoutParams hlp =
-                new android.widget.FrameLayout.LayoutParams(dp(132), dp(48),
+                new android.widget.FrameLayout.LayoutParams(dp(148), dp(54),
                         android.view.Gravity.TOP | android.view.Gravity.START);
         hlp.leftMargin = dp(14);
         hlp.topMargin = dp(62);
         stage.addView(histogram, hlp);
+        histogram.setVisibility(histogramOn ? View.VISIBLE : View.GONE);
         if (lastRenderedBitmap != null) histogram.setBitmap(lastRenderedBitmap);
     }
 
@@ -1944,7 +2478,7 @@ public class MainActivity extends Activity {
         look.filmStock = filmStock;
         look.printStock = printStock;
         look.printExposure = printExposure;
-        look.metering = metering;
+        look.meterMethod = meterMethod;
         look.grainAmount = grainAmount;
         look.halationAmount = halationAmount;
         look.glareAmount = glareAmount;
@@ -1970,6 +2504,8 @@ public class MainActivity extends Activity {
         look.wbPreset = wbPreset;
         look.wbKelvin = wbKelvin;
         look.wbTint = wbTint;
+        look.wbMul = wbUserMul == null ? null : wbUserMul.clone();
+        Probe.log("wb", "look-capture mul=" + Probe.mul(wbUserMul) + " preset=" + wbPreset);
         look.geometryTurns = geometryTurns;
         look.geometryRotation = geometryRotation;
         look.geometryCropW = geometryCropW;
@@ -2008,6 +2544,13 @@ public class MainActivity extends Activity {
         look.scannerWhite = scannerWhite;
         look.scannerBlack = scannerBlack;
         look.edrOn = edrOn;
+        look.glareActive = glareActive;
+        look.scannerLensBlur = scannerLensBlur;
+        look.halationHeadroom = halationHeadroom;
+        look.densityGamma = densityGamma;
+        look.digitalIntermediate = digitalIntermediate;
+        look.outputCctf = outputCctf;
+        look.hueCorrection = hueCorrection;
         look.shadowRolloff = shadowRolloff;
         look.maxLift = maxLift;
         look.cameraFilter = cameraFilter;
@@ -2045,7 +2588,8 @@ public class MainActivity extends Activity {
         filmStock = look.filmStock;
         printStock = look.printStock;
         printExposure = look.printExposure;
-        metering = look.metering;
+        meterMethod = sanitizeMeter(look.meterMethod);
+        refreshMeterChip();
         grainAmount = look.grainAmount;
         halationAmount = look.halationAmount;
         glareAmount = look.glareAmount;
@@ -2071,6 +2615,8 @@ public class MainActivity extends Activity {
         wbPreset = look.wbPreset;
         wbKelvin = look.wbKelvin <= 0f ? 5500f : look.wbKelvin;
         wbTint = look.wbTint;
+        wbUserMul = look.wbMul == null ? null : look.wbMul.clone();
+        Probe.log("wb", "look-apply mul=" + Probe.mul(wbUserMul) + " preset=" + wbPreset);
         refreshViewPanel();
         pushViewAdjust();
         geometryTurns = look.geometryTurns;
@@ -2124,6 +2670,13 @@ public class MainActivity extends Activity {
         scannerWhite = look.scannerWhite;
         scannerBlack = look.scannerBlack;
         edrOn = look.edrOn;
+        glareActive = look.glareActive;
+        scannerLensBlur = look.scannerLensBlur;
+        halationHeadroom = look.halationHeadroom;
+        densityGamma = look.densityGamma;
+        digitalIntermediate = look.digitalIntermediate;
+        outputCctf = look.outputCctf;
+        hueCorrection = look.hueCorrection;
         shadowRolloff = look.shadowRolloff;
         maxLift = look.maxLift;
         cameraFilter = look.cameraFilter == null ? "" : look.cameraFilter;
@@ -2153,10 +2706,10 @@ public class MainActivity extends Activity {
         setBarProgress(edgeLeaksBar, 0.0f, 4f, edgeLeaks);
         setBarProgress(frameNoBar, 0.0f, 99f, frameNumber);
         setBarProgress(edgeFNumBar, 0.0f, 64f, edgeFNumber);
-        setBarProgress(dateSizeBar, 0.4f, 3f, dateSize);
+        setBarProgress(dateSizeBar, 0.4f, 8f, dateSize);
         setBarProgress(dateEvBar, -2f, 8f, dateEv);
-        setBarProgress(dateInsetXBar, 0f, 30f, dateInsetX);
-        setBarProgress(dateInsetYBar, 0f, 30f, dateInsetY);
+        setBarProgress(dateInsetXBar, 0f, 200f, dateInsetX);
+        setBarProgress(dateInsetYBar, 0f, 200f, dateInsetY);
         refreshKnob();
         refreshEdgeGroups();
         for (int i = 0; i < FORMAT_MM.length; ++i) {
@@ -2178,7 +2731,10 @@ public class MainActivity extends Activity {
         look.filmStock = null;
         look.printStock = "kodak_portra_endura";
         look.printExposure = 1.0f;
-        look.metering = true;
+        // A raw is scene-referred and has no exposure decision of its own; a
+        // camera JPEG has already been metered once, by the camera, and
+        // metering it again is how "import this photo" turned into a grey wash.
+        look.meterMethod = isRawFile ? "protect_highlights" : "";
         look.grainAmount = 1.0f;
         look.halationAmount = 1.0f;
         look.glareAmount = 1.0f;
@@ -2193,6 +2749,7 @@ public class MainActivity extends Activity {
         look.wbPreset = 0;
         look.wbKelvin = 5500f;
         look.wbTint = 0.0f;
+        look.wbMul = null;
         look.geometryTurns = 0;
         look.geometryRotation = 0.0f;
         look.geometryCropW = 1.0f;
@@ -2216,6 +2773,13 @@ public class MainActivity extends Activity {
         look.scannerWhite = 0f;
         look.scannerBlack = 0f;
         look.edrOn = 0f;
+        look.glareActive = 1f;
+        look.scannerLensBlur = 0f;
+        look.halationHeadroom = 4f;
+        look.densityGamma = 1f;
+        look.digitalIntermediate = false;
+        look.outputCctf = true;
+        look.hueCorrection = 1f;
         look.shadowRolloff = 2f;
         look.maxLift = 4f;
         look.cameraFilter = "";
@@ -2307,6 +2871,23 @@ public class MainActivity extends Activity {
             // "Decoding RAW…" with nothing ever taking its place. If the index
             // is gone, fall through and add the frame for real.
             if (currentFrame >= 0 && currentFrame < frames.size()) {
+                // **The chip is this frame's picture, so it has to be this
+                // frame's pixels.** This branch returned without touching
+                // `thumb`, which left every chip showing whatever that slot was
+                // first imported with -- reported as "缩略图被同一张图片污染"
+                // after switching between a JPEG and a RAW. Re-filing it here is
+                // also what makes a re-decoded (tone-shifted) frame show its own
+                // new thumbnail rather than the old one.
+                final Frame reopened = frames.get(currentFrame);
+                if (beforeBitmap != null) {
+                    try {
+                        final int w = Math.max(1, dp(42));
+                        final int h = Math.max(1, Math.round(
+                                w * beforeBitmap.getHeight() / (float) beforeBitmap.getWidth()));
+                        reopened.thumb = Bitmap.createScaledBitmap(beforeBitmap, w, h, true);
+                        persistThumb(reopened);
+                    } catch (Throwable ignored) { }
+                }
                 rebuildFrameChips();
                 return;
             }
@@ -2349,10 +2930,11 @@ public class MainActivity extends Activity {
             box.addView(img, new android.widget.FrameLayout.LayoutParams(-1, -1));
             box.setOnClickListener(v -> reopenFrame(index));
             box.setOnLongClickListener(v -> {
-                showActionSheet("删除这张照片？",
-                        (frame.name == null ? "照片" : frame.name) + "\n\n只从这条栏里移除，文件本身不动。",
-                        new String[]{"删除", "取消"}, which -> {
-                            if (which == 0) removeFrame(index);
+                showActionSheet(frame.name == null ? "这张照片" : frame.name,
+                        "参数是每张照片各自的：复制过去只改这条栏里的设置，文件不动。",
+                        new String[]{"把这张的参数应用到其它照片…", "删除", "取消"}, which -> {
+                            if (which == 0) showApplyLookSheet(index);
+                            else if (which == 1) removeFrame(index);
                         });
                 return true;
             });
@@ -2380,6 +2962,7 @@ public class MainActivity extends Activity {
      *  the frame was the one on the canvas, the canvas is emptied rather than
      *  silently showing a photograph that is no longer in the list. */
     private void removeFrame(int index) {
+        CrashTrail.markNow(this, "frame:remove " + index + " of " + frames.size());
         if (index < 0 || index >= frames.size()) return;
         frames.remove(index);
         if (frames.isEmpty()) stopPrefetch();
@@ -2419,8 +3002,23 @@ public class MainActivity extends Activity {
     /** Re-open a frame from the strip. Same entry point the picker uses, so a
      *  RAW chip and a JPEG chip take exactly the roads they took the first time. */
     private void reopenFrame(int index) {
+        CrashTrail.markNow(this, "frame:reopen " + index + " of " + frames.size());
         if (index < 0 || index >= frames.size()) return;
         if (index == currentFrame && session != null) return;
+        reopenFrameForced(index);
+    }
+
+    /**
+     * Same as {@link #reopenFrame} but without the "already open" shortcut.
+     *
+     * <p>A batch export uses this for every frame, including the one already on
+     * the canvas. The shortcut left the first export running on the session the
+     * import opened -- a different open (its own parameters, its own preload) --
+     * while the other five were re-decoded. Reported: the first export came out
+     * about two stops darker than its own preview, and the other five matched.
+     */
+    private void reopenFrameForced(int index) {
+        if (index < 0 || index >= frames.size()) return;
         final Frame frame = frames.get(index);
         saveLookIntoFrames();
         currentFrame = index;
@@ -2557,29 +3155,22 @@ public class MainActivity extends Activity {
         // On: the meter decides the film exposure. Off: the frame keeps the
         // exposure the camera recorded, which is the only way a lamp in a dark
         // room comes back dark instead of being lifted five stops onto Dmax.
-        final TextView meterLabel = label("自动测光", 8.5f, UI_MUTED, tfHan);
-        meterOn = label("开启", 8.5f, UI_INK, tfHan);
-        meterOff = label("关闭", 8.5f, UI_INK, tfHan);
-        for (TextView t : new TextView[]{meterOn, meterOff}) {
-            t.setGravity(android.view.Gravity.CENTER);
-            // **48dp, not 40x20.** The old chip was smaller than the minimum
-            // touch target, so a tap that landed two pixels off did nothing --
-            // which is what "点了没反应" was.
-            t.setPadding(dp(12), dp(6), dp(12), dp(6));
-            t.setMinWidth(dp(48));
-            t.setMinHeight(dp(30));
-        }
-        meterOn.setOnClickListener(v -> setMetering(true));
-        meterOff.setOnClickListener(v -> setMetering(false));
+        final TextView meterLabel = label("测光", 8.5f, UI_MUTED, tfHan);
+        meterChip = label("", 8.5f, UI_INK, tfHan);
+        meterChip.setGravity(android.view.Gravity.CENTER);
+        // **48dp, not 40x20.** The old chip was smaller than the minimum touch
+        // target, so a tap that landed two pixels off did nothing -- which is
+        // what "点了没反应" was.
+        meterChip.setPadding(dp(10), dp(6), dp(10), dp(6));
+        meterChip.setMinWidth(dp(48));
+        meterChip.setMinHeight(dp(30));
+        meterChip.setOnClickListener(v -> showMeterPicker());
         final LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(-2, -2);
         labelLp.rightMargin = dp(6);
         filmHead.addView(meterLabel, 1, labelLp);
-        final LinearLayout.LayoutParams onLp = new LinearLayout.LayoutParams(-2, -2);
-        onLp.rightMargin = dp(4);
-        filmHead.addView(meterOn, 2, onLp);
-        final LinearLayout.LayoutParams offLp = new LinearLayout.LayoutParams(-2, -2);
-        offLp.rightMargin = dp(10);
-        filmHead.addView(meterOff, 3, offLp);
+        final LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, -2);
+        chipLp.rightMargin = dp(10);
+        filmHead.addView(meterChip, 2, chipLp);
         refreshMeterChip();
         panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
 
@@ -2693,6 +3284,281 @@ public class MainActivity extends Activity {
         return bg;
     }
 
+    /** Four colours and three lines: everything a box front is. */
+    private static final class Cover {
+        int body, band, ink, bandInk, accent;
+        String wordmark = "KODAK", model = "", tech = "COLOR PRINT FILM", iso = "";
+    }
+
+    /**
+     * The palette of a film's box.
+     *
+     * <p>Nothing here is artwork. The recognition lives in four things -- the
+     * brand band, the stock's own colour, the wordmark, the name -- and all
+     * four can be *stated*, which is what this does. Copying the printed boxes
+     * would mean licensing 25 pieces of trade dress to fill a placeholder.
+     */
+    private static Cover coverFor(String id, String caption) {
+        final Cover v = new Cover();
+        v.body = 0xFFF2EDE3;
+        v.band = 0xFFF5C518;
+        v.ink = 0xFF171717;
+        v.bandInk = 0xFFDA291C;
+        v.accent = 0xFFDA291C;
+        if (id == null) id = "";
+
+        if (id.startsWith("fujifilm")) {
+            v.wordmark = "FUJIFILM";
+            v.body = 0xFFF4F2EC;
+            v.band = 0xFF007A3D;
+            v.bandInk = 0xFFF4F2EC;
+            v.ink = 0xFF0B6B38;
+            v.accent = 0xFF6D2C91;
+        } else if (id.startsWith("ilford")) {
+            v.wordmark = "ILFORD";
+            v.body = 0xFF141414;
+            v.band = 0xFF141414;
+            v.bandInk = 0xFFF4F2EC;
+            v.ink = 0xFFF4F2EC;
+            v.accent = 0xFFF4F2EC;
+            v.tech = "BLACK & WHITE FILM";
+        } else if (id.startsWith("cinestill")) {
+            v.wordmark = "CINESTILL";
+            v.body = 0xFFC8102E;
+            v.band = 0xFF101010;
+            v.bandInk = 0xFFF7F4EF;
+            v.ink = 0xFFF7F4EF;
+            v.accent = 0xFF2AA3DC;
+            v.tech = "CINE FILM · 36 EXP";
+        }
+
+        if (id.equals("kodak_gold_200")) {
+            v.body = 0xFFE6007E; v.ink = 0xFFFFFFFF;
+        } else if (id.equals("kodak_colorplus_200")) {
+            v.body = 0xFFEE2E24; v.ink = 0xFFFFFFFF;
+        } else if (id.equals("kodak_ultramax_400")) {
+            v.body = 0xFF0B5FA5; v.ink = 0xFFFFFFFF;
+        } else if (id.equals("kodak_ektar_100")) {
+            v.body = 0xFFF2A900; v.ink = 0xFF171717;
+        } else if (id.startsWith("kodak_portra")) {
+            v.band = 0xFFE8B90C;
+        } else if (id.equals("kodak_tri_x_400") || id.equals("kodak_tmax_100")) {
+            v.body = 0xFFF2F0EA; v.band = 0xFF141414;
+            v.bandInk = 0xFFF2F0EA; v.ink = 0xFF141414;
+            v.tech = "BLACK & WHITE FILM";
+        } else if (id.startsWith("kodak_vision3")) {
+            v.body = 0xFF1B1B1B; v.ink = 0xFFF4F2EC;
+            v.tech = "CINE FILM · 400 FT";
+            if (id.endsWith("50d")) v.band = 0xFFF2C300;
+            else if (id.endsWith("250d")) v.band = 0xFFE07A24;
+            else if (id.endsWith("200t")) v.band = 0xFFD64545;
+            else v.band = 0xFFC8202F;
+        } else if (id.equals("kodak_verita_200d")) {
+            v.body = 0xFF1F6E43; v.ink = 0xFFF4F2EC;
+        } else if (id.equals("kodak_ektachrome_100")) {
+            v.body = 0xFF101010; v.band = 0xFFF2C300;
+            v.bandInk = 0xFF171717; v.ink = 0xFFF4F2EC;
+            v.tech = "COLOUR REVERSAL";
+        } else if (id.equals("kodak_kodachrome_64")) {
+            v.body = 0xFFC8102E; v.ink = 0xFFF7F4EF;
+            v.tech = "COLOUR REVERSAL";
+        } else if (id.equals("fujifilm_c200")) {
+            v.body = 0xFF009A44; v.band = 0xFF6D2C91;
+            v.bandInk = 0xFFFFFFFF; v.ink = 0xFFFFFFFF;
+        } else if (id.equals("fujifilm_xtra_400")) {
+            v.body = 0xFF007A3D; v.ink = 0xFFFFFFFF; v.bandInk = 0xFFFFFFFF;
+        } else if (id.equals("fujifilm_pro_400h")) {
+            v.body = 0xFF007A3D; v.band = 0xFFF4F2EC;
+            v.bandInk = 0xFF007A3D; v.ink = 0xFFFFFFFF;
+        } else if (id.equals("fujifilm_neopan_acros_100_ii")) {
+            v.body = 0xFFF4F2EC; v.band = 0xFF141414;
+            v.bandInk = 0xFFF4F2EC; v.ink = 0xFF141414;
+            v.tech = "BLACK & WHITE FILM";
+        } else if (id.equals("fujifilm_velvia_100")) {
+            v.body = 0xFF101010; v.band = 0xFFC8102E;
+            v.bandInk = 0xFFF4F2EC; v.ink = 0xFFF4F2EC;
+            v.tech = "COLOUR REVERSAL";
+        } else if (id.equals("fujifilm_provia_100f")) {
+            v.body = 0xFFF4F2EC; v.band = 0xFF007A3D;
+            v.ink = 0xFF0B6B38; v.tech = "COLOUR REVERSAL";
+        }
+
+        // The name, minus the brand it already shows in the band.
+        String m = caption == null ? "" : caption;
+        final int dot = m.indexOf(" · ");
+        if (dot > 0) m = m.substring(0, dot);
+        for (String b : new String[]{"Kodak ", "Fujifilm ", "Ilford ", "CineStill "}) {
+            if (m.startsWith(b)) { m = m.substring(b.length()); break; }
+        }
+        v.model = m;
+
+        final java.util.regex.Matcher mt =
+                java.util.regex.Pattern.compile("(\\d{2,4})\\s*(D|T)?").matcher(m);
+        while (mt.find()) v.iso = mt.group(1) + (mt.group(2) == null ? "" : mt.group(2));
+        return v;
+    }
+
+    /**
+     * A film box, drawn from a palette.
+     *
+     * <p>Shown on the shelf only when there is no photograph yet -- once a
+     * frame is loaded the card is the stock's own rendering of that frame,
+     * which is more informative than any package. Before that, a grey
+     * rectangle with the name typed into it is a placeholder; this reads as a
+     * film at a glance, which is what the shelf is for.
+     */
+    private static class FilmCoverView extends View {
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Path clip = new android.graphics.Path();
+        private final android.graphics.RectF full = new android.graphics.RectF();
+        private final int body, band, ink, bandInk, accent;
+        private final String wordmark, model, tech, iso;
+        private android.graphics.LinearGradient gloss;
+        private int glossW, glossH;
+
+        FilmCoverView(android.content.Context c, String id, String caption) {
+            super(c);
+            final Cover v = coverFor(id, caption);
+            body = v.body;
+            band = v.band;
+            ink = v.ink;
+            bandInk = v.bandInk;
+            accent = v.accent;
+            wordmark = v.wordmark;
+            model = v.model;
+            tech = v.tech;
+            iso = v.iso;
+        }
+
+        private android.graphics.Typeface condensed() {
+            return android.graphics.Typeface.create(
+                    "sans-serif-condensed", android.graphics.Typeface.BOLD);
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas c) {
+            final int w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            final float d = getResources().getDisplayMetrics().density;
+            final float pad = Math.max(2f, w * 0.055f);
+
+            full.set(0, 0, w, h);
+            clip.reset();
+            clip.addRoundRect(full, 2f * d, 2f * d, android.graphics.Path.Direction.CW);
+            c.save();
+            c.clipPath(clip);
+
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setShader(null);
+            paint.setColor(body);
+            c.drawRect(0, 0, w, h, paint);
+
+            final float bandH = h * 0.30f;
+            paint.setColor(band);
+            c.drawRect(0, 0, w, bandH, paint);
+
+            // --- the band: wordmark left, speed right -------------------
+            paint.setTypeface(condensed());
+            paint.setColor(bandInk);
+            paint.setTextAlign(android.graphics.Paint.Align.LEFT);
+            float ws = Math.max(5f * d, w * 0.125f);
+            paint.setTextSize(ws);
+            final float isoRoom = iso.isEmpty() ? 0f : w * 0.26f;
+            float wmW = paint.measureText(wordmark);
+            if (wmW > w - pad * 2 - isoRoom) {
+                ws *= (w - pad * 2 - isoRoom) / wmW;
+                paint.setTextSize(ws);
+            }
+            final float base = bandH * 0.5f + ws * 0.36f;
+            c.drawText(wordmark, pad, base, paint);
+
+            if (!iso.isEmpty()) {
+                paint.setTypeface(android.graphics.Typeface.create(
+                        "sans-serif", android.graphics.Typeface.NORMAL));
+                paint.setTextSize(Math.max(4.5f * d, w * 0.072f));
+                paint.setTextAlign(android.graphics.Paint.Align.RIGHT);
+                c.drawText(iso, w - pad, base, paint);
+                paint.setTextAlign(android.graphics.Paint.Align.LEFT);
+            }
+
+            // --- the name, one or two lines ------------------------------
+            paint.setTypeface(condensed());
+            paint.setColor(ink);
+            final float room = w - pad * 2;
+            // The foot's optical top, measured from its own baseline: the two
+            // text blocks used to be laid out independently, and a long name
+            // ("Neopan 100 Acros II") ended 0.2 dp above the fine print.
+            final float footSize = Math.max(4f * d, w * 0.058f);
+            final float footTop = h - 4.2f * d - footSize * 0.95f;
+            final float avail = footTop - bandH - 2.5f * d;
+            final String[] lines = twoLines(model, room, Math.max(5f * d, w * 0.15f));
+            float size = Math.max(5f * d, w * 0.15f);
+            for (;;) {
+                paint.setTextSize(size);
+                float widest = 0f;
+                for (String ln : lines) widest = Math.max(widest, paint.measureText(ln));
+                // Both constraints, not just the width: a name that fits
+                // sideways can still be too tall for the body.
+                final boolean fits = widest <= room && size * 1.06f * lines.length <= avail;
+                if (fits || size <= 4.2f * d) break;
+                size -= 0.4f * d;
+            }
+            final float lh = size * 1.06f;
+            float y = bandH + 2.5f * d + (avail - lh * lines.length) * 0.5f + size * 0.82f;
+            for (String ln : lines) {
+                c.drawText(ln, pad, y, paint);
+                y += lh;
+            }
+
+            // --- the foot: what kind of film this is ---------------------
+            paint.setTypeface(android.graphics.Typeface.create(
+                    "sans-serif", android.graphics.Typeface.NORMAL));
+            paint.setTextSize(footSize);
+            paint.setColor(ink);
+            paint.setAlpha(0xB8);
+            c.drawText(tech, pad, h - 4.2f * d, paint);
+            paint.setAlpha(255);
+
+            // The one graphic device every box has: a short rule under the band.
+            paint.setColor(accent);
+            c.drawRect(pad, bandH, pad + w * 0.24f, bandH + Math.max(1.5f, 1.1f * d), paint);
+
+            // A coat of gloss, so the swatch reads as printed matter.
+            if (gloss == null || glossW != w || glossH != h) {
+                gloss = new android.graphics.LinearGradient(0, 0, w, h,
+                        0x1EFFFFFF, 0x00FFFFFF, android.graphics.Shader.TileMode.CLAMP);
+                glossW = w;
+                glossH = h;
+            }
+            paint.setShader(gloss);
+            c.drawRect(0, 0, w, h, paint);
+            paint.setShader(null);
+
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(1f);
+            paint.setColor(0x33000000);
+            c.drawRect(0, 0, w, h, paint);
+            c.restore();
+        }
+
+        /** One line if it fits, else split at the space nearest the middle. */
+        private String[] twoLines(String s, float room, float maxSize) {
+            paint.setTextSize(maxSize);
+            if (paint.measureText(s) <= room) return new String[]{s};
+            int best = -1;
+            float bestScore = Float.MAX_VALUE;
+            for (int i = 0; i < s.length(); ++i) {
+                if (s.charAt(i) != ' ') continue;
+                final float a = paint.measureText(s.substring(0, i));
+                final float b = paint.measureText(s.substring(i + 1));
+                final float score = Math.max(a, b);
+                if (score < bestScore) { bestScore = score; best = i; }
+            }
+            if (best < 0) return new String[]{s};
+            return new String[]{s.substring(0, best), s.substring(best + 1)};
+        }
+    }
+
     private void rebuildFilmCards() {
         if (filmCardStrip == null) return;
         final int keepScroll = filmScroll == null ? 0 : filmScroll.getScrollX();
@@ -2728,12 +3594,17 @@ public class MainActivity extends Activity {
         android.widget.FrameLayout imageBox = new android.widget.FrameLayout(this);
         imageBox.setBackgroundColor(original ? UI_PAPER : UI_GROUND);
         filmCardImages.put(id, imageBox);
-        if (original || beforeBitmap == null) {
-            TextView mark = label(original ? "—" : text, original ? 22 : 8,
-                    UI_MUTED, original ? tfDisplay : tfHan);
-            mark.setMaxLines(2);
+        if (original) {
+            TextView mark = label("—", 22, UI_MUTED, tfDisplay);
             mark.setGravity(android.view.Gravity.CENTER);
             imageBox.addView(mark, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        } else if (beforeBitmap == null) {
+            // **No photograph yet, so there is nothing to preview.** A name
+            // typed into a grey rectangle says "empty slot"; a drawn box front
+            // says "this is a film". The shelf's job is choosing a stock, and
+            // before the first import that is the only thing it can show.
+            imageBox.addView(new FilmCoverView(this, id, text),
+                    new android.widget.FrameLayout.LayoutParams(-1, -1));
         } else {
             Bitmap preview = filmThumbs.get(id);
             if (preview == null && filmStock != null && !showingOriginal && id.equals(filmStock)) {
@@ -2833,7 +3704,23 @@ public class MainActivity extends Activity {
         // The paper row has nothing to say for a slide: refresh before the
         // render so the label and the picture cannot disagree.
         refreshPaperLabel();
+        refreshHueOwnMark();
         onStockChanged();
+    }
+
+    /** True when the stock's hue table is not trustworthy enough to apply. */
+    private static boolean hueFixUnsupported(String stock) {
+        return stock != null && HUE_FIX_UNSUPPORTED.contains(stock);
+    }
+
+    /** What actually goes on the wire: the preference, clamped off where we
+     *  know the table is wrong. Also used by the preview and by export. */
+    private float wireHueCorrection(String stock) {
+        return hueFixUnsupported(stock) ? 0f : hueCorrection;
+    }
+
+    private void refreshHueOwnMark() {
+        if (hueOwnMark != null) hueOwnMark.setLit(hueFixUnsupported(filmStock) || hueCorrection < 0.5f);
     }
 
     private void refreshPaperLabel() {
@@ -2924,6 +3811,13 @@ public class MainActivity extends Activity {
     // Decode-time white balance. The only control here that re-reads the file:
     // a raw's balance is part of the demosaic, not of the print.
     private int wbPreset = 0;                       // 0 as-shot, 1..5 preset, 6 custom
+    /** The camera gains that produced the preview, kept so an export can be
+     *  decoded with the same white balance. `redecodeWithWhiteBalance` applies
+     *  them inside LibRaw (demosaic-time), not through `spk_set_params`, so a
+     *  fresh export session that does not receive them decodes as-shot -- the
+     *  preview is neutral, the file is yellow, and nothing in the parameter
+     *  tree explains the difference. */
+    private volatile float[] wbUserMul = null;
     /** True while the file is being re-read; renders stand down meanwhile. */
     private volatile boolean wbDecoding = false;
     private volatile boolean wbPending = false;
@@ -2946,6 +3840,8 @@ public class MainActivity extends Activity {
     private final LinearLayout[] viewPages = new LinearLayout[5];
     /** The rendered result's RGB distribution; null until the panel is built. */
     private HistogramView histogram = null;
+    /** A display preference, not a look: it is stored beside the theme. */
+    private boolean histogramOn = true;
     /** Which 光学 sub-page is showing; 重置 acts on this one only. */
     private int viewPage = 0;
     private TextView[] viewCatChips;
@@ -2954,75 +3850,197 @@ public class MainActivity extends Activity {
     /**
      * The rendered result's own RGB distribution.
      *
-     * <p>Three channels over one 256-bin axis, drawn as translucent fills so the
-     * overlaps read as the colour they make. Sampled from a quarter-size copy:
-     * a 12 MP frame is 3 M samples, far more than 256 bins can resolve, and the
-     * full bitmap would cost 48 MB to walk.
+     * <p>Three channels over one 256-bin axis, composited with SCREEN so the
+     * places where all three overlap read as white -- that is the shape a
+     * useful histogram has, and plain alpha over alpha turns the overlap into
+     * mud. Three things make it legible at 148 x 54 dp:
+     *
+     * <ul>
+     *   <li>the vertical scale is a high percentile of the column heights, not
+     *       the maximum. A night frame is half black, one bin at 0 then owns
+     *       the peak and everything else is flattened into the floor;</li>
+     *   <li>the bins get a 1-2-1 pass before they are drawn, so a single-bin
+     *       spike reads as a peak rather than a one-pixel needle that the
+     *       column downsampler may or may not land on;</li>
+     *   <li>clipping is counted, not guessed: past a tenth of a percent at
+     *       either end a marker appears in that corner.</li>
+     * </ul>
      */
     private static class HistogramView extends View {
+        /** A tenth of a percent of the samples: below this it is noise. */
+        private static final double CLIP_SHARE = 0.001;
+
         private final int[] r = new int[256], g = new int[256], b = new int[256];
-        private float peak = 1f;
+        private final int[] rs = new int[256], gs = new int[256], bs = new int[256];
+        private int clipLo, clipHi, samples = 1;
         private final android.graphics.Paint paint =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private final android.graphics.Path path = new android.graphics.Path();
+        private final android.graphics.Path plate = new android.graphics.Path();
+        private final android.graphics.RectF box = new android.graphics.RectF();
+        private final boolean screenBlend;
 
-        HistogramView(android.content.Context c) { super(c); }
+        HistogramView(android.content.Context c) {
+            super(c);
+            // Paint.setBlendMode arrived in API 29; before that the fills fall
+            // back to straight alpha, which is duller but never wrong.
+            screenBlend = android.os.Build.VERSION.SDK_INT >= 29;
+        }
 
         void setBitmap(Bitmap bm) {
             java.util.Arrays.fill(r, 0);
             java.util.Arrays.fill(g, 0);
             java.util.Arrays.fill(b, 0);
-            peak = 1f;
+            clipLo = 0;
+            clipHi = 0;
+            samples = 1;
             if (bm == null || bm.getWidth() < 8 || bm.getHeight() < 8) { invalidate(); return; }
-            final int w = Math.max(8, bm.getWidth() / 4);
-            final int h = Math.max(8, bm.getHeight() / 4);
-            final Bitmap small = Bitmap.createScaledBitmap(bm, w, h, false);
+            // A fixed sample budget. 40 000 samples resolve 256 bins as well
+            // as 3 M do; walking a full 12 MP bitmap would cost 48 MB and
+            // stall the UI thread the moment a render finishes.
+            final double step = Math.max(1.0,
+                    Math.sqrt((double) bm.getWidth() * bm.getHeight() / 40000.0));
+            final int w = Math.max(8, (int) Math.round(bm.getWidth() / step));
+            final int h = Math.max(8, (int) Math.round(bm.getHeight() / step));
+            final Bitmap small = (w == bm.getWidth() && h == bm.getHeight())
+                    ? bm : Bitmap.createScaledBitmap(bm, w, h, true);
             final int[] px = new int[w * h];
             small.getPixels(px, 0, w, 0, 0, w, h);
             if (small != bm) small.recycle();
-            int m = 1;
+            int lo = 0, hi = 0;
             for (int i = 0; i < px.length; ++i) {
                 final int p = px[i];
                 final int ri = (p >> 16) & 255, gi = (p >> 8) & 255, bi = p & 255;
-                ++r[ri]; ++g[gi]; ++b[bi];
-                if (r[ri] > m) m = r[ri];
-                if (g[gi] > m) m = g[gi];
-                if (b[bi] > m) m = b[bi];
+                ++r[ri];
+                ++g[gi];
+                ++b[bi];
+                if (ri == 0 || gi == 0 || bi == 0) ++lo;
+                if (ri == 255 || gi == 255 || bi == 255) ++hi;
             }
-            peak = m;
+            samples = px.length;
+            clipLo = lo;
+            clipHi = hi;
+            smooth(r, rs);
+            smooth(g, gs);
+            smooth(b, bs);
             invalidate();
+        }
+
+        /** 1-2-1: a one-bin spike becomes a peak several columns wide. */
+        private static void smooth(int[] in, int[] out) {
+            out[0] = (in[0] * 3 + in[1]) / 4;
+            for (int i = 1; i < 255; ++i) out[i] = (in[i - 1] + in[i] * 2 + in[i + 1]) / 4;
+            out[255] = (in[255] * 3 + in[254]) / 4;
         }
 
         @Override protected void onDraw(android.graphics.Canvas c) {
             final int w = getWidth(), h = getHeight();
             if (w <= 0 || h <= 0) return;
+            final float d = getResources().getDisplayMetrics().density;
+
+            // A plate of its own, rather than a flat 30% wash: over a white
+            // sky the traces used to disappear into the photograph.
+            box.set(0, 0, w, h);
+            plate.reset();
+            plate.addRoundRect(box, 3f * d, 3f * d, android.graphics.Path.Direction.CW);
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setColor(0xB3000000);
+            c.drawPath(plate, paint);
+
+            c.save();
+            c.clipPath(plate);
+
             paint.setStyle(android.graphics.Paint.Style.STROKE);
             paint.setStrokeWidth(1f);
-            paint.setColor(0x33FFFFFF);
+            paint.setColor(0x1FFFFFFF);
             for (int i = 1; i < 4; ++i) {
                 final float x = w * i / 4f;
                 c.drawLine(x, 0, x, h, paint);
             }
+            paint.setColor(0x14FFFFFF);
+            c.drawLine(0, h * 0.5f, w, h * 0.5f, paint);
+
+            if (screenBlend) paint.setBlendMode(android.graphics.BlendMode.SCREEN);
+            drawChannel(c, rs, 0xFFFF5A4E, w, h);
+            drawChannel(c, gs, 0xFF47D97A, w, h);
+            drawChannel(c, bs, 0xFF4E9BFF, w, h);
+            if (screenBlend) paint.setBlendMode(android.graphics.BlendMode.SRC_OVER);
+
+            // The corner markers both good editors have. Filled = at least one
+            // channel is losing samples at that end.
+            final float m = 3.4f * d;
             paint.setStyle(android.graphics.Paint.Style.FILL);
-            drawChannel(c, r, 0x99FF5555, w, h);
-            drawChannel(c, g, 0x9955FF88, w, h);
-            drawChannel(c, b, 0x9966AAFF, w, h);
+            if (clipLo > CLIP_SHARE * samples) {
+                paint.setColor(0xF2FFFFFF);
+                path.reset();
+                path.moveTo(0, h);
+                path.lineTo(m * 1.7f, h);
+                path.lineTo(0, h - m);
+                path.close();
+                c.drawPath(path, paint);
+            }
+            if (clipHi > CLIP_SHARE * samples) {
+                paint.setColor(0xF2FFFFFF);
+                path.reset();
+                path.moveTo(w, h);
+                path.lineTo(w - m * 1.7f, h);
+                path.lineTo(w, h - m);
+                path.close();
+                c.drawPath(path, paint);
+            }
+            c.restore();
+
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, 0.6f * d));
+            paint.setColor(0x38FFFFFF);
+            c.drawPath(plate, paint);
         }
 
         private void drawChannel(android.graphics.Canvas c, int[] bins, int color, int w, int h) {
-            paint.setColor(color);
-            path.reset();
-            path.moveTo(0, h);
-            // 256 bins into `w` columns: take the max of the bins sharing a
-            // column, so a one-bin spike survives the downsampling.
+            final int[] heights = new int[w];
+            int max = 1;
             for (int x = 0; x < w; ++x) {
                 final int a = x * 256 / w, e = Math.max(a + 1, (x + 1) * 256 / w);
                 int v = 0;
                 for (int i = a; i < e && i < 256; ++i) v = Math.max(v, bins[i]);
-                path.lineTo(x, h - Math.min(1f, v / peak) * (h - 2f));
+                heights[x] = v;
+                if (v > max) max = v;
+            }
+            // Normalise on the tall columns, with a ceiling of 1.5x the 97th
+            // percentile: a lone spike can reach the top, but it cannot press
+            // the other 255 bins into the bottom pixel row.
+            final int[] sorted = heights.clone();
+            java.util.Arrays.sort(sorted);
+            final int cut = sorted[Math.min(sorted.length - 1, (int) (sorted.length * 0.97f))];
+            // Floor of max/8 as well: if the 97th percentile lands on an empty
+            // column (a synthetic or almost-empty channel), normalising on it
+            // would clamp every column to the top and draw a solid block.
+            final int norm = Math.max(Math.max(1, max / 8),
+                    Math.min(max, Math.max(1, cut) * 3 / 2));
+
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setColor(color);
+            path.reset();
+            path.moveTo(0, h);
+            for (int x = 0; x < w; ++x) {
+                final float t = Math.min(1f, heights[x] / (float) norm);
+                path.lineTo(x, h - t * (h - 2f));
             }
             path.lineTo(w, h);
             path.close();
+            c.drawPath(path, paint);
+
+            // A crisp edge on the trace: without it three translucent fills
+            // read as fog rather than as three curves.
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(1f);
+            paint.setColor(color);
+            path.reset();
+            for (int x = 0; x < w; ++x) {
+                final float t = Math.min(1f, heights[x] / (float) norm);
+                final float y = h - t * (h - 2f);
+                if (x == 0) path.moveTo(x, y); else path.lineTo(x, y);
+            }
             c.drawPath(path, paint);
         }
     }
@@ -3124,7 +4142,12 @@ public class MainActivity extends Activity {
         bar.setResetTarget(Math.round((def - lo) / (hi - lo) * 1000f), () -> {
             set.accept(def);
             refresh.run();
-            applyParams();
+            // **The UI thread does not send the delta.** `spk_set_params` takes
+            // `session->lock`, which `render_tier` holds for the whole render:
+            // sent from here while a render is in flight it blocks the main
+            // thread for that long, and then rebuilds the pipeline on the UI
+            // thread right as the render finishes. `renderImage` sends the same
+            // delta (with the stock) on the render thread, under the lock, once.
             if (uiReady && session != null) {
                 showingOriginal = false;
                 setOriginalVisual(false);
@@ -3136,6 +4159,21 @@ public class MainActivity extends Activity {
                 final float v = lo + (hi - lo) * progress / 1000f;
                 set.accept(v);
                 value.setText(String.format(java.util.Locale.US, "%.2f", v));
+                // **The thumb being down is the whole point of a slider.**
+                // Drawing only on release made every row feel like a form
+                // field with a delay; the value is already in the field by the
+                // time this returns, so the preview is what the number says.
+                // `redecode` rows are the decode white balance: they close and
+                // re-open the file, which a live frame cannot ride along with.
+                if (bar.isDragging() && !redecode) {
+                    requestLivePreview();
+                } else if (!redecode) {
+                    // The value moved but the bar says it is not being dragged:
+                    // either the framework drove `setProgress` (a refresh) or
+                    // `dragging` never got set. Either way no preview is asked
+                    // for, and this is the only line that can say which.
+                    liveLog("progress without drag");
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar sb) { }
             @Override public void onStopTrackingTouch(SeekBar sb) {
@@ -3146,7 +4184,6 @@ public class MainActivity extends Activity {
                     redecodeWithWhiteBalance();
                     return;
                 }
-                applyParams();
                 if (uiReady && session != null) {
                     showingOriginal = false;
                     setOriginalVisual(false);
@@ -3163,8 +4200,19 @@ public class MainActivity extends Activity {
         parent.addView(box, new LinearLayout.LayoutParams(-1, -2));
     }
 
+    private LinearLayout wbDecodeBox;
+    private TextView wbDecodeNote;
+
     private void buildWhiteBalancePage(LinearLayout page) {
-        page.addView(label("白平衡（解码）/ WHITE BALANCE", 8, UI_INK, tfHan),
+        // **The decode half only exists for a RAW.** LibRaw applies the
+        // balance while demosaicing, so a JPEG has no negative to re-develop:
+        // the chips and both Kelvin sliders did nothing at all on `xxx.jpg`,
+        // which reads as "白平衡不起效". The box is kept so the page can grey
+        // it out and say why once the file is known.
+        wbDecodeBox = new LinearLayout(this);
+        wbDecodeBox.setOrientation(LinearLayout.VERTICAL);
+        page.addView(wbDecodeBox, new LinearLayout.LayoutParams(-1, -2));
+        wbDecodeBox.addView(label("白平衡（解码）/ WHITE BALANCE", 8, UI_INK, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(22)));
         final String[] names = {"原照", "日光", "阴天", "阴影", "钨丝", "荧光", "自定义"};
         final LinearLayout row = new LinearLayout(this);
@@ -3191,13 +4239,14 @@ public class MainActivity extends Activity {
             chips[i] = chip;
         }
         scroll.addView(row, new android.widget.FrameLayout.LayoutParams(-2, -1));
-        page.addView(scroll, new LinearLayout.LayoutParams(-1, dp(36)));
-        page.addView(label("这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
-                + "所以每次都按当前尺寸重新解码一次。", 7.5f, UI_MUTED, tfHan),
-                new LinearLayout.LayoutParams(-1, dp(32)));
-        adjustRow(page, "解码色温", 2000f, 12000f, () -> wbKelvin, v -> wbKelvin = v, true,
+        wbDecodeBox.addView(scroll, new LinearLayout.LayoutParams(-1, dp(36)));
+        wbDecodeNote = label("这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
+                + "所以每次都按当前尺寸重新解码一次。", 7.5f, UI_MUTED, tfHan);
+        wbDecodeNote.setMaxLines(2);
+        wbDecodeBox.addView(wbDecodeNote, new LinearLayout.LayoutParams(-1, dp(32)));
+        adjustRow(wbDecodeBox, "解码色温", 2000f, 12000f, () -> wbKelvin, v -> wbKelvin = v, true,
                 "光源的色温。3200K 钨丝、5500K 日光；数值越低画面越暖");
-        adjustRow(page, "解码色调", -150f, 150f, () -> wbTint, v -> wbTint = v, true,
+        adjustRow(wbDecodeBox, "解码色调", -150f, 150f, () -> wbTint, v -> wbTint = v, true,
                 "绿-品红轴。日光灯发绿就往正值拖");
     }
 
@@ -3213,6 +4262,32 @@ public class MainActivity extends Activity {
         reset.setOnClickListener(v -> resetViewPanel());
         top.addView(reset, new LinearLayout.LayoutParams(-2, dp(28)));
         page.addView(top, new LinearLayout.LayoutParams(-1, dp(32)));
+
+        // The histogram's own switch. It changes no pixels, so it must not go
+        // through `applyParams` -- it shows or hides the plate on the canvas,
+        // and the choice outlives the photograph.
+        final Square histMark = new Square(this, UI_BLUE, uiToggleOff());
+        page.addView(toggleRow("直方图", histMark, () -> histogramOn, on -> {
+            histogramOn = on;
+            getSharedPreferences("ui", MODE_PRIVATE).edit().putBoolean("histogram", on).apply();
+            if (histogram != null) histogram.setVisibility(on ? View.VISIBLE : View.GONE);
+        }), new LinearLayout.LayoutParams(-1, -2));
+
+        // **How the canvas reads the decode, not what the engine gets.**
+        // Off: the numbers exactly as LibRaw handed them, through sRGB only.
+        // On: the median goes to sRGB mid-grey (capped where p99.5 would clip)
+        // and the encoded shadows are lifted. That is how every raw was shown
+        // from 1.5.1 through 1.6.6a, after an import that came back at 2/255
+        // looked like a black rectangle -- but it also hides the picture's own
+        // exposure, and it ran 2.54 EV above Lightroom on the reference DNG.
+        final Square levelMark = new Square(this, UI_BLUE, uiToggleOff());
+        page.addView(toggleRow("原图自动提亮", levelMark, () -> rawAutoBright, on -> {
+            rawAutoBright = on;
+            getSharedPreferences("ui", MODE_PRIVATE).edit()
+                    .putBoolean("raw_auto_bright", on).apply();
+            refreshOriginalView();
+        }), new LinearLayout.LayoutParams(-1, -2));
+
         adjustRow(page, "相机曝光", -4f, 4f, () -> cameraEv, v -> cameraEv = v, false);
         adjustRow(page, "曝光", -3f, 3f, () -> viewExposure, v -> viewExposure = v, false);
         adjustRow(page, "对比", -100f, 100f, () -> viewContrast, v -> viewContrast = v, false);
@@ -3407,16 +4482,27 @@ public class MainActivity extends Activity {
                     // disc inside it is saturation along that hue's radius.
                     // One drag used to move both, so "change the hue" quietly
                     // changed the strength as well.
+                    // **The panel scrolls, and a scroll takes the gesture away.**
+                    // Without this, moving a finger past the touch slop made the
+                    // enclosing `CappedScroll` intercept the stream: the wheel
+                    // got ACTION_CANCEL instead of ACTION_MOVE, and its cancel
+                    // branch is the one that renders -- so the wheel "rendered
+                    // the moment it was touched" and could not be dragged at
+                    // all. The bar already does this; the wheel never did.
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                     dragZone = cbZone;
                     dragMode = d > radius() * 0.84f ? 1 : 2;
                     return applyWheelTouch(e, dragMode);
                 }
                 case android.view.MotionEvent.ACTION_MOVE: {
                     if (dragZone != cbZone || dragMode == 0) return false;
-                    return applyWheelTouch(e, dragMode);
+                    final boolean handled = applyWheelTouch(e, dragMode);
+                    if (handled) requestLivePreview();
+                    return handled;
                 }
                 case android.view.MotionEvent.ACTION_UP:
                 case android.view.MotionEvent.ACTION_CANCEL: {
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
                     if (dragZone >= 0) {
                         dragZone = -1;
                         dragMode = 0;
@@ -3533,7 +4619,22 @@ public class MainActivity extends Activity {
         }
         if (curveView != null) curveView.invalidate();
         if (colorWheel != null) colorWheel.invalidate();
+        // The switch is driven from `edrOn`, which `applyLook` and the reset
+        // button also write.
+        if (edrMark != null) edrMark.setLit(edrOn > 0.5f);
+        refreshHueOwnMark();
         refreshCbReadout();
+        if (wbDecodeBox != null) {
+            final boolean raw = isRawFile;
+            setEnabledDeepExcept(wbDecodeBox, raw, wbDecodeNote);
+            if (wbDecodeNote != null) {
+                wbDecodeNote.setText(raw
+                        ? "这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
+                          + "所以每次都按当前尺寸重新解码一次。"
+                        : "JPEG 的白平衡已经烧进文件里，不能重解。要改色温请用下面的「色温」"
+                          + "「色调」——那是冲印后的偏色，立刻生效。");
+            }
+        }
     }
 
     /**
@@ -3595,7 +4696,12 @@ public class MainActivity extends Activity {
      * session is closed and the file decoded again at the same size.
      */
     private void redecodeWithWhiteBalance() {
-        if (!isRawFile || rawFilePath == null) return;
+        if (!isRawFile || rawFilePath == null) {
+            // A JPEG has no negative to re-develop. Saying so once is better
+            // than a control that silently does nothing.
+            showInAppToast("JPEG 的白平衡已经写在文件里，用下面的「色温」调整");
+            return;
+        }
         final SpektraLabEngine.Session current = session;
         // Mid-decode there is no session to read the matrix from. Remember that
         // another balance was asked for and run it the moment this one lands.
@@ -3622,6 +4728,13 @@ public class MainActivity extends Activity {
                         try { mul = SpektraLabEngine.rawMulForKelvin(current, kelvin, tint); }
                         catch (Throwable ignored) { }
                     }
+                    // **Carried to the export.** A fresh export session is a
+                    // second decode of the same file; without these gains it
+                    // starts from the camera's as-shot balance, so the preview
+                    // and the file disagree by exactly the WB the user dialled.
+                    wbUserMul = mul;
+                    Probe.log("wb", "decode preset=" + wbPreset + " K=" + kelvin
+                            + " tint=" + tint + " mul=" + Probe.mul(mul) + " cap=" + cap);
                     try { params = current.getParams(); } catch (Throwable ignored) { }
                     try { current.close(); } catch (Throwable ignored) { }
                     session = null;
@@ -3782,13 +4895,15 @@ public class MainActivity extends Activity {
                     pts.get(dragging)[0] = Math.max(lo, Math.min(hi, q[0]));
                     pts.get(dragging)[1] = q[1];
                     invalidate();
+                    // `advance`-free: the curve is already in `pts`, and
+                    // `applyParams` pushes it from there.
+                    requestLivePreview();
                     return true;
                 }
                 case android.view.MotionEvent.ACTION_UP:
                 case android.view.MotionEvent.ACTION_CANCEL: {
                     if (dragging >= 0) {
                         pushViewCurves();
-                        applyParams();
                         if (uiReady && session != null) {
                             showingOriginal = false;
                             setOriginalVisual(false);
@@ -3810,6 +4925,16 @@ public class MainActivity extends Activity {
         panel.addView(sectionHead("PRINT / 胶片冲印参数", this::resetOpticsPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
+        // **配光.** `spk_solve` is the enlarger's own analysis: it measures the
+        // frame and returns the exposure and the three dichroic filters that
+        // print it neutral. The import already runs it once (that is where the
+        // source view's EV comes from), but until now there was no way to ask
+        // again -- change the film, change the light, and the old numbers just
+        // stayed. This is also the only place the c/m/y *neutral* values are
+        // visible at all; the engine derives them from
+        // `neutral_print_filters.json` per stock and illuminant.
+        addChoice(panel, "配光（测光 + 三色滤镜）", "点击重新配光", tv -> resolvePrinting());
+
         // The readout: which slider this is, and what it is set to.
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
@@ -3826,6 +4951,9 @@ public class MainActivity extends Activity {
         knobHintView.setMaxLines(1);
         knobHintView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         panel.addView(knobHintView, new LinearLayout.LayoutParams(-1, dp(15)));
+        knobCost = label("", 7.5f, UI_MUTED, tfHan);
+        knobCost.setGravity(android.view.Gravity.END);
+        panel.addView(knobCost, new LinearLayout.LayoutParams(-1, dp(14)));
 
         knobBar = new ScrubBar(this);
         knobBar.setMax(1000);
@@ -3837,12 +4965,16 @@ public class MainActivity extends Activity {
                 final float v = k.lo + (k.hi - k.lo) * progress / 1000f;
                 k.set.accept(v);
                 knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
+                if (knobBar instanceof ScrubBar && ((ScrubBar) knobBar).isDragging()) {
+                    requestLivePreview();
+                } else {
+                    liveLog("knob progress without drag");
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar sb) { }
             @Override public void onStopTrackingTouch(SeekBar sb) {
-                // One delta per gesture, sent from the same place every other
-                // slider sends it.
-                applyParams();
+                // One delta per gesture, sent from the render thread under the
+                // engine lock -- never from here (see `adjustRow`).
                 if (uiReady && session != null) {
                     showingOriginal = false;
                     setOriginalVisual(false);
@@ -3864,17 +4996,60 @@ public class MainActivity extends Activity {
         // one, and letting its chip strip eat the leftover space is what left
         // a blank band under it while the canvas stayed small.
         panel.addView(stripScroll, new LinearLayout.LayoutParams(-1, dp(78)));
+        // **A switch, not a 0..1 knob.** `edr_enabled` is a boolean at both ends
+        // of the wire: the knob could only mean "on" by being past half, so the
+        // same field had two controls and the slider's position silently decided
+        // the checkbox. It also read as one more thing to tune rather than the
+        // one bit it is.
+        edrMark = new Square(this, UI_BLUE, uiToggleOff());
+        panel.addView(toggleRow("扩展动态范围 (EDR)", edrMark,
+                () -> edrOn > 0.5f,
+                on -> {
+                    edrOn = on ? 1f : 0f;
+                    if (uiReady && session != null) {
+                        showingOriginal = false;
+                        setOriginalVisual(false);
+                        renderImage();
+                    }
+                }), new LinearLayout.LayoutParams(-1, -2));
+
+        // **A switch, not a 0..1 knob**, for the same reason as EDR above: the
+        // field has two meaningful values and a slider would invent 98 others
+        // that all render the same. On = the stock's own hues (the 1.6.7 look);
+        // off = the green-window correction.
+        hueOwnMark = new Square(this, UI_BLUE, uiToggleOff());
+        panel.addView(toggleRow("保留胶片原色（不校色相）", hueOwnMark,
+                () -> hueFixUnsupported(filmStock) || hueCorrection < 0.5f,
+                on -> {
+                    if (hueFixUnsupported(filmStock)) {
+                        // Pinned on for this stock: say why instead of silently
+                        // flipping back, or the switch reads as broken.
+                        refreshHueOwnMark();
+                        showActionSheet("这支胶片不支持色相校正",
+                                "它的光谱反演标定还不准：实测绿色偏差 20 到 30 度，"
+                                + "强行校正会比保留原色偏得更多。所以这支胶片的色相校正是固定的。"
+                                + "换一支胶片就能改。",
+                                new String[]{"知道了"}, which -> { });
+                        return;
+                    }
+                    hueCorrection = on ? 0f : 1f;
+                    if (uiReady && session != null) {
+                        showingOriginal = false;
+                        setOriginalVisual(false);
+                        renderImage();
+                    }
+                }), new LinearLayout.LayoutParams(-1, -2));
 
         knob("放大曝光 越右越暗", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure);
-        knob("高光保护",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom);
-        knob("暗部保护",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom);
-        knob("颗粒",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount);
-        knob("光晕",       "○",  0.0f,  4.0f,   v -> halationAmount = v,  () -> halationAmount);
-        knob("光晕增强",   "+",  0.0f,  8.0f,   v -> halationBoost = v,   () -> halationBoost);
-        knob("乳剂散射",   "~",  0.0f,  1.0f,   v -> halationScatter = v, () -> halationScatter);
-        knob("散射半径",   "◍",  0.0f,  1.0f,   v -> scatterRadius = v,  () -> scatterRadius);
+        knob("高光保护",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true);
+        knob("暗部保护",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true);
+        knob("颗粒",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount, true);
+        knob("光晕",       "○",  0.0f,  4.0f,   v -> halationAmount = v,  () -> halationAmount, true);
+        knob("光晕增强",   "+",  0.0f,  8.0f,   v -> halationBoost = v,   () -> halationBoost, true);
+        knob("乳剂散射",   "~",  0.0f,  1.0f,   v -> halationScatter = v, () -> halationScatter, true);
+        knob("散射半径",   "◍",  0.0f,  1.0f,   v -> scatterRadius = v,  () -> scatterRadius, true);
         knob("眩光",       "✳",  0.0f,  12.0f,  v -> glareAmount = v,     () -> glareAmount);
-        knob("镜头模糊",   "◌",  0.0f,  200.0f, v -> lensBlur = v,        () -> lensBlur);
+        knob("镜头模糊",   "◌",  0.0f,  200.0f, v -> lensBlur = v,        () -> lensBlur, true);
         knob("黄滤镜",     "Y",  -1.0f, 1.0f,   v -> yFilter = v,         () -> yFilter);
         knob("品红滤镜",   "M",  -1.0f, 1.0f,   v -> mFilter = v,         () -> mFilter);
         knob("滤镜强度",   "C",  1.0f,  60.0f,  v -> filterScale = v,     () -> filterScale);
@@ -3883,17 +5058,29 @@ public class MainActivity extends Activity {
                 7.5f, UI_MUTED, tfHan),
                 new LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT));
         knob("预闪",       "⚡", 0.0f,  1.0f,   v -> preflash = v,        () -> preflash);
-        knob("曲线柔度",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff);
-        knob("提升上限",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift);
+        knob("曲线柔度",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff, true);
+        knob("提升上限",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift, true);
         // The switches, on a 0/1 slider: the panel has one slider by design,
         // and a second kind of control would be a second thing to explain.
-        knob("光晕开关",   "◐",  0.0f,  1.0f,   v -> halationOn = v,       () -> halationOn);
-        knob("去抗光晕",   "⊘",  0.0f,  1.0f,   v -> antihalationRemoved = v, () -> antihalationRemoved);
-        knob("颗粒开关",   "g",  0.0f,  1.0f,   v -> grainOn = v,          () -> grainOn);
-        knob("层间抑制",   "⧉",  0.0f,  1.0f,   v -> couplersOn = v,       () -> couplersOn);
+        knob("光晕开关",   "◐",  0.0f,  1.0f,   v -> halationOn = v,       () -> halationOn, true);
+        knob("去抗光晕",   "⊘",  0.0f,  1.0f,   v -> antihalationRemoved = v, () -> antihalationRemoved, true);
+        knob("颗粒开关",   "g",  0.0f,  1.0f,   v -> grainOn = v,          () -> grainOn, true);
+        knob("层间抑制",   "⧉",  0.0f,  1.0f,   v -> couplersOn = v,       () -> couplersOn, true);
         knob("扫描白",     "W",  0.0f,  1.0f,   v -> scannerWhite = v,     () -> scannerWhite);
         knob("扫描黑",     "B",  0.0f,  1.0f,   v -> scannerBlack = v,     () -> scannerBlack);
-        knob("动态范围",   "HDR", 0.0f, 1.0f,   v -> edrOn = v,            () -> edrOn);
+        // Six more that the schema has had all along and the panel never
+        // showed. Booleans ride a 0..1 knob because the knob is the panel's
+        // one control; the readout says "0.00" / "1.00" and the hint says
+        // which end is which.
+        knob("眩光开关",   "☀",  0.0f,  1.0f,   v -> glareActive = v,      () -> glareActive);
+        knob("扫描仪模糊", "S",  0.0f, 20.0f,   v -> scannerLensBlur = v,  () -> scannerLensBlur);
+        knob("光晕余量",   "R",  0.0f,  8.0f,   v -> halationHeadroom = v, () -> halationHeadroom, true);
+        knob("浓度曲线",   "γ",  0.2f,  4.0f,   v -> densityGamma = v,     () -> densityGamma, true);
+        knob("数字中间片", "I",  0.0f,  1.0f,   v -> digitalIntermediate = v > 0.5f,
+                                                                    () -> digitalIntermediate ? 1f : 0f);
+        knob("输出编码",   "E",  0.0f,  1.0f,   v -> outputCctf = v > 0.5f,
+                                                                    () -> outputCctf ? 1f : 0f);
+
 
         // Two of the optics are choices, not numbers.
         addChoice(panel, "镜头滤镜", labelOf(FILTER_LABELS, FILTER_IDS, cameraFilter), tv ->
@@ -3903,6 +5090,19 @@ public class MainActivity extends Activity {
                     applyParams();
                     if (uiReady && session != null) { showingOriginal = false; setOriginalVisual(false); renderImage(); }
                 }));
+        // **What the canvas is drawn in.** Not a look parameter: it never
+        // reaches a file, and two exports of the same frame in different
+        // canvas spaces are the same bytes.
+        addChoice(panel, "预览色域", previewSpace, tv -> {
+            final java.util.List<String> labels = java.util.Arrays.asList(SPACES);
+            showChoiceSheet("预览色域（只影响屏幕；导出始终是 sRGB）", labels, previewSpace, picked -> {
+                final int index = labels.indexOf(picked);
+                if (index >= 0) previewSpace = SPACES[index];
+                tv.setText(previewSpace);
+                if (uiReady && session != null) { applyParams(); renderImage(); }
+            });
+        });
+
         addChoice(panel, "保护基准", labelOf(NORM_LABELS, NORM_IDS, sceneNorm), tv ->
                 showChoiceMapping("高光/暗部保护按什么算", NORM_LABELS, NORM_IDS, sceneNorm, id -> {
                     sceneNorm = id;
@@ -3918,8 +5118,15 @@ public class MainActivity extends Activity {
     /** One chip in the strip, plus the entry that makes it live. */
     private void knob(String label, String glyph, float lo, float hi,
                       java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get) {
+        knob(label, glyph, lo, hi, set, get, false);
+    }
+
+    /** `heavy` marks a shoot-layer field: dragging it re-develops the film. */
+    private void knob(String label, String glyph, float lo, float hi,
+                      java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
+                      boolean heavy) {
         final int index = knobs.size();
-        knobs.add(new Knob(label, glyph, lo, hi, set, get));
+        knobs.add(new Knob(label, glyph, lo, hi, set, get, heavy));
 
         LinearLayout chip = new LinearLayout(this);
         chip.setOrientation(LinearLayout.VERTICAL);
@@ -3969,6 +5176,11 @@ public class MainActivity extends Activity {
         knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
         knobTitle.setText(k.label);
         if (knobHintView != null) knobHintView.setText(knobHint(k.label));
+        if (knobCost != null) {
+            knobCost.setText(k.heavy ? "这一项要重算胶片 · 约 0.1 秒一帧"
+                                     : "只重印 · 约 0.03 秒一帧");
+            knobCost.setTextColor(k.heavy ? 0xFFC8741E : UI_MUTED);
+        }
     }
 
     /** A label + current value + arrow, the same shape as the paper picker. */
@@ -4099,6 +5311,25 @@ public class MainActivity extends Activity {
     }
 
     // Wratten numbers, the eight the engine carries (`kCameraFilters`).
+    /**
+     * The space the canvas is drawn in.
+     *
+     * <p>**Two spaces, not four, and the short list is the honest one.** The
+     * engine renders into ProPhoto and converts on the way out, and it knows
+     * ProPhoto, Adobe RGB, Display P3 and sRGB. The screen is the other half:
+     * `Bitmap#setColorSpace` takes a platform `ColorSpace`, and Android only
+     * names two of them (`ColorSpace.Named`). Adobe RGB and ProPhoto would each
+     * need an ICC profile built by hand before the system would colour-manage
+     * them, and an **untagged** wide-gamut buffer is displayed as if it were
+     * sRGB -- which desaturates it by exactly the amount the wider gamut was
+     * supposed to add. Two choices that work beat four where two lie.
+     *
+     * <p>What this changes is the screen, not a file: exports stay sRGB,
+     * because a P3 JPEG would need a P3 ICC the writer does not carry yet.
+     */
+    private static final String[] SPACES = {"sRGB", "Display P3"};
+    private String previewSpace = "sRGB";
+
     private static final String[] FILTER_IDS = {"", "w8", "w11", "w12", "w15", "w21", "w25", "w47", "w58"};
     private static final String[] FILTER_LABELS = {"无", "W8 黄", "W11 黄绿", "W12 深黄", "W15 深黄",
             "W21 橙", "W25 红", "W47 蓝", "W58 绿"};
@@ -4128,6 +5359,13 @@ public class MainActivity extends Activity {
             case "去抗光晕": return "把胶片当成撕掉抗光晕层。实测画面变化 <0.2%";
             case "颗粒开关": return "关掉就是完全没有颗粒的画面";
             case "层间抑制": return "染料层之间的相互抑制。往左颜色变淡，往右变浓";
+            case "眩光开关":   return "0 关掉相纸表面的那层光晕，1 保留";
+            case "扫描仪模糊": return "扫描仪镜头自己的模糊，单位微米。在整条管线最后";
+            case "光晕余量":   return "给光晕留的高光余量，单位挡。越大越不容易糊成一片";
+            case "浓度曲线":   return "胶片密度曲线的伽马。0.6 发灰发亮，1.35 偏红，默认 1";
+            case "数字中间片": return "跳过光学印相，走数码中间片那条路。0 关，1 开";
+            case "输出编码":   return "输出的传递函数。0 是相纸的，1 是显示器编码";
+            case "胶片原色":   return "往右保留胶片本来的偏色，往左把色相校回原图（绿色更准）";
             case "扫描白": return "扫描时按片基的白点做校正";
             case "扫描黑": return "扫描时按片基的黑点做校正";
             case "动态范围": return "扩展动态范围，把高光往回拉一点";
@@ -4303,9 +5541,22 @@ public class MainActivity extends Activity {
         scroll.addView(strip, new android.widget.FrameLayout.LayoutParams(-2, dp(108)));
         cropScroll = scroll;
         composeBody.addView(scroll, new LinearLayout.LayoutParams(-1, dp(108)));
-        // Restore where the strip was before this rebuild: picking a card
-        // rebuilt the page and threw the scroll back to the first card.
-        scroll.post(() -> scroll.scrollTo(cropScrollX, 0));
+        // **Restore the scroll after layout, not before it.** `post` can run
+        // while the new strip is still unmeasured; `scrollTo` then clamps
+        // against a zero content width and the strip lands back on the first
+        // card. Picking one of the portrait ratios at the end of the strip
+        // therefore snapped to the start on every tap -- the "抽搐" on the last
+        // few cards. `OnPreDraw` runs after measure/layout and before the
+        // frame is drawn, which is the first moment `scrollTo` means anything.
+        scroll.getViewTreeObserver().addOnPreDrawListener(
+                new android.view.ViewTreeObserver.OnPreDrawListener() {
+                    @Override public boolean onPreDraw() {
+                        scroll.getViewTreeObserver().removeOnPreDrawListener(this);
+                        scroll.scrollTo(cropScrollX, 0);
+                        Probe.log("crop", "scroll " + cropScrollX + " -> " + scroll.getScrollX());
+                        return true;
+                    }
+                });
 
         final LinearLayout footRow = new LinearLayout(this);
         footRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -4408,6 +5659,8 @@ public class MainActivity extends Activity {
             pendingCropX = (1f - pendingCropW) * 0.5f;
             pendingCropY = (1f - pendingCropH) * 0.5f;
         }
+        Probe.log("crop", "ratio=" + index + " W=" + pendingCropW + " H=" + pendingCropH
+                + " X=" + pendingCropX + " Y=" + pendingCropY);
         showComposePage(0);
     }
 
@@ -4484,6 +5737,7 @@ public class MainActivity extends Activity {
             @Override public void onProgressChanged(android.widget.SeekBar sb, int value, boolean fromUser) {
                 geometryRotation = (value - 450) / 10f;
                 readout.setText(String.format(java.util.Locale.US, "%.1f°", geometryRotation));
+                if (bar.isDragging()) requestLivePreview();
             }
             @Override public void onStartTrackingTouch(android.widget.SeekBar sb) { }
             @Override public void onStopTrackingTouch(android.widget.SeekBar sb) { commitCompose(); }
@@ -4596,6 +5850,8 @@ public class MainActivity extends Activity {
         private float aspect = 0f;                 // picture w/h; 0 = free
         private int drag = 0;                      // 0 none, 1 move, 2 TL, 3 TR, 4 BL, 5 BR
         private float downX, downY, sx, sy, sw, sh;
+        /** True while the last drag actually held the card's ratio. */
+        private boolean ratioHeld;
 
         CropOverlay() { super(MainActivity.this); }
 
@@ -4680,6 +5936,9 @@ public class MainActivity extends Activity {
                     drag = hit;
                     downX = e.getX(); downY = e.getY();
                     sx = nx; sy = ny; sw = nw; sh = nh;
+                    // A box that already has a card's shape starts out held;
+                    // a free / "整幅" box starts out not.
+                    ratioHeld = aspect > 0.0001f;
                     final android.view.ViewParent parent = getParent();
                     if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
                     return true;
@@ -4701,7 +5960,9 @@ public class MainActivity extends Activity {
                 case android.view.MotionEvent.ACTION_CANCEL: {
                     if (e.getPointerCount() > 1 && compare != null) return compare.onTouchEvent(e);
                     if (drag != 0) {
-                        drag = 0;
+                        // **commit first, clear afterwards.** `commitCrop`
+                        // needs to know whether this was a move or a corner
+                        // drag to decide if the ratio card still owns the box.
                         commitCrop();
                     } else if (compare != null) {
                         compare.onTouchEvent(e);        // close a pinch cleanly
@@ -4722,10 +5983,12 @@ public class MainActivity extends Activity {
                 ny = Math.max(0f, Math.min(1f - sh, sy + dyN));
             } else {
                 // The opposite corner is the anchor.
-                final float ax = (drag == 2 || drag == 4) ? sx + sw : sx;
-                final float ay = (drag == 2 || drag == 3) ? sy + sh : sy;
-                float mx = (drag == 2 || drag == 4) ? sx + dxN : sx + sw + dxN;
-                float my = (drag == 2 || drag == 3) ? sy + dyN : sy + sh + dyN;
+                final boolean left = (drag == 2 || drag == 4);
+                final boolean up = (drag == 2 || drag == 3);
+                final float ax = left ? sx + sw : sx;
+                final float ay = up ? sy + sh : sy;
+                float mx = left ? sx + dxN : sx + sw + dxN;
+                float my = up ? sy + dyN : sy + sh + dyN;
                 mx = Math.max(0f, Math.min(1f, mx));
                 my = Math.max(0f, Math.min(1f, my));
 
@@ -4736,12 +5999,39 @@ public class MainActivity extends Activity {
                     // stretched by the picture's own aspect.
                     final float aspN = aspect * (image.height() / image.width());
                     if (w / Math.max(1e-5f, h) > aspN) h = w / aspN; else w = h * aspN;
+                    // **Shrink both sides together at the picture edge.**
+                    // Clamping w and h independently here (what the old code
+                    // did) changes the ratio the moment a drag reaches an
+                    // edge -- which is how a fixed-ratio card silently turned
+                    // into a custom box without any other card being tapped.
+                    final float roomW = left ? ax : 1f - ax;
+                    final float roomH = up ? ay : 1f - ay;
+                    if (roomW > 1e-3f && roomH > 1e-3f) {
+                        if (w > roomW && w > 1e-5f) { h *= roomW / w; w = roomW; }
+                        if (h > roomH && h > 1e-5f) { w *= roomH / h; h = roomH; }
+                        if (w < min || h < min) {
+                            final float lift = Math.max(min / Math.max(1e-5f, w),
+                                    min / Math.max(1e-5f, h));
+                            if (lift > 1f) { w *= lift; h *= lift; }
+                        }
+                        ratioHeld = true;
+                    } else {
+                        // The anchor sits against the edge: there is no room
+                        // to hold the shape, so this box is honestly custom.
+                        w = Math.max(min, Math.min(1f, w));
+                        h = Math.max(min, Math.min(1f, h));
+                        ratioHeld = false;
+                    }
+                } else {
+                    w = Math.max(min, Math.min(1f, w));
+                    h = Math.max(min, Math.min(1f, h));
+                    ratioHeld = false;
                 }
-                w = Math.max(min, Math.min(1f, w));
-                h = Math.max(min, Math.min(1f, h));
+                w = Math.max(1e-5f, Math.min(1f, w));
+                h = Math.max(1e-5f, Math.min(1f, h));
 
-                nx = Math.max(0f, Math.min(1f - w, (mx < ax) ? ax - w : ax));
-                ny = Math.max(0f, Math.min(1f - h, (my < ay) ? ay - h : ay));
+                nx = Math.max(0f, Math.min(1f - w, left ? ax - w : ax));
+                ny = Math.max(0f, Math.min(1f - h, up ? ay - h : ay));
                 nw = w; nh = h;
             }
             invalidate();
@@ -4753,8 +6043,44 @@ public class MainActivity extends Activity {
             // same space, which is what makes them line up.
             pendingCropX = nx; pendingCropY = ny;
             pendingCropW = nw; pendingCropH = nh;
-            cropRatioIndex = -2;        // hand-dragged: no card owns this shape
+            keepRatioClaim();
+            Probe.log("crop", "drag=" + drag + " held=" + ratioHeld
+                    + " ratio=" + cropRatioIndex + " W=" + nw + " H=" + nh
+                    + " aspect=" + aspect);
+            drag = 0;
             showComposePage(0);
+        }
+
+        /**
+         * Keep the card that owns this shape, if it still owns it.
+         *
+         * <p>A move only changes the origin, so the claim survives untouched.
+         * A corner drag is held to the ratio by {@link #applyDrag}, so it
+         * survives too. The one honest exception is a box that had to give up
+         * its shape because it would have left the picture.
+         *
+         * <p>This used to be an unconditional {@code cropRatioIndex = -2} on
+         * every touch-up, so a single slide inside a fixed ratio permanently
+         * unlocked the ratio: the cards lost their selection, the summary
+         * read "custom", and the next corner drag was free.
+         */
+        private void keepRatioClaim() {
+            if (cropRatioIndex == -2) return;       // already custom
+            if (cropRatioIndex == -1) {
+                // "原始 / 整幅" is a claim as well: the whole frame.
+                final boolean whole = nw >= 0.999f && nh >= 0.999f
+                        && nx <= 0.001f && ny <= 0.001f;
+                if (!whole) cropRatioIndex = -2;
+                return;
+            }
+            if (drag == 1) return;                  // a move keeps the shape
+            // **No geometry compare here on purpose.** `applyDrag` already
+            // holds the shape to the card's ratio and sets `ratioHeld` only
+            // when it could; comparing `nw/nh` to the ratio would re-derive
+            // the same thing from the display rect, which lags the canvas by
+            // a render after 应用裁切 and would knock the card off for no
+            // visible reason.
+            if (!ratioHeld) cropRatioIndex = -2;
         }
     }
 
@@ -5044,7 +6370,7 @@ public class MainActivity extends Activity {
         edgePage.setOrientation(LinearLayout.VERTICAL);
         edgePage.addView(pageHead("片边 / REBATE"), new LinearLayout.LayoutParams(-1, dp(38)));
         overscanMark = new Square(this, UI_BLUE, uiToggleOff());
-        overscanRow = toggleRow("开启片边", overscanMark, overscanOn, on -> {
+        overscanRow = toggleRow("开启片边", overscanMark, () -> overscanOn, on -> {
             if (on && edgeIds.isEmpty()) {
                 overscanMark.setLit(false);
                 showInAppToast("这张图的长宽比不对应任何片门");
@@ -5054,7 +6380,7 @@ public class MainActivity extends Activity {
             refreshEdgeGroups();
             onEdgeChanged();
         });
-        edgePage.addView(overscanRow, new LinearLayout.LayoutParams(-1, dp(44)));
+        edgePage.addView(overscanRow, new LinearLayout.LayoutParams(-1, dp(52)));
         LinearLayout edgeInner = new LinearLayout(this);
         edgeInner.setOrientation(LinearLayout.VERTICAL);
 
@@ -5068,10 +6394,10 @@ public class MainActivity extends Activity {
         }
 
         edgeTextMark = new Square(this, UI_BLUE, uiToggleOff());
-        edgeInner.addView(toggleRow("片边文字（厂标 / 张数）", edgeTextMark, edgeTextOn, on -> {
+        edgeInner.addView(toggleRow("片边文字（厂标 / 张数）", edgeTextMark, () -> edgeTextOn, on -> {
             edgeTextOn = on;
             redraw.accept(null);
-        }), new LinearLayout.LayoutParams(-1, dp(40)));
+        }), new LinearLayout.LayoutParams(-1, dp(52)));
         edgeFogBar = rangeRow(edgeInner, "片基雾", "片基本身的灰雾。0 是完全透明，越大越脏",
                 0.0f, 4.0f, edgeFog, v -> edgeFog = v);
         edgeLeaksBar = rangeRow(edgeInner, "漏光", "卷轴漏进来的光，从片边渗向画面",
@@ -5125,13 +6451,13 @@ public class MainActivity extends Activity {
         datePage.setOrientation(LinearLayout.VERTICAL);
         datePage.addView(pageHead("日期水印 / DATE BACK"), new LinearLayout.LayoutParams(-1, dp(38)));
         dateMark = new Square(this, UI_BLUE, uiToggleOff());
-        dateRow = toggleRow("开启日期水印", dateMark, dateOn, on -> {
+        dateRow = toggleRow("开启日期水印", dateMark, () -> dateOn, on -> {
             dateOn = on;
             if (dateOn && dateText == null) dateText = imprintDate();
             refreshEdgeGroups();
             onEdgeChanged();
         });
-        datePage.addView(dateRow, new LinearLayout.LayoutParams(-1, dp(44)));
+        datePage.addView(dateRow, new LinearLayout.LayoutParams(-1, dp(52)));
         LinearLayout dateInner = new LinearLayout(this);
         dateInner.setOrientation(LinearLayout.VERTICAL);
         // The one field the app used to decide for the user: it read the date
@@ -5143,12 +6469,16 @@ public class MainActivity extends Activity {
                             tv.setText(dateText == null ? imprintDate() : dateText);
                             redraw.accept(null);
                         }));
-        dateInsetXBar = rangeRow(dateInner, "左右内边距", "字到片门左右边的距离，毫米",
-                0.0f, 30.0f, dateInsetX, v -> dateInsetX = v);
-        dateInsetYBar = rangeRow(dateInner, "上下内边距", "字到片门上下边的距离，毫米",
-                0.0f, 30.0f, dateInsetY, v -> dateInsetY = v);
-        dateSizeBar = rangeRow(dateInner, "日期大小", "相对该样式的字高",
-                0.4f, 3.0f, dateSize, v -> dateSize = v);
+        // 0..200 mm: 30 was the schema's old cap and it stopped the date a
+        // third of the way along a 6x12 / 6x17 rebate.
+        dateInsetXBar = rangeRow(dateInner, "左右内边距", "字到片门左右边的距离，毫米（可直接在画布上拖）",
+                0.0f, 200.0f, dateInsetX, v -> dateInsetX = v);
+        dateInsetYBar = rangeRow(dateInner, "上下内边距", "字到片门上下边的距离，毫米（可直接在画布上拖）",
+                0.0f, 200.0f, dateInsetY, v -> dateInsetY = v);
+        // 8.0: the engine clamps at 8 now, because "make the date bigger" was
+        // the one adjustment the old 3.0 ceiling refused.
+        dateSizeBar = rangeRow(dateInner, "日期大小", "相对该样式的字高（1.0 是标准，可放大到 8 倍）",
+                0.4f, 8.0f, dateSize, v -> dateSize = v);
         dateEvBar = rangeRow(dateInner, "日期亮度", "红光在 18% 灰之上的曝光，单位挡",
                 -2.0f, 8.0f, dateEv, v -> dateEv = v);
         addChoice(dateInner, "日期位置", labelOf(PLACE_LABELS, PLACE_IDS, datePlacement), tv ->
@@ -5181,6 +6511,11 @@ public class MainActivity extends Activity {
                     tv.setText(v.isEmpty() ? "（空）" : v);
                     redraw.accept(null);
                 }));
+        TextView dateTip = label(
+                "日期位置：画面内时可选中角位，也可以直接在画布上拖；片边模式的位置由片边条决定，用上面两个内边距微调",
+                7.5f, UI_MUTED, tfHan);
+        dateTip.setLineSpacing(dp(1), 1f);
+        dateInner.addView(dateTip, new LinearLayout.LayoutParams(-1, -2));
         this.dateInner = dateInner;
         datePage.addView(cappedScroll(dateInner, 340), new LinearLayout.LayoutParams(-1, -2));
         edgeRoot.addView(datePage, new LinearLayout.LayoutParams(-1, -2));
@@ -5262,6 +6597,8 @@ public class MainActivity extends Activity {
         if (overscanMark != null) overscanMark.setLit(overscanOn);
         if (edgeTextMark != null) edgeTextMark.setLit(edgeTextOn);
         if (dateMark != null) dateMark.setLit(dateOn);
+        Probe.log("toggle", "sync overscan=" + overscanOn + " date=" + dateOn
+                + " edgeText=" + edgeTextOn);
         refreshEdgeCards();
     }
 
@@ -5382,6 +6719,514 @@ public class MainActivity extends Activity {
             if (controls.getParent() instanceof android.view.View) {
                 ((android.view.View) controls.getParent()).requestLayout();
             }
+        }
+    }
+
+    // ---------------------------------------------------------------- presets
+    // A preset is one Look, the same JSON the session already stores per frame.
+    // Sharing it is text on purpose: no FileProvider, no MIME the other app has
+    // to understand, and the receiver can paste it back or read it.
+
+    private org.json.JSONArray presetList() {
+        final String raw = getSharedPreferences("presets", MODE_PRIVATE).getString("list", "[]");
+        try {
+            return new org.json.JSONArray(raw);
+        } catch (Throwable t) {
+            return new org.json.JSONArray();
+        }
+    }
+
+    private void storePresetList(org.json.JSONArray list) {
+        getSharedPreferences("presets", MODE_PRIVATE).edit().putString("list", list.toString()).apply();
+    }
+
+
+    /**
+     * The keys a share may leave out when they hold the engine's default.
+     *
+     * <p>82 keys is a screenful of JSON in a chat window, and nine tenths of it
+     * is zeros nobody set. Each value here is exactly the fallback
+     * `lookFromJson` uses, so omitting one and reading it back is lossless.
+     */
+    private static final java.util.Map<String, Double> SHARE_DEFAULTS =
+            new java.util.HashMap<String, Double>();
+    static {
+        for (String k : new String[]{
+                "highlight", "shadow", "boost", "scatterr", "lens",
+                "vT", "vTn", "vE", "vC", "vB", "vS", "vHi", "vSh", "vBk",
+                "vWh", "vV", "cEv", "vVb", "wb", "wbT",
+                "yf", "mf", "preflash", "leaks", "frameno",
+                "ahrem", "scw", "scb", "edr", "slb",
+                "cbh0", "cbh1", "cbh2", "cbh3",
+                "cbs0", "cbs1", "cbs2", "cbs3",
+                "cbl0", "cbl1", "cbl2", "cbl3",
+                "gturn", "grot", "gcx", "gcy"}) {
+            SHARE_DEFAULTS.put(k, 0.0);
+        }
+        SHARE_DEFAULTS.put("exp", 1.0);
+        SHARE_DEFAULTS.put("grain", 1.0);
+        SHARE_DEFAULTS.put("halation", 1.0);
+        SHARE_DEFAULTS.put("glare", 1.0);
+        SHARE_DEFAULTS.put("scatter", 1.0);
+        SHARE_DEFAULTS.put("fog", 1.0);
+        SHARE_DEFAULTS.put("halon", 1.0);
+        SHARE_DEFAULTS.put("grainon", 1.0);
+        SHARE_DEFAULTS.put("coupon", 1.0);
+        SHARE_DEFAULTS.put("gla", 1.0);
+        SHARE_DEFAULTS.put("fscale", 1.0);
+        SHARE_DEFAULTS.put("gcw", 1.0);
+        SHARE_DEFAULTS.put("gch", 1.0);
+        SHARE_DEFAULTS.put("wbK", 5500.0);
+        SHARE_DEFAULTS.put("hhe", 4.0);
+        SHARE_DEFAULTS.put("dcg", 1.0);
+        SHARE_DEFAULTS.put("rolloff", 2.0);
+        SHARE_DEFAULTS.put("lift", 4.0);
+        SHARE_DEFAULTS.put("gcri", -1.0);
+        SHARE_DEFAULTS.put("dinsx", 3.0);
+        SHARE_DEFAULTS.put("dinsy", 2.4);
+        SHARE_DEFAULTS.put("dsize", 1.0);
+        SHARE_DEFAULTS.put("dev", 3.5);
+        SHARE_DEFAULTS.put("mm", 36.0);
+        SHARE_DEFAULTS.put("cseed", 1.0);
+        SHARE_DEFAULTS.put("fseed", 1.0);
+    }
+
+    /** Drop the keys still holding their default, and the flat curves. */
+    private static org.json.JSONObject lookCompact(Look l) {
+        final org.json.JSONObject full = lookToJson(l);
+        final org.json.JSONObject out = new org.json.JSONObject();
+        final java.util.Iterator<String> it = full.keys();
+        while (it.hasNext()) {
+            final String k = it.next();
+            final Double def = SHARE_DEFAULTS.get(k);
+            if (def != null) {
+                final double v = full.optDouble(k, Double.NaN);
+                if (!Double.isNaN(v) && Math.abs(v - def) < 1e-6) continue;
+            }
+            if (k.startsWith("cv")) {
+                final org.json.JSONArray arr = full.optJSONArray(k);
+                if (arr == null || arr.length() == 0) continue;
+                boolean flat = true;
+                for (int i = 0; i < arr.length(); ++i) {
+                    if (Math.abs(arr.optDouble(i, 0.0)) > 1e-6) { flat = false; break; }
+                }
+                if (flat) continue;
+            }
+            try { out.put(k, full.opt(k)); } catch (Throwable ignored) { }
+        }
+        return out;
+    }
+
+    /** "fujifilm_c200" reads badly in a chat; its label reads fine. */
+    private String stockDisplay(String id) {
+        if (id == null || id.isEmpty()) return "";
+        int i = filmIds.indexOf(id);
+        if (i >= 0 && i < filmLabels.size()) return shortStockName(filmLabels.get(i));
+        i = printIds.indexOf(id);
+        if (i >= 0 && i < printLabels.size()) return shortStockName(printLabels.get(i));
+        return id;
+    }
+
+    private Look copyLook(Look src) {
+        if (src == null) return null;
+        try {
+            return lookFromJson(lookToJson(src));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private void showPresetsPanel() {
+        final org.json.JSONArray list = presetList();
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackgroundColor(UI_PAPER);
+        View cap = new View(this);
+        cap.setBackgroundColor(UI_BLUE);
+        sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(16), 0, dp(16), 0);
+        head.addView(label("预设 / PRESETS", 12, UI_INK, tfHan),
+                new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        close.setPadding(dp(12), dp(14), 0, dp(14));
+        close.setOnClickListener(v -> dialog.dismiss());
+        head.addView(close);
+        sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(54)));
+
+        TextView note = label("一套参数（胶片、曝光、光学、构图、片边、日期）。分享出去是一段文本，对方粘贴导入即可。",
+                8.5f, UI_MUTED, tfHan);
+        note.setPadding(dp(16), 0, dp(16), dp(10));
+        sheet.addView(note);
+
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        if (list.length() == 0) {
+            TextView empty = label("还没有预设。调好一张照片，点下面的「保存当前参数」。", 9, UI_MUTED, tfHan);
+            empty.setPadding(dp(16), dp(12), dp(16), dp(12));
+            rows.addView(empty);
+        }
+        for (int i = 0; i < list.length(); ++i) {
+            final org.json.JSONObject p = list.optJSONObject(i);
+            final int removeAt = i;
+            if (p == null) continue;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), 0, dp(10), 0);
+            TextView name = label(p.optString("name", "预设"), 10, UI_INK, tfHan);
+            name.setSingleLine(true);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            row.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
+
+            TextView apply = label("应用", 8.5f, UI_BLUE, tfHan);
+            apply.setPadding(dp(8), dp(12), dp(8), dp(12));
+            apply.setOnClickListener(v -> {
+                dialog.dismiss();
+                applyPreset(p);
+            });
+            row.addView(apply);
+
+            TextView share = label("分享", 8.5f, UI_MUTED, tfHan);
+            share.setPadding(dp(8), dp(12), dp(8), dp(12));
+            share.setOnClickListener(v -> sharePreset(p));
+            row.addView(share);
+
+            TextView del = label("删除", 8.5f, UI_MUTED, tfHan);
+            del.setPadding(dp(8), dp(12), dp(4), dp(12));
+            del.setOnClickListener(v -> {
+                final org.json.JSONArray next = new org.json.JSONArray();
+                for (int k = 0; k < list.length(); ++k) {
+                    if (k == removeAt) continue;
+                    final org.json.JSONObject q = list.optJSONObject(k);
+                    if (q != null) next.put(q);
+                }
+                storePresetList(next);
+                dialog.dismiss();
+                showPresetsPanel();
+            });
+            row.addView(del);
+            rows.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
+        }
+        sheet.addView(cappedScroll(rows, 300), new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.HORIZONTAL);
+        foot.setPadding(dp(10), dp(6), dp(10), dp(10));
+        TextView save = label("保存当前参数", 8.5f, UI_BLUE, tfHan);
+        save.setGravity(android.view.Gravity.CENTER);
+        save.setOnClickListener(v -> {
+            dialog.dismiss();
+            saveCurrentPreset();
+        });
+        foot.addView(save, new LinearLayout.LayoutParams(0, dp(34), 1f));
+        TextView pull = label("从剪贴板导入", 8.5f, UI_INK, tfHan);
+        pull.setGravity(android.view.Gravity.CENTER);
+        pull.setOnClickListener(v -> {
+            dialog.dismiss();
+            importPresetFromClipboard();
+        });
+        foot.addView(pull, new LinearLayout.LayoutParams(0, dp(34), 1f));
+        TextView push = label("分享当前", 8.5f, UI_INK, tfHan);
+        push.setGravity(android.view.Gravity.CENTER);
+        push.setOnClickListener(v -> {
+            dialog.dismiss();
+            shareCurrentLook();
+        });
+        foot.addView(push, new LinearLayout.LayoutParams(0, dp(34), 1f));
+        sheet.addView(foot, new LinearLayout.LayoutParams(-1, dp(50)));
+
+        dialog.setContentView(sheet);
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
+            dialog.getWindow().setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(android.view.Gravity.BOTTOM);
+            dialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            dialog.getWindow().setDimAmount(0.35f);
+        }
+    }
+
+    private void saveCurrentPreset() {
+        if (frames.isEmpty() || filmStock == null) {
+            showInAppToast("先导入一张照片、选一支胶片");
+            return;
+        }
+        saveLookIntoFrames();
+        final String fallback = stockDisplay(filmStock)
+                + (printStock == null || printStock.isEmpty() ? "" : " · " + stockDisplay(printStock));
+        askText("预设名字", fallback, name -> {
+            final String n = (name == null || name.trim().isEmpty()) ? "未命名预设" : name.trim();
+            try {
+                final org.json.JSONArray list = presetList();
+                final org.json.JSONObject p = new org.json.JSONObject();
+                p.put("name", n);
+                p.put("at", System.currentTimeMillis());
+                p.put("look", lookToJson(captureLook()));
+                list.put(p);
+                storePresetList(list);
+                showInAppToast("已保存预设「" + n + "」");
+            } catch (Throwable t) {
+                showInAppToast("保存失败：" + t.getMessage());
+            }
+        });
+    }
+
+    private void applyPreset(org.json.JSONObject p) {
+        final org.json.JSONObject look = p == null ? null : p.optJSONObject("look");
+        if (look == null) {
+            showInAppToast("这个预设是空的");
+            return;
+        }
+        final Look l = lookFromJson(look);
+        if (l == null) {
+            showInAppToast("预设格式不认识");
+            return;
+        }
+        applyLook(l);
+        saveLookIntoFrames();
+        if (session != null) applyParams();
+        if (uiReady && session != null) {
+            showingOriginal = false;
+            setOriginalVisual(false);
+            renderImage();
+        }
+        showInAppToast("已应用预设「" + p.optString("name", "") + "」");
+    }
+
+    private void sharePreset(org.json.JSONObject p) {
+        if (p == null) return;
+        try {
+            final org.json.JSONObject out = new org.json.JSONObject();
+            out.put("app", "SpektraLab Android");
+            out.put("version", UpdateCheck.versionCode(this));
+            out.put("name", p.optString("name", "SpektraLab 参数"));
+            final org.json.JSONObject raw = p.optJSONObject("look");
+            out.put("look", raw == null ? null : lookCompact(lookFromJson(raw)));
+            shareLookJson(out);
+        } catch (Throwable t) {
+            showInAppToast("分享失败：" + t.getMessage());
+        }
+    }
+
+    private void shareCurrentLook() {
+        if (frames.isEmpty() || filmStock == null) {
+            showInAppToast("先导入一张照片、选一支胶片");
+            return;
+        }
+        saveLookIntoFrames();
+        try {
+            final org.json.JSONObject out = new org.json.JSONObject();
+            out.put("app", "SpektraLab Android");
+            out.put("version", UpdateCheck.versionCode(this));
+            out.put("name", stockDisplay(filmStock) + " · " + stockDisplay(printStock));
+            out.put("look", lookCompact(captureLook()));
+            shareLookJson(out);
+        } catch (Throwable t) {
+            showInAppToast("分享失败：" + t.getMessage());
+        }
+    }
+
+    private void shareLookJson(org.json.JSONObject payload) {
+        try {
+            final android.content.Intent send = new android.content.Intent(android.content.Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(android.content.Intent.EXTRA_SUBJECT, payload.optString("name", "SpektraLab 参数"));
+            send.putExtra(android.content.Intent.EXTRA_TEXT,
+                    "SpektraLab 参数（复制整段，在应用里「从剪贴板导入」）\n" + payload.toString());
+            startActivity(android.content.Intent.createChooser(send, "分享参数"));
+        } catch (Throwable t) {
+            showInAppToast("分享失败：" + (t.getMessage() == null ? "参数序列化失败" : t.getMessage()));
+        }
+    }
+
+    private void importPresetFromClipboard() {
+        try {
+            final android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null
+                    || cm.getPrimaryClip().getItemCount() == 0) {
+                showInAppToast("剪贴板里没有文本");
+                return;
+            }
+            final android.content.ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
+            final CharSequence cs = item == null ? null : item.coerceToText(this);
+            final String text = cs == null ? "" : cs.toString();
+            final int a = text.indexOf('{'), b = text.lastIndexOf('}');
+            if (a < 0 || b <= a) {
+                showInAppToast("剪贴板里没有参数 JSON");
+                return;
+            }
+            final org.json.JSONObject o = new org.json.JSONObject(text.substring(a, b + 1));
+            final org.json.JSONObject look = o.optJSONObject("look") != null ? o.optJSONObject("look") : o;
+            final Look l = lookFromJson(look);
+            if (l == null) {
+                showInAppToast("这段 JSON 不是参数");
+                return;
+            }
+            applyLook(l);
+            saveLookIntoFrames();
+            if (session != null) applyParams();
+            if (uiReady && session != null) {
+                showingOriginal = false;
+                setOriginalVisual(false);
+                renderImage();
+            }
+            showInAppToast("已导入并应用");
+        } catch (Throwable t) {
+            showInAppToast("导入失败：" + (t.getMessage() == null ? "格式不对" : t.getMessage()));
+        }
+    }
+
+    // ------------------------------------------------------- look on many frames
+
+    /**
+     * Copy this frame's Look onto other frames.
+     *
+     * <p>Nothing is re-decoded here: a frame carries its Look and renders with
+     * it when it is opened, which is what makes this instant on twenty RAW
+     * files. The files themselves are never touched.
+     */
+    private void showApplyLookSheet(final int sourceIndex) {
+        if (sourceIndex < 0 || sourceIndex >= frames.size()) return;
+        final java.util.ArrayList<Integer> targets = new java.util.ArrayList<>();
+        for (int i = 0; i < frames.size(); ++i) {
+            if (i != sourceIndex) targets.add(i);
+        }
+        if (targets.isEmpty()) {
+            showInAppToast("只有这一张照片，没有可应用的对象");
+            return;
+        }
+        final String[] labels = new String[targets.size()];
+        for (int i = 0; i < targets.size(); ++i) {
+            final int index = targets.get(i);
+            final Frame f = frames.get(index);
+            labels[i] = (f.name == null || f.name.isEmpty() ? "照片 " + (index + 1) : f.name);
+        }
+        final String srcName = frames.get(sourceIndex).name == null
+                ? "这张" : frames.get(sourceIndex).name;
+        showMultiChoiceSheet("把这张的参数应用到", 
+                "选中的照片会换成这张的胶片、曝光、光学、构图、片边和日期。"
+                        + "只改这条栏里的设置，文件不动；点开时才按新参数渲染。",
+                labels, picked -> {
+                    saveLookIntoFrames();
+                    final Look src = copyLook(frames.get(sourceIndex).look);
+                    if (src == null) {
+                        showInAppToast("这张还没有可复制的参数");
+                        return;
+                    }
+                    int n = 0;
+                    for (int k : picked) {
+                        final int index = targets.get(k);
+                        frames.get(index).look = copyLook(src);
+                        ++n;
+                    }
+                    saveSessionState();
+                    rebuildFrameChips();
+                    showInAppToast("已应用到 " + n + " 张照片（点开时生效）");
+                });
+    }
+
+    /** A bottom sheet with checkboxes; `onDone` gets the picked indices. */
+    private void showMultiChoiceSheet(String title, String note, String[] labels,
+                                      final java.util.function.Consumer<java.util.List<Integer>> onDone) {
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackgroundColor(UI_PAPER);
+        View cap = new View(this);
+        cap.setBackgroundColor(UI_BLUE);
+        sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(16), 0, dp(16), 0);
+        head.addView(label(title, 12, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        close.setPadding(dp(12), dp(14), 0, dp(14));
+        close.setOnClickListener(v -> dialog.dismiss());
+        head.addView(close);
+        sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(54)));
+        if (note != null && !note.isEmpty()) {
+            TextView noteView = label(note, 8.5f, UI_MUTED, tfHan);
+            noteView.setPadding(dp(16), 0, dp(16), dp(10));
+            sheet.addView(noteView);
+        }
+
+        final boolean[] picked = new boolean[labels.length];
+        final Square[] marks = new Square[labels.length];
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < labels.length; ++i) {
+            final int index = i;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(16), 0, dp(16), 0);
+            final Square sq = new Square(this, UI_BLUE, uiToggleOff());
+            marks[i] = sq;
+            LinearLayout.LayoutParams sqLp = new LinearLayout.LayoutParams(dp(20), dp(20));
+            sqLp.rightMargin = dp(12);
+            row.addView(sq, sqLp);
+            TextView name = label(labels[i], 10, UI_INK, tfHan);
+            name.setSingleLine(true);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            row.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
+            row.setOnClickListener(v -> {
+                picked[index] = !picked[index];
+                sq.setLit(picked[index]);
+            });
+            rows.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
+        }
+        sheet.addView(cappedScroll(rows, 320), new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.HORIZONTAL);
+        foot.setPadding(dp(10), dp(6), dp(10), dp(10));
+        final TextView all = label("全选", 9, UI_MUTED, tfHan);
+        all.setGravity(android.view.Gravity.CENTER);
+        all.setOnClickListener(v -> {
+            final boolean want = !all.isSelected();
+            all.setSelected(want);
+            all.setText(want ? "全不选" : "全选");
+            for (int i = 0; i < picked.length; ++i) {
+                picked[i] = want;
+                if (marks[i] != null) marks[i].setLit(want);
+            }
+        });
+        foot.addView(all, new LinearLayout.LayoutParams(0, dp(34), 1f));
+        TextView apply = label("应用", 9, UI_BLUE, tfHan);
+        apply.setGravity(android.view.Gravity.CENTER);
+        apply.setOnClickListener(v -> {
+            final java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
+            for (int i = 0; i < picked.length; ++i) if (picked[i]) out.add(i);
+            if (out.isEmpty()) {
+                showInAppToast("先勾选要应用的照片");
+                return;
+            }
+            dialog.dismiss();
+            onDone.accept(out);
+        });
+        foot.addView(apply, new LinearLayout.LayoutParams(0, dp(34), 1f));
+        sheet.addView(foot, new LinearLayout.LayoutParams(-1, dp(50)));
+
+        dialog.setContentView(sheet);
+        dialog.setCanceledOnTouchOutside(true);
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
+            dialog.getWindow().setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setGravity(android.view.Gravity.BOTTOM);
+            dialog.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            dialog.getWindow().setDimAmount(0.35f);
         }
     }
 
@@ -5725,32 +7570,63 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void setMetering(boolean on) {
-        // **No early return.** Pressing the already-selected side still means
-        // "draw it again": the earlier press can have landed while a render
-        // held the session (`pendingRender`), and swallowing the second press
-        // made the chip look dead -- "点开启没反应，得先点关闭再点开启".
-        metering = on;
-        refreshMeterChip();
-        if (uiReady && session != null) {
-            applyParams(PREVIEW_LONG_EDGE);
-            renderImage();
+    /** Anything that is not one of the seven names -- or off -- is not a meter.
+     *  A state file written by another build, or a key collision, must not reach
+     *  the engine as a value the user cannot act on: the render fails with a
+     *  message about a string they never typed. */
+    private static String sanitizeMeter(String m) {
+        if (m == null || m.isEmpty()) return "";
+        for (String id : METER_IDS) if (id.equals(m)) return m;
+        return "balanced";
+    }
+
+    private static String meterName(String id) {
+        if (id == null || id.isEmpty()) return "关闭";
+        for (int i = 0; i < METER_IDS.length; ++i) if (METER_IDS[i].equals(id)) return METER_NAMES[i];
+        return id;
+    }
+
+    /** The seven meters, one row each, with what each one actually does. */
+    private void showMeterPicker() {
+        final java.util.List<String> labels = new java.util.ArrayList<>();
+        final java.util.List<String> notes = new java.util.ArrayList<>();
+        int at = 0;
+        for (int i = 0; i < METER_IDS.length; ++i) {
+            labels.add(METER_NAMES[i]);
+            notes.add(METER_NOTES[i]);
+            if (METER_IDS[i].equals(meterMethod == null ? "" : meterMethod)) at = i;
         }
+        showChoiceSheet("测光方式（决定整幅的曝光）", labels, notes, labels.get(at), null,
+                picked -> {
+                    final int index = labels.indexOf(picked);
+                    if (index >= 0) setMeterMethod(METER_IDS[index]);
+                });
+    }
+
+    private void setMeterMethod(String method) {
+        meterMethod = method == null ? "" : method;
+        refreshMeterChip();
+        // **No delta from here.** `renderImage` sends the change on its own
+        // thread, under the engine lock, immediately before `renderBegin` --
+        // and that is now the only thread allowed to touch the delta
+        // bookkeeping (`deltaSent`), because it is a map shared between
+        // renders rather than a string built and thrown away.
+        if (uiReady && session != null) renderImage();
     }
 
     private void refreshMeterChip() {
-        if (meterOn == null || meterOff == null) return;
-        meterOn.setTextColor(metering ? UI_BLUE : UI_MUTED);
-        meterOn.setBackground(outlineBox(metering));
-        meterOff.setTextColor(metering ? UI_MUTED : UI_BLUE);
-        meterOff.setBackground(outlineBox(!metering));
+        if (meterChip == null) return;
+        final boolean on = meterMethod != null && !meterMethod.isEmpty();
+        meterChip.setText(meterName(meterMethod));
+        meterChip.setTextColor(on ? UI_BLUE : UI_MUTED);
+        meterChip.setBackground(outlineBox(on));
     }
 
     private void resetFilmPanel() {
         // 原图 is the reset: no stock, no render, the imported frame as it was.
         filmStock = null;
         printStock = "kodak_portra_endura";
-        metering = false;
+        meterMethod = isRawFile ? "protect_highlights" : "";
         refreshMeterChip();
         brandFilter = "all";
         showingOriginal = false;
@@ -5775,6 +7651,7 @@ public class MainActivity extends Activity {
         mFilter = 0.0f;
         filterScale = 1.0f;
         preflash = 0.0f;
+        hueCorrection = 1f;
         refreshKnob();
         if (session != null) { applyParams(); renderImage(); }
     }
@@ -5841,10 +7718,10 @@ public class MainActivity extends Activity {
         dateStyle = "lcd";
         dataText = "";
         dateTextB = "";
-        setBarProgress(dateSizeBar, 0.4f, 3f, dateSize);
+        setBarProgress(dateSizeBar, 0.4f, 8f, dateSize);
         setBarProgress(dateEvBar, -2f, 8f, dateEv);
-        setBarProgress(dateInsetXBar, 0f, 30f, dateInsetX);
-        setBarProgress(dateInsetYBar, 0f, 30f, dateInsetY);
+        setBarProgress(dateInsetXBar, 0f, 200f, dateInsetX);
+        setBarProgress(dateInsetYBar, 0f, 200f, dateInsetY);
         if (session != null) onEdgeChanged();
     }
 
@@ -5865,7 +7742,14 @@ public class MainActivity extends Activity {
             emptyState.setVisibility(View.GONE);
             rawState.setVisibility(View.GONE);
             compare.setVisibility(View.VISIBLE);
-            statusText.setText("ORIGINAL · 未渲染");
+            // **Not a negative, and not a developed picture either.** A raw is
+            // the sensor's own reading: linear, no white balance, no colour
+            // matrix, no tone curve -- which is why "刚导入时的原图" reads as
+            // "the image is broken". Lightroom has already done all of that by
+            // the time it shows you the frame; here the film and the paper are
+            // what develop it. (Calling it a negative would be wrong twice
+            // over: it is positive, and it is not film.)
+            statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
             setOriginalVisual(true);
             updateFilmSelection();
             return;
@@ -5982,6 +7866,13 @@ public class MainActivity extends Activity {
      */
     private void startPrefetch() {
         stopPrefetch();
+        if (appPaused) return;
+        // **A batch export is not a browsing session.** Reopening each frame
+        // restarts this queue, and twenty-five card renders between two
+        // exports compete for the same GPU and the same session -- the batch
+        // got slower with every frame and the canvas flickered with thumbnails
+        // that were not the export's.
+        if (batchExportRunning) return;
         if (session == null || beforeBitmap == null || filmIds.isEmpty()) return;
         // Everything still missing. An empty list is the common case on the
         // second import of the same frame, and starting a thread for it would
@@ -6011,12 +7902,28 @@ public class MainActivity extends Activity {
                 // pass -- changing it per card drops the tier's cached image and
                 // costs more than the smaller render saves.
                 setPrefetchEdge(PREFETCH_LONG_EDGE);
+                // **A card is a pipeline rebuild, and a rebuild leaves planes.**
+                // Twenty-five of them, back to back, is the biggest allocation
+                // storm the app performs: measured on the bench, each stock
+                // leaves about 5.5 MB live beside seven pinned tables, so the
+                // shelf alone walks away with 300 MB that the next photograph
+                // then has to find room beside. Giving the idle planes back
+                // every six cards costs one re-allocation per six and keeps the
+                // shelf's footprint flat.
+                final SpektraLabEngine prefetchEngine = engine;
+                int sinceTrim = 0;
                 for (String id : pending) {
                     if (generation != prefetchGeneration || !prefetchRunning) return;
                     if (filmThumbs.containsKey(id)) continue;
                     final long t0 = System.currentTimeMillis();
                     final Bitmap thumb = renderStockThumbnail(id);
                     final long ms = System.currentTimeMillis() - t0;
+                    if (++sinceTrim >= 6) {
+                        sinceTrim = 0;
+                        if (prefetchEngine != null) {
+                            try { prefetchEngine.trimPool(); } catch (Throwable ignored) { }
+                        }
+                    }
                     if (thumb == null) continue;
                     try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable ignored) { }
                     runOnUiThread(() -> {
@@ -6051,6 +7958,14 @@ public class MainActivity extends Activity {
             try {
                 s.setParams(String.format(java.util.Locale.US,
                         "{\"preview_long_edge\":%d}", longEdge));
+                // **Tell the diff, or it lies.** `applyParamsTo` remembers the
+                // last value it *sent*; a direct `setParams` moves the engine
+                // without moving that memory, so the next `renderImage` sees
+                // "2048, unchanged" and sends nothing -- and the canvas renders
+                // at the shelf's 800. That is the `Thread-9 render:returned
+                // 629x1167` in the field report: a blurry picture, not a crash.
+                deltaSent.clear();
+                deltaSession = null;
             } catch (Throwable ignored) { }
         }
     }
@@ -6068,6 +7983,11 @@ public class MainActivity extends Activity {
     private Bitmap renderStockThumbnail(String stock) {
         final SpektraLabEngine.Session s = session;
         if (s == null) return null;
+        // **Twenty-five renders nobody asked for.** The shelf develops every
+        // stock in the background; when one of them takes the process down the
+        // user was tapping a chip, not the card, so the report has to name the
+        // card by id or it blames the wrong thing.
+        CrashTrail.mark(this, "prefetch:card " + stock);
         synchronized (renderMutex) {
             try {
                 if (s != session) return null;          // the frame was replaced while we waited
@@ -6349,19 +8269,42 @@ public class MainActivity extends Activity {
         }
     }
 
-    private View toggleRow(String labelText, Square mark, boolean initial,
+    private View toggleRow(String labelText, Square mark,
+                           java.util.function.BooleanSupplier isOn,
                            java.util.function.Consumer<Boolean> onChange) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        // **The whole row is the target.** The 18 dp square is a readout, not
+        // the hit area; a 44 dp row with a 12 dp square is what "开关比较难点"
+        // describes.
+        row.setMinimumHeight(dp(48));
+        row.setPadding(0, dp(6), 0, dp(6));
         row.addView(label(labelText, 8, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        mark.setLit(initial);
-        row.addView(mark, new LinearLayout.LayoutParams(dp(12), dp(12)));
-        final boolean[] state = {initial};
+        mark.setLit(isOn.getAsBoolean());
+        row.addView(mark, new LinearLayout.LayoutParams(dp(18), dp(18)));
         row.setOnClickListener(v -> {
-            state[0] = !state[0];
-            mark.setLit(state[0]);
-            onChange.accept(state[0]);
+            // **Read the field, not a copy of it.** `applyLook`, the two reset
+            // buttons and `resetOverscanPage` write `overscanOn` / `dateOn` /
+            // `edgeTextOn` directly. The old `boolean[] state` kept the value
+            // from construction time, so after restoring a look whose rebate
+            // was already on, the row lit up true but the next tap toggled
+            // *off a value that was already true* -- i.e. the picture kept the
+            // rebate while the switch read off. That is "没点开也会进行渲染".
+            final boolean next = !isOn.getAsBoolean();
+            Probe.log("toggle", labelText + " " + isOn.getAsBoolean() + " -> " + next);
+            mark.setLit(next);
+            // **Say that a render is coming.** Every one of these switches is a
+            // shoot-layer field, so it re-develops the film: 1-2 s at the 2048
+            // preview. Flipping one and seeing nothing for two seconds reads as
+            // "the switch does not work", and the natural response is to flip it
+            // again -- which drops the negative and starts the whole develop
+            // over, each time allocating a fresh set of planes. Ten taps of that
+            // is what put the launcher out of memory.
+            if (rendering) {
+                statusText.setText("渲染中…（这是胶片层参数，约 1–2 秒）");
+            }
+            onChange.accept(next);
         });
         return row;
     }
@@ -6406,6 +8349,7 @@ public class MainActivity extends Activity {
                 float v = lo + (hi - lo) * progress / 1000f;
                 value.setText(String.format(java.util.Locale.US, "%.2f", v));
                 apply.accept(v);
+                if (bar instanceof ScrubBar && ((ScrubBar) bar).isDragging()) requestLivePreview();
             }
             @Override public void onStartTrackingTouch(SeekBar sb) { }
             @Override public void onStopTrackingTouch(SeekBar sb) {
@@ -6523,6 +8467,138 @@ public class MainActivity extends Activity {
     }
 
     /** Which of the three things on the stage is showing. */
+    /**
+     * Where a touch on the canvas puts the date.
+     *
+     * <p>The quarter that was touched becomes the corner; the distance from
+     * that quarter's two edges becomes the inset. Millimetres, not pixels: the
+     * engine lays the imprint out against the gate, so the same inset has to
+     * mean the same thing at every preview size.
+     */
+    private boolean onCanvasTouch(android.view.View v, android.view.MotionEvent e) {
+        if (edgePageIndex != 1 || !dateOn || !"frame".equals(datePlacement)) return false;
+        if (!uiReady || session == null || compare == null) return false;
+        // **A pinch belongs to the canvas.** This listener sits in front of
+        // `compare`, so a second finger has to be handed over explicitly or
+        // zooming stops working the moment the date page is open.
+        if (e.getPointerCount() > 1) {
+            dateDragOn = false;
+            return compare.onTouchEvent(e);
+        }
+        switch (e.getActionMasked()) {
+            case android.view.MotionEvent.ACTION_DOWN: {
+                final android.graphics.RectF r = compare.imageRect();
+                if (r.width() <= 0f || r.height() <= 0f) return false;
+                dateDragOn = true;
+                dateDragU0 = clamp01((e.getX() - r.left) / r.width());
+                dateDragV0 = clamp01((e.getY() - r.top) / r.height());
+                final float[] c = dateCentre(r);
+                dateDragCX = c[0]; dateDragCY = c[1];
+                return true;
+            }
+            case android.view.MotionEvent.ACTION_MOVE: {
+                if (!dateDragOn) return false;
+                final android.graphics.RectF r = compare.imageRect();
+                if (r.width() <= 0f || r.height() <= 0f) return false;
+                final float u = clamp01((e.getX() - r.left) / r.width());
+                final float fv = clamp01((e.getY() - r.top) / r.height());
+                // **Relative, not absolute.** Putting the centre under the
+                // finger on touch-down made a nudge jump half the picture; the
+                // box keeps the offset it had and follows from there.
+                applyDateCentre(clamp01(dateDragCX + (u - dateDragU0)),
+                        clamp01(dateDragCY + (fv - dateDragV0)), r);
+                return true;
+            }
+            case android.view.MotionEvent.ACTION_UP:
+            case android.view.MotionEvent.ACTION_CANCEL:
+                if (!dateDragOn) return false;
+                dateDragOn = false;
+                if (session != null) { applyParams(); renderImage(); }
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static float clamp01(float v) {
+        return v < 0f ? 0f : (v > 1f ? 1f : v);
+    }
+
+    /** The frame's own size in millimetres, the same numbers the engine uses. */
+    private float[] frameMm(android.graphics.RectF r) {
+        final float longMm = filmFormatMm > 0f ? filmFormatMm : 36.0f;
+        final float aspect = r.width() / Math.max(1f, r.height());
+        return aspect >= 1f
+                ? new float[]{longMm, longMm / aspect}
+                : new float[]{longMm * aspect, longMm};
+    }
+
+    /** The imprint's height in millimetres: the factor the engine uses. */
+    private float dateTextHeightMm() {
+        final float k = Math.max(0.4f, Math.min(8f, dateSize));
+        return ("dots".equals(dateStyle) ? 0.95f : 1.3f) * k;
+    }
+
+    /** Its width, near enough to place its centre. LCD and dots advance ~0.70 em. */
+    private float dateTextWidthMm() {
+        final String t = (dateText != null && !dateText.isEmpty()) ? dateText : "'00 00 00";
+        // Measured on the engine's LCD face: "26 11 07" is 7.2 mm wide at
+        // 1.3 mm tall, i.e. 0.615 em per glyph. 0.62 keeps the centre within
+        // ~0.5 mm of the finger instead of a word width.
+        final float per = "data".equals(dateStyle) ? 0.55f : 0.62f;
+        return dateTextHeightMm() * per * Math.max(1, t.length());
+    }
+
+    /** Where the imprint's centre sits on the picture, 0..1 each way. */
+    private float[] dateCentre(android.graphics.RectF r) {
+        final float[] mm = frameMm(r);
+        final float w = dateTextWidthMm(), h = dateTextHeightMm();
+        final boolean left = dateCorner.equals("bl") || dateCorner.equals("tl");
+        final boolean top = dateCorner.equals("tl") || dateCorner.equals("tr");
+        final float fw = Math.max(1f, mm[0]), fh = Math.max(1f, mm[1]);
+        final float cx = left ? (dateInsetX + 0.5f * w) / fw
+                : 1f - (dateInsetX + 0.5f * w) / fw;
+        final float cy = top ? (dateInsetY + 0.5f * h) / fh
+                : 1f - (dateInsetY + 0.5f * h) / fh;
+        return new float[]{clamp01(cx), clamp01(cy)};
+    }
+
+    /**
+     * Put the imprint's centre at (cx, cy).
+     *
+     * <p>The engine measures `inset_x` from the frame's side to the text's
+     * *edge*, and `inset_y` from its top/bottom to the text's *baseline*. A
+     * centre is what a finger knows, so the two are converted here -- ignoring
+     * this is why a drag used to land a whole word-width away from the finger,
+     * and why the far side of a big frame could not be reached (inset was
+     * capped at 30 mm while 6x12 is 112 mm wide).
+     */
+    private void applyDateCentre(float cx, float cy, android.graphics.RectF r) {
+        final float[] mm = frameMm(r);
+        final float w = dateTextWidthMm(), h = dateTextHeightMm();
+        // 2 % of the frame: the corner does not flicker while the finger
+        // crosses the middle.
+        final float hyst = 0.02f;
+        final boolean wasLeft = dateCorner.equals("bl") || dateCorner.equals("tl");
+        final boolean wasTop = dateCorner.equals("tl") || dateCorner.equals("tr");
+        final boolean left = wasLeft ? cx < 0.5f + hyst : cx < 0.5f - hyst;
+        final boolean top = wasTop ? cy < 0.5f + hyst : cy < 0.5f - hyst;
+        dateCorner = top ? (left ? "tl" : "tr") : (left ? "bl" : "br");
+
+        final float ix = left ? (cx * mm[0] - 0.5f * w) : ((1f - cx) * mm[0] - 0.5f * w);
+        final float iy = top ? (cy * mm[1] - 0.5f * h) : ((1f - cy) * mm[1] - 0.5f * h);
+        dateInsetX = Math.max(0f, Math.min(mm[0], ix));
+        dateInsetY = Math.max(0f, Math.min(mm[1], iy));
+
+        // The sliders must cover the same range or `setBarProgress` writes a
+        // clamped value straight back into the field and the imprint jumps home.
+        setBarProgress(dateInsetXBar, 0.0f, 200f, dateInsetX);
+        setBarProgress(dateInsetYBar, 0.0f, 200f, dateInsetY);
+        // The date lives in the SHOOT layer, so this is a full film pass
+        // (~120 ms at 800 px); `requestLivePreview` merges the frames.
+        requestLivePreview();
+    }
+
     private void setStage(int mode, String name) {
         if (mode == 0) compare.clear();
         refreshComparePill();
@@ -6548,6 +8624,10 @@ public class MainActivity extends Activity {
      * found it; a tap asking a question costs one tap and answers it.
      */
     private void showImportMenu() {
+        if (batchExportRunning) {
+            showInAppToast("批量导出中，等它跑完再导入");
+            return;
+        }
         // **Two pickers, and only one of them returns the file on disk.**
         // Measured on this ROM: `ACTION_OPEN_DOCUMENT` with type `image/*` is
         // served by the gallery ("安全访问"), and the copy it hands over has had
@@ -6598,6 +8678,15 @@ public class MainActivity extends Activity {
     }
 
     private void showExportDialog() {
+        if (batchExportRunning) {
+            // **The only cancel.** A batch can run for ten minutes; without a
+            // way out the user's choice is to kill the app.
+            showActionSheet("批量导出中", "正在一张张导出。停止会保留已经写好的那些。",
+                    new String[]{"停止批量导出", "继续"}, which -> {
+                        if (which == 0) batchExportAbort = true;
+                    });
+            return;
+        }
         if (session == null) {
             showInAppToast("先导入一张照片");
             return;
@@ -6645,15 +8734,25 @@ public class MainActivity extends Activity {
                 + "\n" + driverLine
                 + "\nDNG 只给电脑上的 Lightroom / ACR 用：手机版 Lr 打不开是已知问题，"
                   + "遇到报错不必反馈。";
-        showActionSheet("导出照片", note, new String[]{
-                "JPEG · 实时画质",
-                "JPEG · 预览画质 · 长边 3400",
-                "JPEG · 全尺寸（原图）",
-                "TIFF 16 位 · 实时画质",
-                "TIFF 16 位 · 预览画质 · 长边 3400",
-                "TIFF 16 位 · 全尺寸（原图）",
-                "DNG · 全尺寸（电脑用 · 手机版打不开）"
-        }, which -> {
+        final boolean batchable = frames.size() > 1;
+        final java.util.ArrayList<String> rows = new java.util.ArrayList<>();
+        if (batchable) rows.add("批量 · 全部 " + frames.size() + " 张（JPEG · 全尺寸）");
+        rows.add("JPEG · 实时画质");
+        rows.add("JPEG · 预览画质 · 长边 3400");
+        rows.add("JPEG · 全尺寸（原图）");
+        rows.add("TIFF 16 位 · 实时画质");
+        rows.add("TIFF 16 位 · 预览画质 · 长边 3400");
+        rows.add("TIFF 16 位 · 全尺寸（原图）");
+        rows.add("DNG · 全尺寸（电脑用 · 手机版打不开）");
+        showActionSheet("导出照片", note, rows.toArray(new String[0]), which0 -> {
+            int which = which0;
+            if (batchable) {
+                if (which == 0) {
+                    startBatchExport("jpeg", "full");
+                    return;
+                }
+                --which;
+            }
             if (which == 6) { exportImage("dng", "full"); return; }
             exportImage(which >= 3 ? "tiff" : "jpeg",
                         which % 3 == 0 ? "live" : which % 3 == 1 ? "preview" : "full");
@@ -7063,10 +9162,19 @@ public class MainActivity extends Activity {
         final double fit = importScale(w, h, capPixels);
         final int sw = Math.max(1, (int) Math.round(w * fit));
         final int sh = Math.max(1, (int) Math.round(h * fit));
+        final long nativeMb = (long) w * h * 12L >> 20;
+        final long availMb = availableMemoryBytes() >> 20;
+        // **The number that makes "original" an informed choice.** The sheet
+        // used to say "memory may run out and the app will disappear" without
+        // ever saying how much; on a 50 MP file that is 600 MB of float and the
+        // answer decides whether the tap is a coin flip.
         final String budgetMessage = "原图 " + w + "×" + h + "（" + megapixels(w, h) + " MP）。"
                 + "\n\n按原图：渲染约 " + Math.max(5, (int) Math.round((double) w * h / 1e6 * 1.4))
-                + " 秒；内存不够时应用会直接闪退。"
-                + "\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
+                + " 秒；交给 GPU 需要约 " + nativeMb + " MB 连续内存，本机现在可用 "
+                + availMb + " MB。"
+                + (nativeMb * 10L > availMb * 8L
+                        ? "\n按原图很可能被系统回收（应用直接消失，不报错）。" : "")
+                + "\n\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
                 + "\n\n本机按可用内存建议约 "
                 + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
                 + (overscanOn ? "（已按片边预留画布）" : "") + "。";
@@ -7095,8 +9203,16 @@ public class MainActivity extends Activity {
         final int sw = Math.max(1, (int) Math.round(w * fit));
         final int sh = Math.max(1, (int) Math.round(h * fit));
         final int seconds = Math.max(5, (int) Math.round((double) w * h / 1e6 * 1.4));
+        // **The numbers, before the choice.** "内存不够时会闪退" is true but
+        // tells nobody whether this frame is close or hopeless; the two figures
+        // are what the decision actually turns on.
+        final long needBytes = (long) w * (long) h * 100L;
+        final long availBytes = availableMemoryBytes();
         final String message = "这张 RAW 是 " + w + "×" + h + "（" + megapixels(w, h) + " MP）。"
-                + "\n\n按原图：渲染约 " + seconds + " 秒；内存不够时应用会直接闪退。"
+                + "\n\n按原图：需要约 " + String.format(java.util.Locale.US, "%.1f", needBytes / 1e9)
+                + " GB 内存（解码 + 显存），本机当前可用 "
+                + String.format(java.util.Locale.US, "%.1f", availBytes / 1e9) + " GB；"
+                + "不够时会直接闪退，渲染约 " + seconds + " 秒。"
                 + "\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
                 + "\n\n本机按可用内存建议约 "
                 + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
@@ -7125,11 +9241,17 @@ public class MainActivity extends Activity {
         if (area > capPixels) k = Math.sqrt((double) capPixels / (double) area);
         final int longEdge = Math.max(w, h);
         if (longEdge > IMPORT_LONG_EDGE) k = Math.min(k, (double) IMPORT_LONG_EDGE / longEdge);
+        // **The same budget the import uses.** This used to allow `avail - 128
+        // MB` at 12 B/px, which only covers the decode -- the GPU's 76 B/px of
+        // planes was not in it, so the "缩到" size could still die inside
+        // `spk_open`. `maxPixelsByMemory` is the one number that already
+        // accounts for the reserve and all three copies.
         final long availBytes = availableMemoryBytes();
         if (availBytes > 0) {
-            final long budget = Math.max(1L << 20, availBytes - (128L << 20));
-            final double wantBytes = (double) area * 12.0;
-            if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
+            final long capByMemory = DeviceProbe.maxPixelsByMemory(availBytes);
+            if (capByMemory > 0 && (long) w * (long) h > capByMemory) {
+                k = Math.min(k, Math.sqrt((double) capByMemory / (double) area));
+            }
         }
         return Math.min(k, 1.0);
     }
@@ -7322,6 +9444,13 @@ public class MainActivity extends Activity {
         final boolean dark = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false);
         showActionSheet("SpektraLab Android " + version, details, new String[]{
                 "检查更新",
+                "预设（保存 / 分享参数）",
+                // **Askable, not only post-mortem.** A hang, a wrong picture or a
+                // render that "took forever" leaves nothing on disk while the
+                // process is alive -- and those are the reports that arrive as a
+                // screenshot. One tap copies the same ring a crash would have
+                // left behind.
+                "导出最近的步骤（上传给开发者）",
                 reporting ? "驱动报告：开（每周一次，只报机型和 GPU）" : "驱动报告：关",
                 dark ? "界面：暗黑 · 黑橙（切换后重启生效）" : "界面：蓝白（切换后重启生效）",
                 "反馈群（QQ 1134320449）", "打开 GitHub", "关闭"
@@ -7329,9 +9458,28 @@ public class MainActivity extends Activity {
             if (which == 0) {
                 UpdateCheck.check(this, true);
             } else if (which == 1) {
+                showPresetsPanel();
+            } else if (which == 2) {
+                // **The only upload the user starts by hand**, and the only way
+                // the ring leaves the phone when nothing has gone wrong yet.
+                final String ring = CrashTrail.snapshot(this);
+                final String head = "user-report\n" + reportHead()
+                        + "steps=" + DebugSink.ringSize() + "\n";
+                new Thread(() -> {
+                    final boolean ok = DebugSink.report("steps", head,
+                            ring.isEmpty() ? "(这次还没有记录)" : ring);
+                    runOnUiThread(() -> showTextDialog(
+                            ok ? "已上传最近的步骤" : "上传失败",
+                            "记录号 " + DebugSink.REF + "\n\n"
+                            + (ring.isEmpty() ? "(这次还没有记录)" : ring)
+                            + (ok ? "\n已经上传，不用再发给我了。"
+                                  : "\n网络没通，请把这段复制发给我。"),
+                            false));
+                }, "SpektraLab-report").start();
+            } else if (which == 3) {
                 DeviceReport.setEnabled(this, !reporting);
                 showAbout();
-            } else if (which == 2) {
+            } else if (which == 4) {
                 // The palette is read once in onCreate; a restart is the whole
                 // rebuild, and the current session's state is already saved on
                 // pause, so nothing the user did is lost by asking for it.
@@ -7339,9 +9487,9 @@ public class MainActivity extends Activity {
                         .putBoolean("dark", !dark).apply();
                 showActionSheet("界面已切换", "退出应用再打开，新的界面就会生效。",
                         new String[]{"好"}, null);
-            } else if (which == 3) {
+            } else if (which == 5) {
                 showFeedbackGroup(false);
-            } else if (which == 4) {
+            } else if (which == 6) {
                 try {
                     startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                             android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
@@ -7429,7 +9577,9 @@ public class MainActivity extends Activity {
     private void pickImage() {
         java.util.List<Intent> chain = new ArrayList<>();
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            chain.add(new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES));
+            final Intent multi = new Intent(android.provider.MediaStore.ACTION_PICK_IMAGES);
+            multi.putExtra(android.provider.MediaStore.EXTRA_PICK_IMAGES_MAX, 50);
+            chain.add(multi);
         }
         chain.add(new Intent(Intent.ACTION_GET_CONTENT)
                 .addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"));
@@ -7445,24 +9595,37 @@ public class MainActivity extends Activity {
     private boolean launchFirstResolvable(java.util.List<Intent> chain, int requestCode) {
         for (Intent intent : chain) {
             try {
-                if (intent.resolveActivity(getPackageManager()) == null) {
-                    try { DebugSink.text("picker", "unresolvable " + intent.getAction()); }
-                    catch (Throwable ignored) { }
-                    continue;
-                }
+                // **Do not gate on `resolveActivity`.** Android 11's package
+                // visibility rules hide every storage picker from an app that
+                // has not declared it in `<queries>`, and `resolveActivity`
+                // then answers null for the system picker that
+                // `startActivityForResult` would have opened. That is
+                // "本机没有相册选择器" / "本机没有可用的文件选择器" on a phone whose
+                // gallery and file manager are both fine. Launch it; an
+                // ActivityNotFoundException falls through to the next
+                // candidate, and everything else is caught below.
+                //
                 // The grant has to be asked for as persistable *before* the
                 // picker runs; `onActivityResult` then either keeps it or
                 // copies the file. Without this flag there is nothing to take.
                 intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
                         | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                if (requestCode == 1) intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                Probe.log("picker", "try " + intent.getAction());
                 startActivityForResult(intent, requestCode);
+                Probe.log("picker", "ok " + intent.getAction());
                 try { DebugSink.text("picker", "launched " + intent.getAction()); }
                 catch (Throwable ignored) { }
                 return true;
+            } catch (android.content.ActivityNotFoundException missing) {
+                // This ROM has no handler for this action; try the next one.
+                Probe.log("picker", "missing " + intent.getAction());
+                try { DebugSink.text("picker", "unresolvable " + intent.getAction()); }
+                catch (Throwable ignored) { }
             } catch (Throwable t) {
-                // Resolvable and still refused: a provider that vanished
-                // between the check and the launch, a SecurityException, or a
-                // picker that throws from its own onCreate. Next one.
+                // A provider that vanished between the check and the launch, a
+                // SecurityException, or a picker that throws from its own
+                // onCreate. Next one.
                 try { DebugSink.text("picker", intent.getAction() + " failed: " + t); }
                 catch (Throwable ignored) { }
             }
@@ -7519,13 +9682,31 @@ public class MainActivity extends Activity {
         // stream for the item (a cloud-only photo, a broken provider). Doing
         // nothing there is what "下载后没法导入" looks like from the outside: the
         // tap simply has no effect and nothing is said.
-        Uri uri = data == null ? null : data.getData();
-        if (uri == null) {
+        // **A multi-selection arrives as a ClipData**, a single one as `data`.
+        // Both are collected here; one URI keeps the old path exactly (and its
+        // "copy to our directory" fallback), several go through the queue.
+        final java.util.ArrayList<Uri> picked = new java.util.ArrayList<>();
+        if (data != null) {
+            final android.content.ClipData clip = data.getClipData();
+            if (clip != null && clip.getItemCount() > 0) {
+                for (int i = 0; i < clip.getItemCount(); ++i) {
+                    final Uri u = clip.getItemAt(i).getUri();
+                    if (u != null) picked.add(u);
+                }
+            } else if (data.getData() != null) {
+                picked.add(data.getData());
+            }
+        }
+        if (picked.isEmpty()) {
             try { DebugSink.text("picker", "RESULT_OK with no data"); } catch (Throwable ignored) { }
             showInAppToast("没有拿到图片（选择器返回空）。请点「导入」→「从文件管理器选择」再试一次");
             return;
         }
-        importPicked(uri);
+        if (picked.size() == 1) {
+            importPicked(picked.get(0));
+            return;
+        }
+        startBatchImport(picked);
     }
 
     /**
@@ -7542,6 +9723,8 @@ public class MainActivity extends Activity {
      */
     private void importPicked(Uri uri) {
         CrashTrail.mark(this, "import:picked");
+        // A pick from ＋ is a new photograph, never a chip coming back.
+        reopeningFrame = false;
         boolean persisted = false;
         try {
             getContentResolver().takePersistableUriPermission(
@@ -7604,8 +9787,43 @@ public class MainActivity extends Activity {
 
     private void loadImage(Uri uri) {
         CrashTrail.mark(this, "import:load " + uri);
+        // **The previous photograph's dimensions are not this one's.**
+        // `originalAspect()` prefers `importedWidth` when it is set, and only
+        // the RAW path ever set it. So a RAW followed by a JPEG kept the RAW's
+        // shape: on a 6912x4530 raw then a 1280x1708 jpeg, `refreshEdgeFormats`
+        // logged `aspect=1.5258` for the *portrait* frame it had just imported,
+        // picked the 135 gate, and the render then refused it with
+        // "a 1280 x 1708 frame is not the 135 gate's shape" -- E-1305.
+        importedWidth = 0;
+        importedHeight = 0;
+        // A profile belongs to one file. The RAW branch below attaches this
+        // frame's; a JPEG has none, and the canvas falls back to plain sRGB.
+        sourceToneCurve = null;
+        // **The previous frame's gate is not this frame's shape.** A 6x17 chosen
+        // for a panorama stayed selected for the next picture, and the render
+        // then refused a 1365x1024 frame with "is not the 120_6x17 gate's
+        // shape". `refreshEdgeFormats` re-picks from the new aspect a few lines
+        // later, so this only clears the stale choice.
+        overscanFormat = "135";
+        // **The one number that separates the two hypotheses.** A death inside
+        // the decode leaves nothing but `import:load` behind, and at that point
+        // "this file is corrupt" and "this file is 50 MP and the kernel
+        // reclaimed us" look identical. The header costs a few milliseconds and
+        // answers it before anything large is allocated.
+        try {
+            final int[] sz = sniffImageSize(uri);
+            final long want = sz == null ? 0L : (long) sz[0] * sz[1] * 12L;
+            CrashTrail.mark(this, "import:size "
+                    + (sz == null ? "unknown" : sz[0] + "x" + sz[1])
+                    + " need=" + (want >> 20) + "MB"
+                    + " avail=" + (availableMemoryBytes() >> 20) + "MB");
+            try { DebugSink.text("import-size", (sz == null ? "unknown" : sz[0] + "x" + sz[1])
+                    + " need=" + (want >> 20) + "MB avail=" + (availableMemoryBytes() >> 20) + "MB"
+                    + " native=" + importAtNativeSize); } catch (Throwable ignored) { }
+        } catch (Throwable ignored) { }
         // A new photograph starts at the two entry cards, never on a page
         // whose switch belonged to the frame before it.
+        CrashTrail.mark(this, "import:page");
         if (edgePageIndex >= 0) openEdgePage(-1);
         // A frame the strip remembers but the system will not open any more:
         // say so in one sentence instead of letting a SecurityException be
@@ -7617,19 +9835,31 @@ public class MainActivity extends Activity {
                     + "之后再切到别的软件回来就不会丢。");
             return;
         }
+        CrashTrail.mark(this, "import:canread");
         sourceUri = uri;
+        // A different file means a different sensor balance; the previous
+        // frame's gains must not be handed to it.
+        wbUserMul = null;
         // The frame's own look, stated before any session is built: a chip
         // returns to a photograph *and* to what was done to it; a pick from ＋
         // starts with no film at all.
-        if (reopeningFrame) {
-            if (currentFrame >= 0 && currentFrame < frames.size())
-                applyLook(frames.get(currentFrame).look);
+        if (reopeningFrame && currentFrame >= 0 && currentFrame < frames.size()) {
+            applyLook(frames.get(currentFrame).look);
         } else {
+            // **A reopen with no frame to reopen is a new photograph.** This
+            // used to leave the global fields untouched when the index was
+            // gone (every chip deleted, then ＋), so the new frame inherited
+            // the previous one's print exposure and meter switch -- reported
+            // as "重新导入一张还是黑灰", gone after a restart for the obvious
+            // reason.
+            reopeningFrame = false;
             applyLook(defaultLook());
         }
+        CrashTrail.mark(this, "import:look");
         try {
             // Check if this is a RAW file by extension
             String fileName = getFileName(uri);
+            CrashTrail.markNow(this, "import:name " + fileName);
             final String lower = fileName == null ? "" : fileName.toLowerCase();
             isRawFile = lower.endsWith(".rw2") || lower.endsWith(".raw")
                     || lower.endsWith(".dng") || lower.endsWith(".arw")
@@ -7697,12 +9927,25 @@ public class MainActivity extends Activity {
             synchronized (renderMutex) {
                 if (session != null) { session.close(); session = null; }
             }
+            // **The old frame's planes go before the new one asks for its own.**
+            // `spk_open` allocates the decoded source while the previous
+            // session's pool is still resident. On a 16 GB phone a 32 MP pool
+            // plus a 50 MP frame is more than the app's cgroup will hand out,
+            // and it surfaces as `cannot allocate Vulkan result pixels` ->
+            // E-1003 even though the frame alone would have fit. The export
+            // path already trims for exactly this reason.
+            try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
             lastRenderedBitmap = null;
             setOpticsUnlocked(false);
             dateText = null;
             setStage(0, null);
+            // The white-balance half is RAW-only; tell it which file this is.
+            refreshViewPanel();
             sourceBitmap = null;
-            sourcePixels = null;
+            // `allocDirect` has no cleaner: dropping the field frees nothing.
+            if (sourcePixels != null) { SpektraLabEngine.freeDirect(sourcePixels); sourcePixels = null; }
+            // The previous file's unpacked plane is not this frame's problem.
+            try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
             filmThumbs.clear();
             // The canvas is not a control. `setOriginalVisual` only paints the
             // 原图 button; what CompareView holds is `after` (the last render)
@@ -7727,6 +9970,10 @@ public class MainActivity extends Activity {
             final int capPixels = forcedCap > 0 ? forcedCap
                     : (nativeSize ? Integer.MAX_VALUE : maxImportPixels());
             final int edgeCap = nativeSize ? Integer.MAX_VALUE : IMPORT_LONG_EDGE;
+            // The cleanup above (shelf queue, session close, gc) is its own
+            // stretch; without this mark a death there would still be reported
+            // as `import:look` and blamed on the decoder.
+            CrashTrail.mark(this, "import:decoding");
             sourceBitmap = decodeImport(uri, capPixels, edgeCap);
             if (sourceBitmap == null) {
                 // The old message here was "无法解码图片", which gave the user
@@ -7742,6 +9989,13 @@ public class MainActivity extends Activity {
                 return;
             }
             sourceBitmap = applyExifRotation(uri, sourceBitmap);
+            // **Where the import actually is.** `import:load` covers everything
+            // from the pick to the session, which is a fifty-line stretch with
+            // a 200 MB bitmap and a 600 MB direct buffer in it; when the system
+            // reclaims the process mid-way the trail cannot tell a bad file
+            // from a decoder that handed back 50 MP it could not then convert.
+            CrashTrail.mark(this, "import:decoded " + sourceBitmap.getWidth() + "x"
+                    + sourceBitmap.getHeight());
             final long area = (long) sourceBitmap.getWidth() * sourceBitmap.getHeight();
             final int longEdge = Math.max(sourceBitmap.getWidth(), sourceBitmap.getHeight());
             // Three ceilings in three units, and the strictest wins: area is
@@ -7760,11 +10014,13 @@ public class MainActivity extends Activity {
             if (!nativeSize) {
                 if (area > capPixels) k = Math.min(k, Math.sqrt((double) capPixels / (double) area));
                 if (longEdge > edgeCap) k = Math.min(k, (double) edgeCap / longEdge);
-                if (availBytes > 0) {
-                    final long budget = Math.max(1L << 20, availBytes - (128L << 20));
-                    final double wantBytes = (double) area * 12.0;
-                    if (wantBytes > budget) k = Math.min(k, Math.sqrt((double) budget / wantBytes));
-                }
+                // **No third ceiling from free RAM.** `capPixels` already came
+                // from the pixel budget, and that budget is now derived from
+                // total RAM rather than whatever happened to be free. Applying
+                // `availMem - 128 MB` *again*, here, is what made two imports of
+                // one file land on different sizes. The float buffer is malloc'd
+                // and its failure has an honest message (`导入这张图需要 N MB`),
+                // so the guess is not needed.
             }
             if (k < 1.0) {
                 final int nw = Math.max(1, (int) Math.round(sourceBitmap.getWidth() * k));
@@ -7777,13 +10033,41 @@ public class MainActivity extends Activity {
             }
             sourceWidth = sourceBitmap.getWidth();
             sourceHeight = sourceBitmap.getHeight();
+            // The JPEG path sets these too, so nothing has to infer a shape from
+            // whatever the last raw happened to be.
+            importedWidth = sourceWidth;
+            importedHeight = sourceHeight;
             refreshEdgeFormats();
 
             // Convert a row at a time: a full int[] of 20 MP would be another
             // 80 MB on the Java heap next to the direct buffer.
             rawFilePath = null;
-            sourcePixels = ByteBuffer.allocateDirect(sourceWidth * sourceHeight * 3 * 4)
-                .order(ByteOrder.nativeOrder());
+            // 12 bytes a pixel, outside the Java heap, and the largest single
+            // allocation this app makes: 240 MB at 20 MP, 600 MB at 50. The
+            // engine takes float32 only (the Metal zero-copy door is refused by
+            // the Vulkan backend), so it cannot be made smaller -- but it can be
+            // made *legible*: an OutOfMemoryError here is caught and explained,
+            // and only a kernel reclaim leaves the trail without this mark.
+            final long pixelBytes = (long) sourceWidth * sourceHeight * 3L * 4L;
+            CrashTrail.mark(this, "import:pixels " + (pixelBytes >> 20) + "MB avail="
+                    + (availableMemoryBytes() >> 20) + "MB");
+            try { DebugSink.text("import-pixels", sourceWidth + "x" + sourceHeight
+                    + " need=" + (pixelBytes >> 20) + "MB avail="
+                    + (availableMemoryBytes() >> 20) + "MB"); } catch (Throwable ignored) { }
+            // **malloc, not allocateDirect.** The runtime caps direct-buffer
+            // memory at the heap growth limit (512 MB on the phone that
+            // reported this), and a 50 MP frame is 576 MB of float32, so the
+            // old call was refused with 4.3 GB free -- and the message blamed
+            // the device. This one asks for memory that exists.
+            try {
+                sourcePixels = SpektraLabEngine.allocDirect(pixelBytes)
+                        .order(ByteOrder.nativeOrder());
+            } catch (Throwable oom) {
+                throw new IllegalStateException("导入这张图需要 " + (pixelBytes >> 20)
+                        + " MB 内存，本机现在给不出来（可用 "
+                        + (availableMemoryBytes() >> 20) + " MB）。"
+                        + "\n\n点「导入」再选一次，这次选「缩到建议尺寸」。", oom);
+            }
             final int[] rowPixels = new int[sourceWidth];
             for (int y = 0; y < sourceHeight; y++) {
                 sourceBitmap.getPixels(rowPixels, 0, sourceWidth, 0, y, sourceWidth, 1);
@@ -7808,11 +10092,14 @@ public class MainActivity extends Activity {
             setStep(1);
             
             // Create engine and session
+            CrashTrail.mark(this, "import:engine");
             ensureEngine();
+            CrashTrail.mark(this, "import:engine-ok");
             synchronized (renderMutex) {
                 if (session != null) { session.close(); session = null; }
             }
             session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
+            CrashTrail.mark(this, "import:session");
             applySessionParams();
             lastImportError = null;
             // An import is not a look. The frame lands unrendered with no film
@@ -7826,10 +10113,16 @@ public class MainActivity extends Activity {
                 // making the user re-pick a film that was never unpicked.
                 showingOriginal = false;
                 updateFilmSelection();
-                renderImage();
+                // **Not while a batch is exporting.** Each frame is opened only
+                // to hand it to `exportImage`, which builds its own full-size
+                // session; a preview pass here is a second render of the same
+                // frame, and it holds `rendering` up long enough that the next
+                // parameter touch answers "渲染中". The batch's order is
+                // load -> export, with nothing in between.
+                if (!batchExportRunning) renderImage();
             } else {
                 statusText.setText("未渲染 · 选择胶片开始" + importSizeNote(sourceWidth, sourceHeight));
-                startPrefetch();
+                if (!batchExportRunning) startPrefetch();
             }
         } catch (Throwable t) {
             lastImportError = describeImportFailure(t);
@@ -7854,7 +10147,10 @@ public class MainActivity extends Activity {
      * (44.8 MP) loses the device inside `spk_iir_df_acc`. A 45 MP camera raw
      * is 8256 x 5504, so this lands it at 8000 x 5333 rather than at 4700.
      */
-    private static final int IMPORT_LONG_EDGE = 8000;
+    // 8736 is a 5DS R at full size, 8660 the 50 MP phone class. The old 8000
+    // cut both. This is not a memory limit -- the pixel budget is -- it is the
+    // point where a decode stops being a photograph and starts being a pano.
+    private static final int IMPORT_LONG_EDGE = 12000;
     /** Used when the profile cannot be read at all. */
     private static final int IMPORT_PIXEL_FALLBACK = 16490040;
 
@@ -7888,14 +10184,32 @@ public class MainActivity extends Activity {
             SpektraLabEngine.setEnv("SPK_MAX_CANVAS_PIXELS",
                     debugPixelCapMp() > 0 ? String.valueOf((long) debugPixelCapMp() * 3_000_000L) : "0");
             appliedSimMib = simMib;
+            // **The one call that can take the process down before any UI.**
+            // `spk_engine_create` builds a VkDevice and uploads every LUT; a
+            // driver that refuses it returns null (we report that), but a driver
+            // that *faults* leaves nothing at all. Bracketing it is what makes
+            // `engine:create` without `engine:created` a diagnosis instead of a
+            // mystery.
+            CrashTrail.markNow(this, "engine:create sim=" + simMib);
             engine = SpektraLabEngine.create(getResourcesDir(), vkLogFile().getAbsolutePath());
+            CrashTrail.markNow(this, "engine:created " + (engine != null));
             // **The probe comes first, and nothing may stop it.** It used to sit
             // after `uploadCapabilities()`, so a throw in any of the uploads left
             // `probe` at its `parse("{}")` default -- `? · 无单缓冲上限` -- and the
             // next call skipped this whole block because `engine` was already
             // set. That is a device reporting 128 MiB letting a 14.8 MP frame
             // in, and the render dying on a binding range.
-            probe = DeviceProbe.parse(engine.deviceProfile());
+            // **The second call that has no Java frame in it.** `deviceProfile`
+            // is a JNI round trip into `vkGetPhysicalDeviceProperties2`; a
+            // driver that faults there leaves a trail that ends at
+            // `engine:profile-in` with no `profile-out`, which is a diagnosis
+            // rather than the silence that `engine:created true` followed by
+            // nothing used to be.
+            CrashTrail.markNow(this, "engine:profile-in");
+            final String profileJson = engine.deviceProfile();
+            CrashTrail.markNow(this, "engine:profile-out " + (profileJson == null ? 0 : profileJson.length()));
+            probe = DeviceProbe.parse(profileJson);
+            CrashTrail.markNow(this, "engine:probe " + (probe != null && probe.valid));
             try { DebugSink.text("device-profile", probe.describe() + "\n" + engine.deviceProfile()); }
             catch (Throwable ignored) { }
             // A simulated limit is a claim about a device this one is not, so
@@ -7903,6 +10217,7 @@ public class MainActivity extends Activity {
             // range back to 2 GiB -- is not run against it.
             if (simMib == 0) startCanaryProbe();
             try { uploadCapabilities(); } catch (Throwable ignored) { }
+            CrashTrail.markNow(this, "engine:ready");
         }
         return engine;
     }
@@ -7917,6 +10232,19 @@ public class MainActivity extends Activity {
      * is what a 50 MP DNG did on a phone reporting 128 MiB. Ask the device
      * rather than guess a long edge, and keep the old workgroup cap.
      */
+    /** Total physical RAM. Stable across imports; `availMem` is not. */
+    private long totalMemoryBytes() {
+        try {
+            final android.app.ActivityManager am =
+                    (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            final android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            return mi.totalMem;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
     private long availableMemoryBytes() {
         try {
             android.app.ActivityManager am =
@@ -7966,7 +10294,14 @@ public class MainActivity extends Activity {
         // otherwise bind a whole plane -- and falling back here silently put
         // the 8.95 MP ceiling back on every 128 MiB device, which is exactly
         // the number that release claimed to have removed.
-        final long byMemory = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
+        // **Total, not free.** `availMem` moves by gigabytes as other apps come
+        // and go, so the same JPEG imported at 42 MP one minute and 36 MP the
+        // next -- and the export followed. Total RAM is a property of the
+        // phone; the reserve below is what keeps the system off the low-memory
+        // killer. If a frame still does not fit, it fails with a message that
+        // names the allocation instead of quietly shrinking the import.
+        final long byMemory = DeviceProbe.maxPixelsByMemory(
+                Math.max(availableMemoryBytes(), (long) (totalMemoryBytes() * 0.45)));
         // **No hard 42 MP ceiling.** It was measured on one 12 GB phone while a
         // canvas plane still had to fit a binding; the banded renderer and a
         // larger device both outgrew it. What is left is memory, and the user
@@ -7977,7 +10312,14 @@ public class MainActivity extends Activity {
         // driver nor the free-memory estimate would pick.
         final int debugMp = debugPixelCapMp();
         if (debugMp > 0) px = (long) debugMp * 1_000_000L;
-        if (withRebate) px = (long) (px / 1.6);
+        // **A rebate does not shrink the import.** This divided the budget by
+        // 1.6 whenever the edge was on, on the theory that the canvas is 1.6x
+        // the frame. The canvas has been banded since 1.4.1 (memory peaks at
+        // 3.70 GB for a 77 MP canvas, measured three times), and what has to
+        // fit in a single binding is the *frame*, not the canvas. The only
+        // thing this line did was make the same photograph import smaller
+        // because a border was switched on.
+        // (kept as a no-op so the call sites stay unchanged)
         return (int) Math.min(Math.max(px, 1_000_000L), Integer.MAX_VALUE);
     }
 
@@ -7995,12 +10337,50 @@ public class MainActivity extends Activity {
      * every comparison sits three stops under the developed side and reads as a
      * failure rather than as a starting point.
      */
+    /**
+     * A frame bitmap in {@link #previewSpace}.
+     *
+     * <p>Assigning a `ColorSpace` is what makes the system colour-manage the
+     * bitmap instead of assuming sRGB: on a P3 phone an untagged P3 buffer is
+     * shown as if its numbers were sRGB, which desaturates it by exactly the
+     * amount the wider gamut was supposed to add.
+     */
+    private Bitmap newFrameBitmap(int w, int h) {
+        final Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        final android.graphics.ColorSpace cs = colorSpaceFor(previewSpace);
+        if (cs != null && android.os.Build.VERSION.SDK_INT >= 26) bmp.setColorSpace(cs);
+        return bmp;
+    }
+
+    private static android.graphics.ColorSpace colorSpaceFor(String name) {
+        if (android.os.Build.VERSION.SDK_INT < 26) return null;
+        if ("Display P3".equals(name))
+            return android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.DISPLAY_P3);
+        return null;          // sRGB is what an untagged ARGB_8888 already is
+    }
+
     private Bitmap exportSourceBitmap(SpektraLabEngine.Session source, double ev) {
         Bitmap bitmap = null;
         try {
-            SpektraLabEngine.setSourceDisplayEv(ev);
+            // **The gain is computed from *this* frame, so the frame has to
+            // exist first.**
+            //
+            // `nativeSetSourceDisplayEv` does not just scale by 2^ev: it samples
+            // the current source into p50 and p99.5, puts the median on 18 % and
+            // stops before the 99.5th clips. That sampling reads `g_result`,
+            // which `exportSource` is what fills. Setting the EV *before* the
+            // export therefore measured the previous frame -- or nothing -- and
+            // fell back to the raw `2^ev`, which at the +10.2 EV the meter had
+            // produced turned the picture into a white sheet: logged as
+            // `raw-view export 2048x1363 ev=10.2 mean=254/254/253`, and reported
+            // as "导入照片后整张照片爆掉".
             final int[] d = source.exportSource("live");
             if (d != null && d[0] > 0 && d[1] > 0) {
+                // The phone's curve wins over the auto-level switch: it is the
+                // vendor's own statement, and it already carries the contrast
+                // the auto-level was imitating.
+                SpektraLabEngine.setSourceToneCurve(sourceToneCurve);
+                SpektraLabEngine.setSourceDisplayEv(ev, rawAutoBright);
                 final int rw = d[0], rh = d[1];
                 final int[] px = new int[rw * rh];
                 if (source.copyArgbRange(px, 0, rh) == rw * rh) {
@@ -8009,23 +10389,100 @@ public class MainActivity extends Activity {
                 }
             }
             try {
+                // **A number for "the colour looks wrong".** Every such report
+                // so far has been resolved by comparing the three channel means
+                // of this exact bitmap: the 1.5.0e path showed 28/30/42 where a
+                // display-encoded frame is 81/86/97, and "dark and violet" is
+                // what those numbers look like. Sampling every 97th pixel keeps
+                // it off the frame budget.
+                String means = "";
+                if (bitmap != null) {
+                    final int[] sample = new int[bitmap.getWidth() * bitmap.getHeight()];
+                    bitmap.getPixels(sample, 0, bitmap.getWidth(), 0, 0,
+                            bitmap.getWidth(), bitmap.getHeight());
+                    long sr = 0, sg = 0, sb = 0;
+                    int n = 0;
+                    for (int i = 0; i < sample.length; i += 97) {
+                        sr += (sample[i] >> 16) & 0xFF;
+                        sg += (sample[i] >> 8) & 0xFF;
+                        sb += sample[i] & 0xFF;
+                        ++n;
+                    }
+                    if (n > 0) means = " mean=" + (sr / n) + "/" + (sg / n) + "/" + (sb / n);
+                }
                 DebugSink.text("raw-view", bitmap == null
                         ? "export: empty ev=" + ev
-                        : "export " + bitmap.getWidth() + "x" + bitmap.getHeight() + " ev=" + ev);
+                        : "export " + bitmap.getWidth() + "x" + bitmap.getHeight()
+                          + " ev=" + ev + means);
             } catch (Throwable ignored) { }
         } catch (Throwable t) {
             try { DebugSink.text("raw-view", "export failed: " + t); } catch (Throwable ignored) { }
         } finally {
-            try { SpektraLabEngine.setSourceDisplayEv(0); } catch (Throwable ignored) { }
+            try { SpektraLabEngine.setSourceDisplayEv(0, false); } catch (Throwable ignored) { }
+            try { SpektraLabEngine.setSourceToneCurve(null); } catch (Throwable ignored) { }
         }
         return bitmap;
     }
 
+    /**
+     * Re-reads the original with the current display rule.
+     *
+     * The canvas is the only thing this touches: `exportSource` hands back the
+     * engine's working numbers, and `nativeCopyArgbRange` is what applies the
+     * gain and the transfer function. No render, no parameter, no export.
+     */
+    private void refreshOriginalView() {
+        if (!uiReady || session == null) return;
+        new Thread(() -> {
+            Bitmap b = null;
+            synchronized (renderMutex) {
+                final SpektraLabEngine.Session s = session;
+                if (s != null) b = exportSourceBitmap(s, 0.0);
+            }
+            if (b == null) return;
+            final Bitmap shown = b;
+            runOnUiThread(() -> {
+                if (!uiReady || compare == null) return;
+                // The frame has to be kept even while the developed side is on
+                // screen: the switch is a property of the canvas, and flipping
+                // it must not leave a stale "before" behind the film.
+                beforeBitmap = shown;
+                compare.setBefore(shown);
+                if (showingOriginal) setStage(1, null);
+            });
+        }, "raw-view-rule").start();
+    }
+
     private void loadRawImage(Uri uri) {
+        // **A different import is a different frame.** The cache keys on path +
+        // mtime, and every import is copied to `files/import/<same name>`; two
+        // copies inside one second share an mtime, so the second import could
+        // be handed the first one's decoded pixels. Clearing here costs one
+        // unpack and buys the guarantee that the pixels belong to this file.
+        try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
         CrashTrail.mark(this, "import:raw " + uri);
         try {
             String filePath = getFilePathFromUri(uri);
             rawFilePath = filePath;
+            // **The phone's own idea of how this raw should look.** OnePlus and
+            // OPPO ship a 128/140-point `ProfileToneCurve` plus a
+            // `BaselineExposure`; LibRaw parses neither, which is the whole of
+            // "our canvas is flat and Lightroom's is not". Read once here, a
+            // 6 KB seek, and handed to the canvas only.
+            sourceToneCurve = SpektraLabEngine.sourceDisplayProfile(filePath);
+            final int curvePts = sourceToneCurve == null ? 0 : (sourceToneCurve.length - 1) / 2;
+            DebugSink.text("raw-view", "display profile: "
+                    + (sourceToneCurve == null ? "none"
+                       : curvePts + " points, baseline "
+                         + String.format(java.util.Locale.US, "%.2f", sourceToneCurve[0]) + " EV"));
+            // **Which half of the import we got to.** Until now the RAW path
+            // filed one mark (`import:raw`) and then nothing until the decode
+            // had already finished, so a report of the form "crashed importing
+            // a RAW" could not be narrowed past "somewhere in the next four
+            // seconds" -- the file copy, `open_file`, the decode, `spk_open`,
+            // the meter or the source view. The JPEG path has had these marks
+            // for a while; this one had not.
+            CrashTrail.markNow(this, "import:path " + (filePath == null ? "(null)" : "ok"));
             if (filePath == null) {
                 showInAppToast("无法获取RAW文件路径");
                 return;
@@ -8083,6 +10540,16 @@ public class MainActivity extends Activity {
                     synchronized (renderMutex) {
                         if (session != null) { session.close(); session = null; }
                     }
+                    Probe.log("import", "pre avail=" + Probe.mb(availableMemoryBytes())
+                            + " cap=" + maxImportPixels() + " native=" + importAtNativeSize
+                            + " pool=" + Probe.pool(engine));
+                    Probe.step(this, "import:pre");
+                    // **Same trim as the JPEG path.** A 50 MP frame needs
+                    // ~76 B/px of planes (3.8 GB); the previous session's pool
+                    // is freed here rather than left for the allocator to run
+                    // out against.
+                    try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
+                    Probe.log("import", "trimmed pool=" + Probe.pool(engine));
                     
                     // `film_stock` names a profile file: "" and "null" both make
                     // `load_profile` fail ("bad stock name"), so an unchosen film
@@ -8108,10 +10575,31 @@ public class MainActivity extends Activity {
                     }
                     rawFilePath = filePath;
                     importCapPixels = nativeSize ? 0 : maxImportPixels();
-                    session = engine.openRawSession(filePath, params,
-                            importCapPixels,
-                            nativeSize ? 0 : IMPORT_LONG_EDGE);
+                    // **The frame's own balance, if it had one.** A frame
+                    // reopened from the strip restores `wbUserMul` through
+                    // `applyLook`; without passing it here the reopen decodes
+                    // as-shot while the sliders still show the saved Kelvin.
+                    final float[] wbMul = wbUserMul;
+                    CrashTrail.markNow(this, "import:opening cap=" + importCapPixels);
+                    session = wbMul != null
+                            ? engine.openRawSessionTuned(filePath, params,
+                                    importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE, wbMul)
+                            : engine.openRawSession(filePath, params,
+                                    importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE);
+                    Probe.log("import", "opened=" + (session != null)
+                            + " cap=" + importCapPixels
+                            + " edge=" + (nativeSize ? 0 : IMPORT_LONG_EDGE)
+                            + " mul=" + Probe.mul(wbMul)
+                            + " pool=" + Probe.pool(engine));
                     lastImportError = null;
+                    {
+                        // The size the engine actually opened, which is not
+                        // always the one `rawDimensions` promised: `half_size`
+                        // and the budget can both change it.
+                        final int[] sd = session == null ? null : session.getDimensions();
+                        CrashTrail.markNow(this, "import:opened "
+                                + (sd == null || sd.length < 2 ? "none" : sd[0] + "x" + sd[1]));
+                    }
                     // **The session's own parameters, which this path never sent.**
                     // `openRawSession` carries the film, the paper and the decode
                     // colour space; it does not carry grain, halation, glare, the
@@ -8123,6 +10611,14 @@ public class MainActivity extends Activity {
                     // at all.
                     applySessionParams();
 
+                    // **Meter before the source view.** `spk_export_source`
+                    // materialises the live tier, and a meter taken after it
+                    // has come back -11 EV on a frame whose own export read a
+                    // perfectly normal mean -- the second RAW opened from a
+                    // batch metered black, rendered black, and ignored every
+                    // metering mode. Measuring first makes the `solve` below a
+                    // cache hit (`meter_key` does not change in between).
+                    try { session.solve("exposure"); } catch (Throwable ignored) { }
                     // **The raw itself**, which is the "before" side of every
                     // comparison and the only honest thing to show on import:
                     // the decoded frame in working space, packed with no
@@ -8133,6 +10629,8 @@ public class MainActivity extends Activity {
                     // as importing it would be. No frame, no picture.
                     Bitmap rawView = exportSourceBitmap(session, 0.0);
                     final Bitmap preview = rawView;
+                    CrashTrail.markNow(this, "import:source " + (preview == null ? "none"
+                            : preview.getWidth() + "x" + preview.getHeight()));
                     final boolean hasPreview = preview != null;
                     if (!hasPreview) {
                         // The canvas is not allowed to be blank for no reason.
@@ -8163,6 +10661,7 @@ public class MainActivity extends Activity {
                     try {
                         solvedJson = session.solve("both");
                         DebugSink.text("solve", solvedJson == null ? "(null)" : solvedJson);
+                        CrashTrail.markNow(this, "import:print " + (solvedJson == null ? "none" : "ok"));
                     } catch (Throwable se) {
                         DebugSink.text("solve-failed", String.valueOf(se));
                     }
@@ -8170,6 +10669,15 @@ public class MainActivity extends Activity {
                     // developed side gets it; leaving the decoded side at 0 EV
                     // is what made a night frame look like a black rectangle
                     // next to a correctly exposed print.
+                    if (solvedJson != null) {
+                        // The applied value, for the export. See `meteredEv`.
+                        try {
+                            final org.json.JSONObject root = new org.json.JSONObject(solvedJson);
+                            final org.json.JSONObject sp = root.optJSONObject("solved_params");
+                            meteredEv = sp == null ? 0.0 : sp.optDouble("exposure_compensation_ev", 0.0);
+                            Probe.log("meter", "applied ev=" + meteredEv);
+                        } catch (Throwable ignored) { }
+                    }
                     if (hasPreview && solvedJson != null) {
                         double solvedEv = 0.0;
                         try {
@@ -8217,15 +10725,34 @@ public class MainActivity extends Activity {
                         if (filmStock != null) {
                             showingOriginal = false;
                             updateFilmSelection();
-                            renderImage();
+                            // Same as the JPEG path: a batch opens this frame
+                            // for the export, not for a preview pass.
+                            if (!batchExportRunning) renderImage();
                         } else {
                             statusText.setText("未渲染 · 选择胶片开始");
-                            startPrefetch();
+                            if (!batchExportRunning) startPrefetch();
                         }
                     });
 
                     // Get dimensions from session
-                    int[] dims = session.getDimensions();
+                    int[] dims = session == null ? null : session.getDimensions();
+                    if (dims == null || dims.length < 2 || dims[0] <= 0 || dims[1] <= 0) {
+                        // **A session that will not say how big it is failed
+                        // quietly.** Seen while switching back and forth between
+                        // two photographs: the previous import's close raced
+                        // this one's open, and the handle that came back had no
+                        // size. One clean reopen is worth trying before asking
+                        // the user to start again -- and if it fails the same
+                        // way, that is a decode problem and the message below is
+                        // the honest one.
+                        try { if (session != null) session.close(); } catch (Throwable ignored) { }
+                        session = wbMul != null
+                                ? engine.openRawSessionTuned(filePath, params,
+                                        importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE, wbMul)
+                                : engine.openRawSession(filePath, params,
+                                        importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE);
+                        dims = session == null ? null : session.getDimensions();
+                    }
                     if (dims == null || dims.length < 2 || dims[0] <= 0 || dims[1] <= 0) {
                         // A zero here used to travel silently: the canvas laid
                         // itself out for nothing, every later size was wrong,
@@ -8260,6 +10787,7 @@ public class MainActivity extends Activity {
                         statusText.setText("RAW " + w + "×" + h
                                 + " · " + megapixels(w, h) + " MP"
                                 + importSizeNote(w, h));
+                        refreshViewPanel();
                     });
                 } catch (Throwable t) {
                     final String said = describeImportFailure(t);
@@ -8289,8 +10817,31 @@ public class MainActivity extends Activity {
      * user cannot forward is an error nobody can fix.
      */
     private void showErrorDialog(String title, String body) {
+        showTextDialog(title, body, true);
+    }
+
+    /**
+     * Shared body for the error dialog and for the answer to "导出最近的步骤".
+     *
+     * <p>{@code report} decides whether this dialog is itself a diagnostic
+     * event: a failure is (once), a confirmation of a report the user just
+     * asked for is not.
+     */
+    private void showTextDialog(String title, String body, boolean report) {
+        // **A batch must not stop at the first bad frame.** One dialog per
+        // failure would hide the queue behind a stack of sheets; the line is
+        // recorded, the queue moves on, and the summary at the end counts it.
+        if (batchExportRunning) {
+            try { DebugSink.text("batch-error", title + " | " + body); }
+            catch (Throwable ignored) { }
+            return;
+        }
         final String shownTitle = (title == null || title.isEmpty()) ? "错误" : title;
         final String shownBody = (body == null || body.isEmpty()) ? "[E-0000] 未知错误" : body;
+        // **One row per failure.** The ring is already in memory; sending it
+        // here is what makes an error report readable without the user having
+        // to copy anything, and it costs one write instead of sixty-four.
+        if (report) reportFailure(shownTitle, shownBody);
         runOnUiThread(() -> {
             final android.app.Dialog dialog = new android.app.Dialog(this);
             LinearLayout card = new LinearLayout(this);
@@ -8321,7 +10872,7 @@ public class MainActivity extends Activity {
             TextView titleView = label(shownTitle, 18, UI_INK, tfHan);
             titleView.setLetterSpacing(-0.02f);
             bodyBox.addView(titleView);
-            TextView advice = label("请复制下面的完整信息，方便定位问题。", 10, UI_MUTED, tfHan);
+            TextView advice = label("请复制下面的完整信息，方便定位问题。记录号 " + DebugSink.REF, 10, UI_MUTED, tfHan);
             LinearLayout.LayoutParams adviceLp = new LinearLayout.LayoutParams(-1, -2);
             adviceLp.topMargin = dp(8);
             bodyBox.addView(advice, adviceLp);
@@ -8359,7 +10910,12 @@ public class MainActivity extends Activity {
             copy.setBackground(copyBg);
             copy.setOnClickListener(v -> {
                 try {
-                    final String text = shownTitle + "\n\n" + shownBody
+                    // **The ref goes first.** It is the only line that leads
+                    // back to the D1 rows; a screenshot of the dialog is not
+                    // always possible, and a pasted body without it is a
+                    // report with no address.
+                    final String text = "记录号 " + DebugSink.REF
+                            + "\n\n" + shownTitle + "\n\n" + shownBody
                             + "\n\nbuild=SpektraLab Android " + UpdateCheck.versionName(this)
                             + "\n" + probe.describe();
                     android.content.ClipboardManager cm =
@@ -8413,6 +10969,10 @@ public class MainActivity extends Activity {
         }
         if (result == null) {
             result = uri.getPath();
+            // A provider can answer a `content://` URI whose path is null; the
+            // crash then lands in `lastIndexOf` and reads as an import failure
+            // with no file at all.
+            if (result == null) return null;
             int cut = result.lastIndexOf('/');
             if (cut != -1) result = result.substring(cut + 1);
         }
@@ -8646,7 +11206,14 @@ public class MainActivity extends Activity {
     private String describeImportFailure(Throwable t) {
         try { DebugSink.text("import-error", String.valueOf(t)); } catch (Throwable ignored) { }
         if (t instanceof OutOfMemoryError) {
-            return "[E-1003] 内存不足：这张图对本机太大。换一张小一点的，或先关掉其它应用再试";
+            // **Never tell the user to bring a smaller picture.** That turns our
+            // own allocation into their composition problem, and the frame that
+            // failed here is usually one the engine can render perfectly -- the
+            // 576 MB import buffer was refused by a ledger, not by the device.
+            // What is worth saying is which way out exists and that the file
+            // itself is wanted if it keeps happening.
+            return "[E-1003] 这张图解码时内存不够了。先关掉其它应用再试一次；"
+                    + "如果反复出现，把这张图的原始文件发给我，我看能不能在解码这一步省下内存";
         }
         return SpkError.format(describe(t));
     }
@@ -8728,14 +11295,26 @@ public class MainActivity extends Activity {
      */
     private void applyParams() {
         if (session == null) return;
-        // Every delta, with the frame it is being sent for: the engine treats a
-        // stock change as a rebuild, and a render that follows one has to be
-        // read next to the delta that caused it.
+        // **A delta is never sent from the UI thread.**
+        //
+        // `spk_set_params` takes `session->lock`, and `render_tier` holds that
+        // lock for the entire render. Releasing a slider mid-render therefore
+        // blocked the main thread for the rest of the render, then rebuilt the
+        // whole pipeline on the UI thread at the exact instant the render
+        // finished -- and `renderImage` queued a second rebuild right after it
+        // (`pendingRender`), so two full pipeline rebuilds landed back to back.
+        // That is "渲染期间不能进行光学调整，否则容易出现闪退" on Adreno 730.
+        //
+        // Every caller below is followed by `renderImage()`, and its render
+        // thread sends this same delta -- with the film and the paper, under
+        // the lock -- once, immediately before `renderBegin`. So this method is
+        // now a log line: the value belongs to the next render, and the next
+        // render is the only thing allowed to say so.
         try {
-            DebugSink.text("params", "render=" + rendering + " film=" + filmStock + " print=" + printStock
-                    + " overscan=" + overscanOn + " date=" + dateOn + " fmt=" + filmFormatMm);
+            DebugSink.text("params", "deferred render=" + rendering + " film=" + filmStock
+                    + " print=" + printStock + " overscan=" + overscanOn + " date=" + dateOn
+                    + " fmt=" + filmFormatMm);
         } catch (Throwable ignored) { }
-        applyParams(PREVIEW_LONG_EDGE);
     }
 
     /**
@@ -8769,7 +11348,7 @@ public class MainActivity extends Activity {
      * showed the wrong recipe and read as "the black-and-white film is broken".
      */
     private void applyParams(String stock, String paper, int longEdge) {
-        applyParamsTo(session, stock, paper, longEdge);
+        applyParamsTo(session, stock, paper, longEdge, previewSpace);
     }
 
     // ── undo ──────────────────────────────────────────────────────
@@ -8850,125 +11429,308 @@ public class MainActivity extends Activity {
 
     /** Build the one Look delta and send it to the named session. Export uses
      * this directly; it never borrows the global preview-session field. */
-    private void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper, int longEdge) {
+    // ── the delta ──────────────────────────────────────────────────
+
+    /** A JSON string literal. `q(null)` is `""`, not `"null"`. */
+    private static String q(String v) {
+        if (v == null) return "\"\"";
+        final StringBuilder o = new StringBuilder(v.length() + 2).append('"');
+        for (int i = 0; i < v.length(); ++i) {
+            final char c = v.charAt(i);
+            if (c == '"' || c == '\\') o.append('\\').append(c);
+            else if (c < 0x20) o.append(String.format(java.util.Locale.US, "\\u%04x", (int) c));
+            else o.append(c);
+        }
+        return o.append('"').toString();
+    }
+
+    private static String b(boolean v) { return v ? "true" : "false"; }
+
+    private static String f(String fmt, double v) {
+        return String.format(java.util.Locale.US, fmt, v);
+    }
+
+    /**
+     * Only the keys whose value differs from what this session already carries.
+     *
+     * <p>**Why this exists.** The delta used to name all seventy-odd fields
+     * every time. `spk_set_params` treats the *presence* of `film_stock` as a
+     * stock change, so every slider tick rebuilt the whole parameter tree
+     * (30–110 ms), and -- the part that mattered more -- a shoot-layer field in
+     * the delta makes the engine drop the cached negative. With the whole set
+     * going out on every tick, `spk_reprint` could never skip the film side: it
+     * always found an empty cache and spent 200 ms redeveloping a frame the
+     * user was only nudging the print exposure of.
+     *
+     * <p>The engine carries every field a delta leaves out (a stock change reads
+     * the session's own tree back and replays it), so sending less says exactly
+     * the same thing. What is *not* allowed to drift is this map: it is written
+     * only by the thread that draws, under `renderMutex`, and a different
+     * session object clears it.
+     */
+    private String deltaFor(SpektraLabEngine.Session target,
+                            java.util.LinkedHashMap<String, String> kv) {
+        if (target != deltaSession) {
+            deltaSent.clear();
+            deltaSession = target;
+        }
+        final StringBuilder out = new StringBuilder(768);
+        int n = 0;
+        for (java.util.Map.Entry<String, String> e : kv.entrySet()) {
+            if (e.getValue().equals(deltaSent.get(e.getKey()))) continue;
+            out.append(n++ == 0 ? "{" : ",").append('"').append(e.getKey()).append("\":")
+               .append(e.getValue());
+            deltaSent.put(e.getKey(), e.getValue());
+        }
+        if (n == 0) return null;
+        return out.append('}').toString();
+    }
+
+    /** Frame `i`'s URI, or null. The identity behind "whose EV is this". */
+    private String frameUri(int i) {
+        try {
+            if (i < 0 || i >= frames.size()) return null;
+            final Frame f = frames.get(i);
+            return f == null || f.uri == null ? null : f.uri.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** True when {@link #lastAppliedEv} was measured on the frame in front of us. */
+    private boolean appliedEvBelongsToCurrentFrame() {
+        if (!lastAppliedEvValid) return false;
+        final String here = frameUri(currentFrame);
+        return here != null && here.equals(lastAppliedEvUri);
+    }
+
+    /** `"auto_exposure_ev":0.0755` out of a progress document, for a log line. */
+    private static String appliedEvText(String progressJson) {
+        if (progressJson == null) return "(no progress json)";
+        final int at = progressJson.indexOf("\"auto_exposure_ev\"");
+        if (at < 0) return "(none)";
+        return progressJson.substring(at, Math.min(progressJson.length(), at + 40));
+    }
+
+    /**
+     * Records the EV a render applied, from the progress document read **right
+     * after** that render.
+     */
+    private void rememberAppliedEv(String progressJson, String tier) {
+        String text = appliedEvText(progressJson);
+        if (progressJson != null) {
+            final int at = progressJson.indexOf("\"auto_exposure_ev\":");
+            if (at >= 0) {
+                int i = at + "\"auto_exposure_ev\":".length();
+                while (i < progressJson.length() && progressJson.charAt(i) == ' ') ++i;
+                final int start = i;
+                while (i < progressJson.length()) {
+                    final char c = progressJson.charAt(i);
+                    if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.'
+                            || c == 'e' || c == 'E') ++i;
+                    else break;
+                }
+                if (i > start) {
+                    try {
+                        final double v = Double.parseDouble(progressJson.substring(start, i));
+                        if (!Double.isNaN(v) && !Double.isInfinite(v)) {
+                            lastAppliedEv = v;
+                            lastAppliedEvValid = true;
+                            lastAppliedEvUri = frameUri(currentFrame);
+                        }
+                    } catch (Throwable ignored) { }
+                }
+            }
+        }
+        // One line per *change*, not per frame: the live loop draws at 11 Hz and
+        // a steady EV is the normal case.
+        if (lastAppliedEv != loggedEv) {
+            loggedEv = lastAppliedEv;
+            try {
+                DebugSink.text("exposure", "tier=" + tier + " " + text
+                        + " -> pinned " + lastAppliedEv + (lastAppliedEvValid ? "" : " (none)"));
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    private void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper,
+                               int longEdge, String space) {
+        applyParamsTo(target, stock, paper, longEdge, space, false);
+    }
+
+    /**
+     * @param force send every key, ignoring what this session was already told.
+     *
+     * <p>**An export must force.** The delta is diffed against `deltaSent`, and
+     * when the export runs on the session the canvas already used, every value
+     * is "unchanged" -- so nothing was sent at all (`export-params:
+     * ... pex=0.41125 (no delta sent)`), and the engine kept whatever that
+     * session was opened with. The owner's report: the enlarger exposure was
+     * pulled to the end of its travel and every exported file came back as if
+     * it had never been touched. The engine is fine -- `print_exposure`
+     * 0.25/1.00/4.00 renders 188.65/78.29/15.29 on the host.
+     */
+    private void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper,
+                               int longEdge, String space, boolean force) {
+        if (force) {
+            // Cold bookkeeping, not a behaviour change: with an empty ledger
+            // every key differs and the loop below sends all of them.
+            deltaSession = null;
+            deltaSent.clear();
+        }
         if (target == null || stock == null) return;
         // A null paper used to return here, which meant "sent nothing at all"
         // rather than "sent everything but the paper".
         if (paper == null) paper = "kodak_portra_endura";
         pushViewAdjust();
         pushViewCurves();
+        final java.util.LinkedHashMap<String, String> kv = new java.util.LinkedHashMap<>();
+        kv.put("film_stock", q(stock));
+        kv.put("print_stock", q(paper));
+        kv.put("input_color_space", q(isRawFile ? "ProPhoto RGB" : "sRGB"));
+        kv.put("input_cctf_decoding", b(!isRawFile));
+        // **The honour system is the user's.** A JPEG used to be forced off
+        // because the engine's default meter is an arithmetic mean and metering
+        // a camera JPEG twice washed it grey. That is a reason not to *default*
+        // it on, not a reason to refuse: a frame someone deliberately asks to
+        // meter is their call, and `protect_highlights` on a JPEG is a
+        // reasonable request. The default for a JPEG is still off.
+        final String meter = sanitizeMeter(meterMethod);
+        // **An export keeps the canvas' own meter, and that is the whole
+        // point.** `auto_exposure` is applied by `node_auto_exposure` in
+        // `film_prefix` -- *before* `scene_latitude` rolls the highlights off --
+        // while `exposure_compensation_ev` is applied in `filming.expose`,
+        // after it. The same number of stops therefore produces two different
+        // pictures (host, 20 MP frame: 21410 vs 10061 mean16, p05 7271 vs 552).
+        // Turning the meter off for the export and moving its EV into
+        // `exposure_compensation_ev` is what made every file look as if the
+        // enlarger exposure had never been touched. The export is the picture
+        // on screen, so it is given the same flag *and* the same EV.
+        kv.put("auto_exposure", b(!meter.isEmpty()));
+        // **`protect_highlights`, not `balanced`, while the meter is on.**
+        // `balanced` aimed a lamp-in-a-dark-room at mid-grey and put 19 % of the
+        // frame past the paper's white; `protect_highlights` is the same meter
+        // with the highlight end held, two stops lower on that scene (+2.41 vs
+        // +5.41). The default (meter off) keeps `balanced` so the value is
+        // identical to what the reference sends.
+        kv.put("auto_exposure_method", q(meter.isEmpty() ? "balanced" : meter));
+        kv.put("scan_film", b(isPositiveStock(stock)));
+        kv.put("output_color_space", q(space == null ? "sRGB" : space));
+        kv.put("preview_long_edge", Integer.toString(longEdge));
+        kv.put("print_exposure", f("%.2f", printExposure));
+        kv.put("grain_amount", f("%.3f", wireGrain(stock)));
+        kv.put("grain_sublayers_active", b(!isMonochromeStock(stock)));
+        kv.put("halation_amount", f("%.3f", halationAmount));
+        kv.put("halation_boost_ev", f("%.2f", halationBoost));
+        kv.put("halation_scatter_amount", f("%.3f", halationScatter));
+        kv.put("halation_scatter_scale", f("%.3f", 1.0f + 11.0f * scatterRadius));
+        kv.put("halation_additive", b(halationAmount > 1.01f));
+        kv.put("halation_active", b(halationOn > 0.5f));
+        kv.put("antihalation_removed", b(antihalationRemoved > 0.5f));
+        kv.put("grain_active", b(grainOn > 0.5f));
+        kv.put("dir_couplers_active", b(true));
+        kv.put("dir_couplers_amount", f("%.3f", couplersOn));
+        kv.put("scanner_white_correction", b(scannerWhite > 0.5f));
+        // The five that used to have no sender. Ranges are the schema's:
+        // scanner.lens_blur 0..20, halation.headroom_ev 0..8,
+        // film_render.density_curve_gamma 0.2..4.
+        kv.put("glare_active", b(glareActive > 0.5f));
+        kv.put("scanner_lens_blur", f("%.2f", scannerLensBlur));
+        kv.put("halation_headroom_ev", f("%.2f", halationHeadroom));
+        kv.put("density_curve_gamma", f("%.4f", densityGamma));
+        kv.put("digital_intermediate", b(digitalIntermediate));
+        kv.put("output_cctf_encoding", b(outputCctf));
+        kv.put("hue_correction", f("%.3f", wireHueCorrection(stock)));
+        kv.put("scanner_black_correction", b(scannerBlack > 0.5f));
+        kv.put("extended_dynamic_range", b(edrOn > 0.5f));
+        kv.put("camera_filter", q(cameraFilter));
+        kv.put("scene_latitude_active", b(sceneLatitudeActive()));
+        kv.put("scene_latitude_norm", q(sceneNorm));
+        kv.put("scene_latitude_highlight_knee", f("%.2f", wireHighlightKnee()));
+        kv.put("scene_latitude_highlight_room", f("%.2f", wireHighlightRoom()));
+        kv.put("scene_latitude_shadow_knee", f("%.2f", wireShadowKnee()));
+        kv.put("scene_latitude_shadow_room", f("%.2f", wireShadowRoom()));
+        kv.put("scene_latitude_rolloff", f("%.2f", shadowRolloff));
+        kv.put("scene_latitude_max_lift", f("%.2f", maxLift));
+        kv.put("glare_amount", f("%.3f", glareAmount));
+        kv.put("film_format_mm", f("%.1f", wireFormatMm()));
+        kv.put("lens_blur_um", f("%.1f", lensBlur));
+        // **A zero-width crop is not a small crop, it is a blank frame.** The
+        // renderer honours the rectangle it is given, so `crop_w == 0` (or a
+        // rectangle pushed outside the frame) comes back as one flat colour --
+        // every film card grey, the canvas grey, and no error anywhere. Clamp
+        // to something that can actually contain pixels.
+        final float cropW = Math.max(0.01f, Math.min(1f, geometryCropW));
+        final float cropH = Math.max(0.01f, Math.min(1f, geometryCropH));
+        final float cropX = Math.max(0f, Math.min(1f - cropW, geometryCropX));
+        final float cropY = Math.max(0f, Math.min(1f - cropH, geometryCropY));
+        kv.put("geometry_crop_x", f("%.6f", cropX));
+        kv.put("geometry_crop_y", f("%.6f", geometryCropY));
+        kv.put("geometry_crop_w", f("%.6f", cropW));
+        kv.put("geometry_crop_h", f("%.6f", cropH));
+        kv.put("geometry_rotation_deg", f("%.3f", geometryRotation));
+        kv.put("geometry_quarter_turns", Integer.toString(geometryTurns));
+        kv.put("geometry_flip_h", b(geometryFlipH));
+        kv.put("geometry_flip_v", b(geometryFlipV));
+        kv.put("m_filter_shift", f("%.3f", mFilter));
+        kv.put("y_filter_shift", f("%.3f", yFilter));
+        kv.put("filter_shift_scale", f("%.1f", filterScale));
+        // **0..1 on the slider, 0..0.04 in the engine.** Measured on a real
+        // frame: 0.05 already takes the top 5 % down by 24 %, and 0.5 by 65 %
+        // -- the physics is not linear in the way the number suggested, so the
+        // slider keeps only the usable end.
+        kv.put("preflash_exposure", f("%.4f", preflash * 0.04f));
+        kv.put("overscan_active", b(overscanOn));
+        kv.put("overscan_format", q(overscanFormat));
+        kv.put("overscan_edge_text", q(edgeTextOn ? edgeTextFor(stock) : ""));
+        kv.put("overscan_fog", f("%.2f", edgeFog));
+        kv.put("overscan_leaks", f("%.2f", edgeLeaks));
+        kv.put("overscan_frame_number", f("%.0f", frameNumber));
+        kv.put("overscan_mode", q(edgeMode));
+        kv.put("overscan_gate", q(edgeGate));
+        kv.put("overscan_holes", q(edgeHoles));
+        kv.put("overscan_carrier", q(edgeCarrier));
+        kv.put("overscan_f_number", f("%.0f", edgeFNumber));
+        kv.put("overscan_camera_seed", Integer.toString(cameraSeed));
+        kv.put("overscan_frame_seed", Integer.toString(frameSeed));
+        kv.put("date_imprint_active", b(dateOn));
+        kv.put("date_imprint_text", q(dateOn ? imprintDate() : ""));
+        kv.put("date_imprint_style", q(dateStyle));
+        kv.put("date_imprint_text_b", q(dateTextB));
+        kv.put("date_imprint_data_text", q(dataText));
+        kv.put("date_imprint_placement", q(datePlacement));
+        kv.put("date_imprint_corner", q(dateCorner));
+        kv.put("date_imprint_inset_x", f("%.2f", dateInsetX));
+        kv.put("date_imprint_inset_y", f("%.2f", dateInsetY));
+        kv.put("date_imprint_size", f("%.2f", dateSize));
+        kv.put("date_imprint_ev", f("%.1f", dateEv));
+        // The user's own offset only. The meter's stops travel through the pin
+        // (`pinAutoExposureEv`), which lands in the same node the canvas used.
+        kv.put("exposure_compensation_ev", f("%.2f", cameraEv));
+
+        final String delta = deltaFor(target, kv);
+        if (delta == null) return;
         try {
             DebugSink.text("params", "draw film=" + stock + " print=" + paper
-                    + " render=" + rendering + " long=" + longEdge);
+                    + " render=" + rendering + " long=" + longEdge
+                    + " keys=" + delta.split(",").length + " [" + keyNames(delta) + "]");
         } catch (Throwable ignored) { }
-        final String delta = String.format(java.util.Locale.US,
-            "{\"film_stock\":\"%s\",\"print_stock\":\"%s\","
-            + "\"input_color_space\":\"%s\",\"input_cctf_decoding\":%s,\"auto_exposure\":%s,"
-            + "\"auto_exposure_method\":\"%s\","
-            + "\"scan_film\":%s,"
-            + "\"output_color_space\":\"sRGB\",\"preview_long_edge\":%d,"
-            + "\"print_exposure\":%.2f,\"grain_amount\":%.3f,\"grain_sublayers_active\":%s,"
-            + "\"halation_amount\":%.3f,"
-            + "\"halation_boost_ev\":%.2f,\"halation_scatter_amount\":%.3f,"
-            + "\"halation_scatter_scale\":%.3f,\"halation_additive\":%s,"
-            + "\"halation_active\":%s,\"antihalation_removed\":%s,"
-            + "\"grain_active\":%s,\"dir_couplers_active\":true,\"dir_couplers_amount\":%.3f,"
-            + "\"scanner_white_correction\":%s,\"scanner_black_correction\":%s,"
-            + "\"extended_dynamic_range\":%s,"
-            + "\"camera_filter\":\"%s\","
-            + "\"scene_latitude_active\":%s,\"scene_latitude_norm\":\"%s\","
-            + "\"scene_latitude_highlight_knee\":%.2f,"
-            + "\"scene_latitude_highlight_room\":%.2f,\"scene_latitude_shadow_knee\":%.2f,"
-            + "\"scene_latitude_shadow_room\":%.2f,"
-            + "\"scene_latitude_rolloff\":%.2f,\"scene_latitude_max_lift\":%.2f,"
-            + "\"glare_amount\":%.3f,\"film_format_mm\":%.1f,"
-            + "\"lens_blur_um\":%.1f,"
-            + "\"geometry_crop_x\":%.6f,\"geometry_crop_y\":%.6f,"
-            + "\"geometry_crop_w\":%.6f,\"geometry_crop_h\":%.6f,"
-            + "\"geometry_rotation_deg\":%.3f,\"geometry_quarter_turns\":%d,"
-            + "\"geometry_flip_h\":%s,\"geometry_flip_v\":%s,"
-            + "\"m_filter_shift\":%.3f,\"y_filter_shift\":%.3f,\"filter_shift_scale\":%.1f,"
-            + "\"preflash_exposure\":%.4f,"
-            + "\"overscan_active\":%s,\"overscan_format\":\"%s\",\"overscan_edge_text\":\"%s\","
-            + "\"overscan_fog\":%.2f,\"overscan_leaks\":%.2f,\"overscan_frame_number\":%.0f,"
-            + "\"overscan_mode\":\"%s\",\"overscan_gate\":\"%s\",\"overscan_holes\":\"%s\","
-            + "\"overscan_carrier\":\"%s\",\"overscan_f_number\":%.0f,"
-            + "\"overscan_camera_seed\":%d,\"overscan_frame_seed\":%d,"
-            + "\"date_imprint_active\":%s,\"date_imprint_text\":\"%s\",\"date_imprint_style\":\"%s\","
-            + "\"date_imprint_text_b\":\"%s\",\"date_imprint_data_text\":\"%s\","
-            + "\"date_imprint_placement\":\"%s\",\"date_imprint_corner\":\"%s\","
-            + "\"date_imprint_inset_x\":%.2f,\"date_imprint_inset_y\":%.2f,"
-            + "\"date_imprint_size\":%.2f,\"date_imprint_ev\":%.1f,\"exposure_compensation_ev\":%.2f}",
-            stock, paper,
-            isRawFile ? "ProPhoto RGB" : "sRGB",
-            isRawFile ? "false" : "true",
-            (isRawFile && metering) ? "true" : "false",
-            // **`protect_highlights`, not `balanced`, while the meter is on.**
-            // `balanced` aimed a lamp-in-a-dark-room at mid-grey and put 19 % of
-            // the frame past the paper's white; `protect_highlights` is the same
-            // meter with the highlight end held, two stops lower on this scene
-            // (+2.41 vs +5.41). The default (meter off) keeps `balanced` so the
-            // value is identical to what the reference sends.
-            //
-            // **Order matters and this is the bug that ate a build:** the
-            // format string reads `auto_exposure`, `auto_exposure_method`,
-            // `scan_film`, so these two argument lines are method-then-scan.
-            // Swapping them shifted every later argument by one and the JSON
-            // died at byte 205 -- E-9000 on every RAW import.
-            metering ? "protect_highlights" : "balanced",
-            isPositiveStock(stock) ? "true" : "false",
-            longEdge,
-            printExposure, wireGrain(stock),
-            isMonochromeStock(stock) ? "false" : "true",
-            halationAmount,
-            halationBoost, halationScatter,
-            1.0f + 11.0f * scatterRadius,
-            halationAmount > 1.01f ? "true" : "false",
-            halationOn > 0.5f ? "true" : "false",
-            antihalationRemoved > 0.5f ? "true" : "false",
-            grainOn > 0.5f ? "true" : "false",
-            couplersOn,
-            scannerWhite > 0.5f ? "true" : "false",
-            scannerBlack > 0.5f ? "true" : "false",
-            edrOn > 0.5f ? "true" : "false",
-            cameraFilter,
-            sceneLatitudeActive() ? "true" : "false", sceneNorm,
-            wireHighlightKnee(), wireHighlightRoom(),
-            wireShadowKnee(), wireShadowRoom(),
-            shadowRolloff, maxLift,
-            glareAmount, wireFormatMm(),
-            lensBlur,
-            geometryCropX, geometryCropY, geometryCropW, geometryCropH,
-            geometryRotation, geometryTurns,
-            geometryFlipH ? "true" : "false", geometryFlipV ? "true" : "false",
-            mFilter, yFilter, filterScale,
-            // **0..1 on the slider, 0..0.04 in the engine.** Measured on a
-            // real frame: 0.05 already takes the top 5 % down by 24 %, and
-            // 0.5 by 65 % -- the physics is not linear in the way the
-            // number suggested, so the slider keeps only the usable end.
-            preflash * 0.04f,
-            overscanOn ? "true" : "false", overscanFormat, edgeTextOn ? edgeTextFor(stock) : "",
-            edgeFog, edgeLeaks, frameNumber,
-            edgeMode, edgeGate, edgeHoles, edgeCarrier, edgeFNumber,
-            cameraSeed, frameSeed,
-            dateOn ? "true" : "false", dateOn ? imprintDate() : "", dateStyle,
-            esc(dateTextB), esc(dataText),
-            datePlacement, dateCorner, dateInsetX, dateInsetY, dateSize, dateEv,
-            cameraEv
-        );
         // **A JSON that does not parse is a build error, not a user error.**
-        // A `%s` added to the format without its argument in the same slot
-        // shifts every later value by one, and the engine answers
-        // "expected a value at byte N" -- which the app then surfaced as
-        // E-9000 on every import. Parsing here turns that into a log line
-        // naming the exact string.
         try {
             new org.json.JSONObject(delta);
         } catch (Throwable bad) {
             try { DebugSink.textNow("params-bad", bad + "\n" + delta); }
             catch (Throwable ignored) { }
         }
-        target.setParams(delta);
+        try {
+            target.setParams(delta);
+        } catch (Throwable t) {
+            // The engine may have applied none, some or all of it. Start over
+            // from a full delta next time rather than assume.
+            deltaSent.clear();
+            deltaSession = null;
+            throw t;
+        }
     }
 
     /** Same set, at whatever long edge the caller is rendering. The catalogue
@@ -9014,13 +11776,322 @@ public class MainActivity extends Activity {
      * all -- `pipeline.cpp` returns the input untouched.)
      */
     private void applySessionParams() {
-        if (session == null) return;
-        final String stock = filmStock;
-        if (stock == null) return;
-        applyParams(stock, PREVIEW_LONG_EDGE);
+        // **Retired.** It wrote the engine from whichever thread imported the
+        // file, racing the render thread; and the delta bookkeeping is now a
+        // map shared between renders, so "who may write it" has exactly one
+        // answer. Every field it used to send (colour space, cctf decoding,
+        // meter) is part of the full delta `renderImage` builds, and a new
+        // session starts with an empty bookkeeping map -- so the first render
+        // states all of it anyway.
     }
 
-    private void renderImage() {
+    /**
+     * A mark every three seconds, from now until the thread is interrupted.
+     *
+     * A blocking native call is a black box: `session.renderBegin` can take
+     * forty seconds on a 50 MP rebate canvas, and a process that dies inside it
+     * leaves exactly one line -- `render:call` -- whether it died at second one
+     * or second thirty-nine. The ticker turns "somewhere in there" into "after
+     * 27 seconds", which is a different investigation.
+     *
+     * It writes through {@link CrashTrail#mark}, so a tick costs a commit only
+     * when the throttle has expired; the thread is a daemon and is interrupted
+     * in a `finally`, so it can never outlive the call it is watching.
+     */
+    private Thread startTick(final String tag, final SpektraLabEngine.Session s) {
+        final Thread t = new Thread(() -> {
+            int n = 0;
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    Thread.sleep(3000);
+                    if (Thread.currentThread().isInterrupted()) return;
+                    n += 3;
+                    // **Which node, not just how long.** The engine publishes a
+                    // 96-byte label from the render thread through a seqlock;
+                    // this reads it without taking the render lock, so a render
+                    // that has been inside `filming.expose.halation` for twenty
+                    // seconds says so in the trail instead of just "20s".
+                    String stage = null;
+                    try { stage = s == null ? null : s.stageSnapshot(); } catch (Throwable ignored) { }
+                    CrashTrail.mark(this, tag + ":tick " + n + "s"
+                            + (stage == null || stage.isEmpty() ? "" : " @ " + stage));
+                }
+            } catch (InterruptedException ignored) {
+            } catch (Throwable ignored) { }
+        }, "tick-" + tag);
+        t.setDaemon(true);
+        t.start();
+        return t;
+    }
+
+    private static void stopTick(Thread t) {
+        if (t != null) t.interrupt();
+    }
+
+    // ── live preview ───────────────────────────────────────────────
+
+    /**
+     * A slider moved. Ask for a picture.
+     *
+     * <p>Called from `onProgressChanged`, so it runs a hundred times a second
+     * while a thumb is down. Everything here is a flag: the drawing happens on
+     * `liveLoop`, one frame at a time, and requests that arrive mid-frame are
+     * folded into the next one. Nothing is queued, so a fast drag cannot build
+     * a backlog it will spend the rest of the gesture draining.
+     *
+     * <p>It deliberately does not draw while `rendering`: a full-size pass
+     * holds `renderMutex` for two to four seconds, and a live frame started
+     * now would simply wait behind it and then paint 800 px over the 2048 px
+     * result. The next move asks again.
+     */
+    /** The field names inside a delta, for one readable log line. */
+    private static final java.util.regex.Pattern KEY_IN_DELTA =
+            java.util.regex.Pattern.compile("\"([A-Za-z0-9_]+)\":");
+    private static String keyNames(String delta) {
+        final java.util.regex.Matcher m = KEY_IN_DELTA.matcher(delta);
+        final StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            if (out.length() > 0) out.append(',');
+            out.append(m.group(1));
+        }
+        return out.toString();
+    }
+
+    /** FNV-1a over the pixels, the same shape the preview log uses. */
+    private static long pixelHash(int[] pixels, int size) {
+        long h = 1469598103934665603L;
+        for (int i = 0; i < size; i += 7) { h ^= pixels[i]; h *= 1099511628211L; }
+        return h;
+    }
+
+    /** One line a second is enough to tell "blocked" from "never called". */
+    private long lastLiveLog = 0;
+    private void liveLog(String what) {
+        final long now = System.currentTimeMillis();
+        if (now - lastLiveLog < 1000) return;
+        lastLiveLog = now;
+        try { DebugSink.text("live", what); } catch (Throwable ignored) { }
+    }
+
+    private void requestLivePreview() {
+        if (!uiReady || appPaused || session == null || filmStock == null) {
+            liveLog("blocked state ui=" + uiReady + " paused=" + appPaused
+                    + " session=" + (session != null) + " film=" + filmStock);
+            return;
+        }
+        if (wbDecoding) {
+            liveLog("blocked wb");
+            return;
+        }
+        // **A full-size render in flight is not a reason to drop the frame.**
+        // It used to `return` here, and since a 2048 render takes ~1.4 s while a
+        // drag lasts about as long, every request of the whole gesture landed
+        // inside one and was thrown away -- "the number moves and the picture
+        // does not", on exactly the print-layer sliders that were supposed to be
+        // the fast ones. `drawLivePreview` already takes `renderMutex` and
+        // re-checks `fullGeneration` inside it, so queueing is safe: the live
+        // frame waits for the full one to finish and paints immediately after.
+        // Dragging a slider while the canvas shows the source means "show me
+        // what this does", so the canvas has to be showing the print.
+        if (showingOriginal) {
+            showingOriginal = false;
+            setOriginalVisual(false);
+        }
+        // The shelf's queue renders other stocks into the same session; a live
+        // frame would land between two cards and be overwritten by the next
+        // one. A gesture is the user editing, which outranks the catalogue.
+        liveLog("request ok");
+        stopPrefetch();
+        if (liveThread == null) {
+            liveThread = new Thread(this::liveLoop, "live-preview");
+            liveThread.setDaemon(true);
+            liveThread.start();
+        }
+        liveWanted = true;
+        synchronized (liveLock) { liveLock.notifyAll(); }
+    }
+
+    /**
+     * Drop whatever a live frame is about to paint.
+     *
+     * <p>A full-size render is starting, or the photograph is changing. The
+     * frame already inside `renderBegin` cannot be interrupted -- it will
+     * finish and then throw its bitmap away, which is exactly what the
+     * generation check is for.
+     */
+    private void cancelLivePreview() {
+        liveGeneration.incrementAndGet();
+        liveWanted = false;
+    }
+
+    private void liveLoop() {
+        while (true) {
+            synchronized (liveLock) {
+                while (!liveWanted) {
+                    try { liveLock.wait(); } catch (InterruptedException e) { return; }
+                }
+            }
+            // Let the gesture settle for a moment: every request that arrives
+            // during this sleep folds into the frame that follows.
+            final long since = System.currentTimeMillis() - liveLastStart;
+            if (since < LIVE_MIN_GAP_MS) {
+                try { Thread.sleep(LIVE_MIN_GAP_MS - since); } catch (InterruptedException e) { return; }
+            }
+            liveWanted = false;
+            if (session == null || filmStock == null || wbDecoding) continue;
+            // The release that ended the drag has already started the full-size
+            // pass. It sets `rendering` before it takes the lock, so this is the
+            // cheap chance to stay out of its way instead of spending 0.4 s of
+            // its time on a frame it is about to replace.
+            if (rendering) continue;
+            liveLastStart = System.currentTimeMillis();
+            drawLivePreview();
+        }
+    }
+
+    /**
+     * One frame at `LIVE_LONG_EDGE`, on the same lock, with the same delta a
+     * full render sends -- stock and paper included.
+     *
+     * <p>**The delta is sent here, from this thread, inside `renderMutex`,
+     * immediately before `renderBegin`.** That is the one rule the 1.5.0l fix
+     * rests on (`applyParams()` on the UI thread is a log line, not a writer):
+     * `spk_set_params` takes the session lock, `render_tier` holds it for the
+     * whole render, and a delta sent from the UI thread parks the main thread
+     * behind a live render -- the exact stack that used to take Adreno 730
+     * down mid-drag.
+     *
+     * <p>Nothing else here is the full path's job. No JPEG to the sink, no
+     * progress json, no undo entry, no persist: this bitmap lives until the
+     * next frame replaces it.
+     */
+    private void drawLivePreview() {
+        final SpektraLabEngine.Session s = session;
+        final String stock = filmStock;
+        if (s == null || stock == null) return;
+        // **Read the generation, never advance it here.**
+        //
+        // `runOnUiThread` only posts; this method returns immediately and the
+        // loop starts the next frame, whose `++` lands microseconds later. The
+        // UI thread then compares against a counter that has already moved past
+        // the frame it was handed and drops it -- measured at 18 of 20 frames
+        // thrown away, which is exactly "the number changes and the picture does
+        // not". Advancing on cancel alone keeps the invalidation the caller
+        // actually means: stop showing frames from before the user let go.
+        final int gen = liveGeneration.get();
+        final int fullGen = fullGeneration.get();
+        final int frame = currentFrame;
+        final String paper = printStock == null ? "kodak_portra_endura" : printStock;
+        Bitmap bmp = null;
+        long liveHash = 0;
+        synchronized (renderMutex) {
+            // `renderImage` may have taken the session while this frame was
+            // waiting for the lock.
+            if (s != session || fullGen != fullGeneration.get()) return;
+            try {
+                applyParams(stock, paper, LIVE_LONG_EDGE);
+                // **Reprint, not render.** The delta above only names what
+                // moved, so a print- or view-layer change never touches the
+                // cached negative and this skips the whole film side: 32 ms
+                // against 200 ms at this size. A shoot-layer change drops that
+                // cache inside `spk_set_params` itself, so the fallback is a
+                // full develop -- correct, just slow, and only on the sliders
+                // that genuinely need it (grain, halation, geometry, rebate).
+                final long liveStart = System.currentTimeMillis();
+                final int[] dims = s.renderBegin("live", true);
+                final int w = dims[0], h = dims[1];
+                if (w <= 0 || h <= 0) throw new RuntimeException("empty live frame");
+                if (livePixels == null || livePixels.length < w * h) livePixels = new int[w * h];
+                final int copied = s.copyArgbRange(livePixels, 0, h);
+                if (copied != w * h) throw new RuntimeException("live copy " + copied + "/" + (w * h));
+                bmp = newFrameBitmap(w, h);
+                bmp.setPixels(livePixels, 0, w, 0, 0, w, h);
+                s.renderEnd();
+                try { rememberAppliedEv(s.progressJson(), "live"); } catch (Throwable ignored) { }
+                liveHash = pixelHash(livePixels, w * h);
+                try { DebugSink.text("live", "frame " + w + "x" + h + " "
+                        + (System.currentTimeMillis() - liveStart) + " ms "
+                        + Long.toHexString(liveHash)); }
+                catch (Throwable ignored) { }
+            } catch (Throwable t) {
+                try { s.renderEnd(); } catch (Throwable ignored) { }
+                try { DebugSink.text("live", "fail " + describe(t)); } catch (Throwable ignored) { }
+                return;
+            }
+        }
+        final Bitmap out = bmp;
+        final long hash = liveHash;
+        runOnUiThread(() -> {
+            if (!uiReady || gen != liveGeneration.get()) {
+                liveLog("drop: superseded");
+                return;
+            }
+            if (fullGen != fullGeneration.get()) {
+                liveLog("drop: a full render started");
+                return;
+            }
+            if (frame != currentFrame) {
+                liveLog("drop: frame changed");
+                return;
+            }
+            if (session == null || compare == null) {
+                liveLog("drop: no session/canvas");
+                return;
+            }
+            lastRenderedBitmap = out;
+            compare.setAfter(out);
+            setStage(1, null);
+            // The other half of the comparison: `frame` says what was produced,
+            // this says what the canvas was handed. If they disagree the loss is
+            // between the two, not in the render.
+            try { DebugSink.text("live", "canvas " + out.getWidth() + "x" + out.getHeight()
+                    + " " + Long.toHexString(hash)); } catch (Throwable ignored) { }
+        });
+    }
+
+    /**
+     * Hand the GPU pool back when a render left it much larger than the frame.
+     *
+     * <p>**Shoot-layer edits are the expensive ones.** Each one drops the cached
+     * negative, so `run_film` allocates a new set of planes and the pool keeps
+     * them for the next render. One edit is fine; ten in a row (which is what a
+     * switch that "does nothing" invites) leaves gigabytes parked, and Android
+     * answers by killing the launcher. Trimming costs one re-allocation on the
+     * next render, which is far cheaper than that.
+     */
+    private void trimPoolIfBloated() {
+        if (engine == null) return;
+        try {
+            final String report = engine.memoryReport();
+            // `"total":N` is the pool's own byte count.
+            final int at = report.indexOf("\"total\":");
+            if (at < 0) return;
+            int i = at + 8;
+            final StringBuilder digits = new StringBuilder();
+            while (i < report.length() && Character.isDigit(report.charAt(i))) digits.append(report.charAt(i++));
+            if (digits.length() == 0) return;
+            final long total = Long.parseLong(digits.toString());
+            if (total > (1536L << 20)) {
+                // **Under the render lock.** Trimming destroys device buffers;
+                // a render that starts between the measurement and the trim
+                // would hand the GPU memory that is being freed.
+                long freed;
+                synchronized (renderMutex) { freed = engine.trimPool(); }
+                try { DebugSink.text("pool-trim",
+                        "after render: total was " + (total >> 20) + " MB, freed "
+                                + (freed >> 20) + " MB"); } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    private void renderImage() { renderImage(PREVIEW_LONG_EDGE); }
+
+    private void renderImage(int longEdge) {
+        // The full-size pass owns the canvas from here. A live frame still in
+        // flight would otherwise land a moment later and put 800 px on top of
+        // the result the user waited for.
+        cancelLivePreview();
+        fullGeneration.incrementAndGet();
         CrashTrail.mark(this, "render:begin");
         // **A decode in flight owns the session.** It is closed for a few
         // seconds while LibRaw re-demosaics; a render that walked in then would
@@ -9032,6 +12103,16 @@ public class MainActivity extends Activity {
         if (session == null) {
             try { DebugSink.text("render", "no session, lastImportError=" + lastImportError); }
             catch (Throwable ignored) { }
+            // **A frame in the strip means an import is on its way.** Coming
+            // back from the background walks through here while `loadImage` is
+            // still decoding -- there is a picture loading, so "还没有可渲染的
+            // 图像" is the wrong sentence and the dialog is pure noise. Ask for
+            // the render again once the import finishes; if the import really
+            // failed, its own message is the one to show.
+            if (!frames.isEmpty() && lastImportError == null) {
+                pendingRender = true;
+                return;
+            }
             showErrorDialog("还没有可渲染的图像", lastImportError == null
                     ? "先导入一张照片。点画布中央的「选择照片」，或点下方「换图」；RAW / HEIC 请选「从文件管理器选择」。"
                     : "上次导入没有完成：\n\n" + lastImportError);
@@ -9046,6 +12127,7 @@ public class MainActivity extends Activity {
             // One native result buffer for the whole process: two renders would
             // interleave on it and hand back another frame's dimensions.
             try { DebugSink.text("render", "already rendering"); } catch (Throwable ignored) { }
+            Probe.log("render", "queued film=" + filmStock + " pending=" + pendingRender);
             statusText.setText("Rendering…");
             // Not dropped: a tap that lands mid-render is the *last* choice the
             // user made, so it becomes the next render instead of a toast.
@@ -9076,28 +12158,45 @@ public class MainActivity extends Activity {
                 // finishes and can put a stock back onto this session. Take the
                 // film the user picked, under the same lock the render runs
                 // under, so the picture and the edge text cannot disagree.
-                applyParams(renderedStock, PREVIEW_LONG_EDGE);
-                int[] dims = session.renderBegin("live");
+                CrashTrail.markNow(MainActivity.this, "render:lock");
+                applyParams(renderedStock, longEdge);
+                Probe.log("render", "apply film=" + renderedStock + " long=" + longEdge
+                        + " src=" + sourceWidth + "x" + sourceHeight);
+                CrashTrail.markNow(MainActivity.this, "render:params");
+                // **The black box is `renderBegin`.** Everything before it is
+                // Java and leaves a stack; everything after it is arithmetic on
+                // a frame that already exists. So the ticker wraps exactly that
+                // call, and `render:returned` is the first proof it came back.
+                Thread ticker = startTick("render", session);
+                CrashTrail.markNow(MainActivity.this, "render:call");
+                int[] dims;
+                try {
+                    dims = session.renderBegin("live");
+                } finally {
+                    stopTick(ticker);
+                }
                 int w = dims[0], h = dims[1];
+                CrashTrail.markNow(MainActivity.this, "render:returned " + w + "x" + h);
                 if (w <= 0 || h <= 0) throw new RuntimeException("engine returned empty frame");
 
-                Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                CrashTrail.markNow(MainActivity.this, "render:alloc " + w + "x" + h);
+                Bitmap bmp = newFrameBitmap(w, h);
                 int[] pixels = new int[w * h];
+                CrashTrail.markNow(MainActivity.this, "render:copy");
                 int copied = session.copyArgbRange(pixels, 0, h);
                 if (copied != w * h) {
                     throw new RuntimeException("pixel copy incomplete " + copied + "/" + (w * h));
                 }
                 bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+                CrashTrail.markNow(MainActivity.this, "render:setPixels");
                 session.renderEnd();
+                CrashTrail.markNow(MainActivity.this, "render:end");
                 // What the meter did to *this* frame. A render that looks dark
                 // is either the film's curve or an exposure the engine decided
                 // on, and the two are indistinguishable by eye -- one line of
                 // numbers settles it.
                 try {
-                    final String pj = session.progressJson();
-                    final int at = pj == null ? -1 : pj.indexOf("\"auto_exposure_ev\"");
-                    DebugSink.text("exposure", "tier=live " + (at < 0 ? "(no progress json)"
-                            : pj.substring(at, Math.min(pj.length(), at + 40))));
+                    rememberAppliedEv(session.progressJson(), "full");
                 } catch (Throwable ignored) { }
                 // The rebate's own numbers, next to the buffer they belong to.
                 // "the edge is wrong in the export but right in the preview" is
@@ -9134,6 +12233,11 @@ public class MainActivity extends Activity {
                     showingOriginal = false;
                     compare.setAfter(bmp);
                     setStage(1, null);
+                    // Give the pool back if this render left it far larger than
+                    // the frame -- ten shoot-layer edits in a row is what parks
+                    // gigabytes and gets the launcher killed. Off the UI thread:
+                    // trimming destroys buffers and waits on the device.
+                    new Thread(MainActivity.this::trimPoolIfBloated, "pool-trim").start();
                     setStep(2);
                     lastRenderedBitmap = bmp;
                     // The histogram describes what the canvas shows, so it moves
@@ -9159,6 +12263,9 @@ public class MainActivity extends Activity {
                     progressBar.setVisibility(View.GONE);
                     busyLabel.setVisibility(View.GONE);
                     rendering = false;
+                    // The canvas now shows this look; it is also the version
+                    // that has to survive a kill from recents.
+                    schedulePersist();
                     if (pendingRender) { pendingRender = false; renderImage(); }
                 });
             }
@@ -9221,6 +12328,416 @@ public class MainActivity extends Activity {
                         loadImage(sourceUri);
                     }
                 }));
+    }
+
+    /**
+     * Put the finished file into a collection the user can find.
+     *
+     * <p>**Three doors, because the other end of `insert` is somebody else's
+     * code.** A Mali device reported `FileNotFoundException: No item at
+     * content://media/external/images/media/1000068740`: the row `insert` had
+     * just handed back was not readable through `openOutputStream`. The pixels
+     * are already in `tmp` at that point -- two minutes of rendering -- so
+     * failing the whole export over a provider that will not open its own new
+     * row is the wrong trade. Retry once under a fresh name (the usual cause is
+     * a name collision the provider resolved in a way it cannot then open),
+     * then try Downloads, which is a different collection and is served by a
+     * different code path on every ROM met so far.
+     */
+    private Uri writeExportFile(java.io.File tmp, String baseName, String ext, String mime)
+            throws java.io.IOException {
+        final android.content.ContentResolver resolver = getContentResolver();
+        Throwable lastError = null;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            final String name = attempt == 0 ? baseName
+                    : "SpektraLab_" + System.currentTimeMillis() + "_r" + ext;
+            final android.content.ContentValues v = new android.content.ContentValues();
+            v.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name);
+            v.put(android.provider.MediaStore.Images.Media.MIME_TYPE, mime);
+            v.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                    android.os.Environment.DIRECTORY_PICTURES + "/SpektraLab");
+            v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
+            Uri uri = null;
+            try { uri = resolver.insert(
+                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v); }
+            catch (Throwable t) { lastError = t; }
+            if (uri == null) continue;
+            try {
+                copyInto(resolver, tmp, uri);
+                v.clear();
+                v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0);
+                resolver.update(uri, v, null, null);
+                return uri;
+            } catch (Throwable t) {
+                lastError = t;
+                try { resolver.delete(uri, null, null); } catch (Throwable ignored) { }
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            Uri uri = null;
+            try {
+                final android.content.ContentValues v = new android.content.ContentValues();
+                v.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                        "SpektraLab_" + System.currentTimeMillis() + ext);
+                v.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+                v.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS + "/SpektraLab");
+                v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+                uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (uri != null) {
+                    copyInto(resolver, tmp, uri);
+                    v.clear();
+                    v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                    resolver.update(uri, v, null, null);
+                    return uri;
+                }
+            } catch (Throwable t) {
+                lastError = t;
+                if (uri != null) { try { resolver.delete(uri, null, null); } catch (Throwable ignored) { } }
+            }
+        }
+        throw new java.io.IOException("相册写入失败（" + lastError + "）。照片已经渲染好，"
+                + "是系统相册没有接受这个文件——重启手机再导一次；"
+                + "如果每次都是这样，把这条发给我");
+    }
+
+    /** Stream `tmp` into an already-inserted MediaStore row. */
+    private static void copyInto(android.content.ContentResolver resolver,
+                                 java.io.File tmp, Uri uri) throws java.io.IOException {
+        try (java.io.InputStream in = new java.io.FileInputStream(tmp);
+             java.io.OutputStream out = resolver.openOutputStream(uri)) {
+            if (out == null) throw new java.io.IOException("openOutputStream returned null");
+            final byte[] buf = new byte[262144];
+            int len;
+            while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
+        }
+    }
+
+    /**
+     * Ask the engine to analyse this frame again: exposure and the three
+     * neutral filters, exactly what macOS calls 「配光」.
+     *
+     * <p>Nothing here is new state -- the engine already owns these numbers and
+     * derives them per stock. What the button buys is the ability to *re-run*
+     * the analysis after the stock, paper or light changed, and to see what it
+     * came back with. 「恢复」 then puts the enlarger back on those numbers by
+     * zeroing the offsets the user may have dialled in (brightness, yellow,
+     * magenta, pre-flash) -- the neutral filters themselves are the engine's and
+     * are not offsets.
+     */
+    private void resolvePrinting() {
+        final SpektraLabEngine.Session s = session;
+        if (s == null || filmStock == null) {
+            showActionSheet("还没有可配光的照片", "先导入一张照片并选一支胶片。",
+                    new String[]{"知道了"}, which -> { });
+            return;
+        }
+        statusText.setText("配光中…");
+        new Thread(() -> {
+            String json = null;
+            String failure = null;
+            try {
+                synchronized (renderMutex) {
+                    if (s != session) return;
+                    json = s.solve("both");
+                }
+            } catch (Throwable e) {
+                failure = describeImportFailure(e);
+            }
+            final String out = json, err = failure;
+            runOnUiThread(() -> {
+                if (err != null) {
+                    statusText.setText("配光失败");
+                    showErrorDialog("配光失败", err);
+                    return;
+                }
+                String balanced = "?", ch = "?", mg = "?", ye = "?";
+                try {
+                    final org.json.JSONObject o = new org.json.JSONObject(out);
+                    final org.json.JSONObject ev = o.optJSONObject("exposure_ev_by_method");
+                    if (ev != null) balanced = String.format(java.util.Locale.US, "%+.2f EV",
+                            ev.optDouble("balanced", 0.0));
+                    final org.json.JSONObject sp = o.optJSONObject("solved_params");
+                    if (sp != null) {
+                        ch = String.format(java.util.Locale.US, "%.1f", sp.optDouble("c_filter_neutral", 0.0));
+                        mg = String.format(java.util.Locale.US, "%.1f", sp.optDouble("m_filter_neutral", 0.0));
+                        ye = String.format(java.util.Locale.US, "%.1f", sp.optDouble("y_filter_neutral", 0.0));
+                    }
+                } catch (Throwable ignored) { }
+                statusText.setText("配光完成 " + balanced);
+                showActionSheet("配光结果",
+                        "测光 " + balanced + "\n\n中性滤镜（引擎按胶片与光源查表）\n"
+                                + "青 " + ch + " · 品红 " + mg + " · 黄 " + ye
+                                + "\n\n「恢复放大机」会把亮度、黄、品红、预闪归零，"
+                                + "让画面回到配光算出的中性。",
+                        new String[]{"恢复放大机", "关闭"}, which -> {
+                            if (which != 0) return;
+                            printExposure = 1.0f;
+                            mFilter = 0f;
+                            yFilter = 0f;
+                            preflash = 0f;
+                            // The panel has one shared knob, so the readout
+                            // follows whatever is selected; refreshing it is
+                            // enough, and it keeps working whichever row the
+                            // user happens to be on.
+                            refreshKnob();
+                            applyParams();
+                            renderImage();
+                        });
+            });
+        }, "solve").start();
+    }
+
+    // ---------------------------------------------------------------- batch
+    // **Import adds chips without decoding them.** A frame renders when it is
+    // opened, and decoding twenty RAW files up front would take two minutes and
+    // hold a hundred megabytes per file. Export is the opposite -- every frame
+    // has to be built at full size -- so it runs one at a time through the same
+    // path a single export uses.
+
+    private volatile boolean batchExportRunning = false;
+    private volatile boolean batchExportAbort = false;
+
+    /** Take the grant, or keep a copy that survives a restart. Null on failure. */
+    private Uri persistOrCopy(Uri uri) {
+        try {
+            getContentResolver().takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            return uri;
+        } catch (Throwable ignored) { }
+        return privateCopy(uri);
+    }
+
+    private static boolean isRawName(String name) {
+        final String lower = name == null ? "" : name.toLowerCase(java.util.Locale.US);
+        return lower.endsWith(".rw2") || lower.endsWith(".raw")
+                || lower.endsWith(".dng") || lower.endsWith(".arw")
+                || lower.endsWith(".nef") || lower.endsWith(".cr2")
+                || lower.endsWith(".cr3") || lower.endsWith(".orf")
+                || lower.endsWith(".raf") || lower.endsWith(".pef")
+                || lower.endsWith(".srw") || lower.endsWith(".x3f")
+                || lower.endsWith(".rwl") || lower.endsWith(".3fr")
+                || lower.endsWith(".mrw") || lower.endsWith(".erf");
+    }
+
+    private Bitmap systemThumb(Uri uri) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                return getContentResolver().loadThumbnail(uri,
+                        new android.util.Size(Math.max(1, dp(42)), Math.max(1, dp(42))), null);
+            }
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    /** Add a chip without decoding anything. False when it is already there. */
+    private boolean addFrameOnly(Uri uri) {
+        if (uri == null) return false;
+        for (Frame f : frames) {
+            if (f.uri != null && f.uri.toString().equals(uri.toString())) return false;
+        }
+        String name = getFileName(uri);
+        if (name == null || name.isEmpty()) name = "photo";
+        final Frame frame = new Frame(uri, isRawName(name), name);
+        frame.look = defaultLook();
+        frame.thumb = systemThumb(uri);
+        frames.add(frame);
+        persistThumb(frame);
+        return true;
+    }
+
+    private void startBatchImport(final java.util.List<Uri> uris) {
+        final int total = uris.size();
+        runOnUiThread(() -> {
+            if (statusText != null) statusText.setText("正在加入 " + total + " 张照片…");
+        });
+        new Thread(() -> {
+            int added = 0, failed = 0;
+            for (Uri u : uris) {
+                final Uri target = persistOrCopy(u);
+                if (target == null) { ++failed; continue; }
+                if (addFrameOnly(target)) ++added; else ++failed;
+            }
+            final int a = added, f = failed;
+            runOnUiThread(() -> {
+                if (a > 0) {
+                    saveSessionState();
+                    rebuildFrameChips();
+                }
+                final String msg = "已加入 " + a + " 张" + (f > 0 ? "，跳过 " + f + " 张" : "");
+                if (statusText != null) statusText.setText(msg);
+                showInAppToast(msg);
+                if (a > 0 && currentFrame < 0 && !frames.isEmpty()) {
+                    reopenFrame(frames.size() - a);
+                }
+            });
+        }, "SpektraLab-batch-import").start();
+    }
+
+    private void uiWait(Runnable r, long ms) {
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        runOnUiThread(() -> {
+            try { r.run(); } catch (Throwable ignored) { } finally { latch.countDown(); }
+        });
+        try { latch.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS); }
+        catch (InterruptedException ignored) { }
+    }
+
+    private boolean pollUntil(java.util.function.BooleanSupplier cond, long ms) {
+        final long end = System.currentTimeMillis() + ms;
+        while (System.currentTimeMillis() < end) {
+            if (cond.getAsBoolean()) return true;
+            try { Thread.sleep(250); } catch (InterruptedException ie) { return false; }
+        }
+        return false;
+    }
+
+    /**
+     * Export every frame, one at a time, each with its own Look.
+     *
+     * <p>It goes through `reopenFrame` + `exportImage` rather than a second
+     * implementation: opening a frame is how the app learns its size, its white
+     * balance and its meter, and a parallel path would drift from it. The cost
+     * is that the canvas shows each frame as it is processed.
+     */
+    private void startBatchExport(String format, String tier) {
+        if (batchExportRunning) {
+            showInAppToast("批量导出已经在跑");
+            return;
+        }
+        if (frames.size() < 2) {
+            showInAppToast("只有一张照片，不需要批量");
+            return;
+        }
+        saveLookIntoFrames();
+        final int total = frames.size();
+        final int home = currentFrame;
+        batchExportRunning = true;
+        batchExportAbort = false;
+        // **Stop the shelf that is already running.** `startPrefetch` refuses
+        // to start a new one while a batch is going, but the queue the last
+        // import kicked off keeps painting twenty-five cards -- and the trail
+        // of the crash at `export:write full jpeg` shows it doing exactly that
+        // inside the export: twenty-five pipeline rebuilds competing for the
+        // same pool with a 12.6 MP render that is about to allocate.
+        stopPrefetch();
+        if (sharePill != null) sharePill.setVisibility(View.GONE);
+        new Thread(() -> {
+            int ok = 0, failed = 0;
+            try {
+            for (int i = 0; i < total; ++i) {
+                if (batchExportAbort) break;
+                final int index = i;
+                final Frame frame = frames.get(index);
+                final String name = frame.name == null ? ("第 " + (i + 1) + " 张") : frame.name;
+                if (frame.look == null || frame.look.filmStock == null) {
+                    ++failed;               // nothing to print: no film chosen
+                    continue;
+                }
+                runOnUiThread(() -> {
+                    if (statusText != null) {
+                        statusText.setText("批量导出 " + (index + 1) + "/" + total + "：" + name);
+                    }
+                    if (exportProgressBar != null) exportProgressBar.setVisibility(View.VISIBLE);
+                });
+                // **State the Look before the decode, every frame.** `loadImage`
+                // also applies it, but only while `reopeningFrame` survives the
+                // trip; stating it here makes the export independent of that
+                // flag. Reported: six frames came back with the film but not
+                // the print exposure or the optics, which is what a half-applied
+                // Look looks like.
+                try {
+                    DebugSink.text("batch-look", (index + 1) + "/" + total
+                            + " film=" + frame.look.filmStock
+                            + " print=" + frame.look.printStock
+                            + " exp=" + frame.look.printExposure
+                            + " grain=" + frame.look.grainAmount
+                            + " hal=" + frame.look.halationAmount
+                            + " glare=" + frame.look.glareAmount
+                            + " edr=" + frame.look.edrOn
+                            + " viewC=" + frame.look.viewContrast);
+                } catch (Throwable ignored) { }
+                uiWait(() -> {
+                    applyLook(frame.look);
+                    // **Drop the previous frame's session before asking for
+                    // this one.** `loadImage` closes it on its own worker, so
+                    // for a moment `session` still held the *old* object -- the
+                    // poll below was satisfied by it, the export started, and
+                    // the worker closed that session underneath (NPE in
+                    // `exportJpeg`, E-9000). Closing it here, under the lock,
+                    // makes `session != null` mean this frame and nothing else.
+                    synchronized (renderMutex) {
+                        if (session != null) { session.close(); session = null; }
+                    }
+                    // **Forced, even for the frame already on screen.** The
+                    // shortcut `reopenFrame` takes (`index == currentFrame &&
+                    // session != null`) leaves the first export on the session
+                    // the import opened, while every later frame is re-decoded.
+                    reopenFrameForced(index);
+                }, 5000);
+                if (!pollUntil(() -> session != null, 180000)) {
+                    ++failed;
+                    try { DebugSink.text("batch-export", "open failed " + index + " " + name); }
+                    catch (Throwable ignored) { }
+                    continue;
+                }
+                final java.util.concurrent.CountDownLatch done =
+                        new java.util.concurrent.CountDownLatch(1);
+                uiWait(() -> exportImage(format, tier, done::countDown), 5000);
+                boolean finished = false;
+                try { finished = done.await(20, java.util.concurrent.TimeUnit.MINUTES); }
+                catch (InterruptedException ie) { break; }
+                if (finished) ++ok; else ++failed;
+                // **Before the next frame asks for its own planes.**
+                uiWait(() -> {
+                    synchronized (renderMutex) {
+                        if (session != null) { session.close(); session = null; }
+                    }
+                }, 5000);
+                try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
+                // **The next frame starts from zero.** The decoded raw cache
+                // holds one frame's unpacked plane, and the heap still carries
+                // the last frame's bitmaps; six frames of that is what made the
+                // fifth one die.
+                try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
+                System.gc();
+            }
+            } finally {
+                // **The flag has to come down even when the loop throws**, or
+                // every later batch is refused and every error dialog is eaten.
+                final int fok = ok, ffail = failed;
+                runOnUiThread(() -> {
+                    batchExportRunning = false;
+                    if (exportProgressBar != null) exportProgressBar.setVisibility(View.GONE);
+                    final String msg = "批量导出完成：" + fok + " 张成功"
+                            + (ffail > 0 ? "，" + ffail + " 张失败（多半是没选胶片或打不开）" : "");
+                    if (statusText != null) statusText.setText(msg);
+                    showInAppToast(msg);
+                    if (home >= 0 && home < frames.size()) {
+                        final int back = home;
+                        reopenFrame(back);
+                        // **The restore has to render.** `loadImage` deliberately
+                        // stops at the original, so without this the canvas stayed
+                        // on "RENDERING / Decoding RAW…" after a batch that had
+                        // already finished.
+                        new Thread(() -> {
+                            if (!pollUntil(() -> session != null, 120000)) return;
+                            runOnUiThread(() -> {
+                                // **800, not 2048.** Six full-size exports leave
+                                // the pool carrying a gigabyte of lookup tables
+                                // that nothing reclaims; the redisplay then asked
+                                // for another 20 MP chain and the system killed
+                                // the process right there -- two reports, both
+                                // "it dies when it goes back to the first frame".
+                                // The frame is a preview at this point anyway;
+                                // tapping a film re-renders at full size.
+                                if (back < frames.size() && filmStock != null) renderImage(LIVE_LONG_EDGE);
+                            });
+                        }, "SpektraLab-batch-restore").start();
+                    }
+                });
+            }
+        }, "SpektraLab-batch-export").start();
     }
 
     private void exportImage() {
@@ -9459,7 +12976,24 @@ public class MainActivity extends Activity {
     }
 
     private void exportImage(String format, String tier) {
+        exportImage(format, tier, null);
+    }
+
+    private void exportImage(String format, String tier, final Runnable onDone) {
         CrashTrail.mark(this, "export:begin");
+        // **The export's exposure, decided once, before any branch.** The open
+        // params, the forced delta and the pin all have to agree: the canvas'
+        // meter flag, the canvas' EV, and only the *user's* offset in
+        // `exposure_compensation_ev` (see `applyParamsTo`).
+        final String exportMeter = sanitizeMeter(meterMethod);
+        final boolean exportAutoExposure = !exportMeter.isEmpty();
+        // Only the frame the canvas last measured may hand its EV over; a batch
+        // walks the strip without rendering, so the previous frame's EV would
+        // otherwise be pinned onto this one.
+        final boolean pinEv = exportAutoExposure && appliedEvBelongsToCurrentFrame();
+        // A live frame is 800 px and this is about to build a 4175 px one;
+        // letting the two queue behind the same lock buys nothing.
+        cancelLivePreview();
         final boolean tiff = "tiff".equals(format);
         final boolean dng = "dng".equals(format);
         final String ext = dng ? ".dng" : tiff ? ".tif" : ".jpg";
@@ -9467,10 +13001,12 @@ public class MainActivity extends Activity {
         if (sharePill != null) sharePill.setVisibility(View.GONE);
         if (engine == null || session == null) {
             showInAppToast("请先导入照片");
+            if (onDone != null) onDone.run();
             return;
         }
         if (filmStock == null) {
             showInAppToast("先选一张胶片，再导出");
+            if (onDone != null) onDone.run();
             return;
         }
         // The shelf queue prints 800 px cards through this same session, and a
@@ -9548,9 +13084,17 @@ public class MainActivity extends Activity {
                     while (spinning.get()) {
                         try {
                             final long el = (System.currentTimeMillis() - t0) / 1000;
-                            DebugSink.textNow("export-mem", el + "s avail="
+                            final String line = el + "s avail="
                                     + (availableMemoryBytes() >> 20) + "MiB "
-                                    + (engine == null ? "no engine" : engine.memoryReport()));
+                                    + (engine == null ? "no engine" : engine.memoryReport());
+                            // **On disk first.** `textNow` needs the network; a
+                            // phone in flight mode -- or a process killed at the
+                            // moment it mattered -- loses the sample entirely,
+                            // which is why the 18-second export crash came back
+                            // with none. The ring is a SharedPreferences write
+                            // and survives the kill; the report picks it up.
+                            CrashTrail.markNow(MainActivity.this, "export-mem " + line);
+                            DebugSink.textNow("export-mem", line);
                         } catch (Throwable ignored) { }
                         try { Thread.sleep(5000); } catch (InterruptedException ie) { break; }
                     }
@@ -9570,6 +13114,7 @@ public class MainActivity extends Activity {
                 int[] info;
                 try {
                     synchronized (renderMutex) {
+                        CrashTrail.markNow(MainActivity.this, "export:lock");
                         // **Give the pool back before the export asks for more.**
                         // The preview that has just been rendered leaves its
                         // working set pooled, and a 40 MP export then wants the
@@ -9601,18 +13146,89 @@ public class MainActivity extends Activity {
                         // rather than a failure.
                         final SpektraLabEngine.Session keep = session;
                         boolean keepSuspended = false;
-                        if (keep != null) {
+                        // **A batch closes this session a moment later anyway.**
+                        // Suspending writes a frame's worth of planes to the
+                        // cache directory and resuming allocates them again --
+                        // once per frame, for a session that is about to die.
+                        if (keep != null && !batchExportRunning) {
                             try {
                                 keepSuspended = keep.suspend();
                                 DebugSink.text("export", "preview suspended=" + keepSuspended
                                         + "; report " + engine.memoryReport());
                             } catch (Throwable ignored) { }
                         }
+                        CrashTrail.markNow(MainActivity.this, "export:suspend " + keepSuspended);
                         SpektraLabEngine.Session fresh = null;
-                        if (keep != null && sourcePixels != null && sourceWidth > 0 && sourceHeight > 0
-                                && (long) sourceWidth * sourceHeight <= 30_000_000L) {
-                            try { fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3); }
-                            catch (Throwable ignored) { fresh = null; }
+                        // **No area cap here.** This read `<= 30 MP`, a leftover
+                        // from when `sourcePixels` was a `ByteBuffer.allocateDirect`
+                        // capped by the heap growth limit. A 44 MP JPEG fell through
+                        // it, had no `rawFilePath` either, and so exported on the
+                        // *preview* session: `full` on a 2048 px source, which is
+                        // both the wrong size and the shape that failed on the
+                        // Mali report. The buffer is malloc'd now and the cap is
+                        // thirty times smaller than what the phones can hold.
+                        if (keep != null && sourcePixels != null && sourceWidth > 0 && sourceHeight > 0) {
+                            // **The export goes back to the file for its size.**
+                            // `sourcePixels` carries whatever the import's
+                            // memory estimate allowed, and that estimate moves
+                            // with free RAM: the same JPEG landed at 42 MP one
+                            // minute and 36 MP the next, so two exports of one
+                            // photograph came out 7523x5642 and 6990x5242.
+                            // Re-decoding at the file's own size is the only
+                            // answer that does not depend on what the phone was
+                            // doing at import time. If it does not fit, the
+                            // engine says which plane it wanted -- an honest
+                            // refusal beats a silently smaller file.
+                            Bitmap fullBmp = null;
+                            ByteBuffer fullBuf = null;
+                            try {
+                                final String path = sourceUri != null ? getFilePathFromUri(sourceUri) : null;
+                                if (path != null) {
+                                    final android.graphics.BitmapFactory.Options o =
+                                            new android.graphics.BitmapFactory.Options();
+                                    o.inSampleSize = 1;
+                                    o.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                                    fullBmp = android.graphics.BitmapFactory.decodeFile(path, o);
+                                }
+                            } catch (Throwable ignored) { fullBmp = null; }
+                            final boolean bigger = fullBmp != null
+                                    && (long) fullBmp.getWidth() * fullBmp.getHeight()
+                                       > (long) sourceWidth * sourceHeight;
+                            if (bigger) {
+                                final int fw = fullBmp.getWidth(), fh = fullBmp.getHeight();
+                                try {
+                                    fullBuf = SpektraLabEngine.allocDirect((long) fw * fh * 12L)
+                                            .order(ByteOrder.nativeOrder());
+                                    final int[] row = new int[fw];
+                                    for (int y = 0; y < fh; y++) {
+                                        fullBmp.getPixels(row, 0, fw, 0, y, fw, 1);
+                                        for (int px : row) {
+                                            fullBuf.putFloat(((px >> 16) & 0xFF) / 255.0f);
+                                            fullBuf.putFloat(((px >> 8) & 0xFF) / 255.0f);
+                                            fullBuf.putFloat((px & 0xFF) / 255.0f);
+                                        }
+                                    }
+                                    fullBuf.rewind();
+                                    fresh = engine.openSession(fullBuf, fw, fh, 3);
+                                    CrashTrail.markNow(MainActivity.this,
+                                            "export:full-size " + fw + "x" + fh
+                                                    + " (import was " + sourceWidth + "x" + sourceHeight + ")");
+                                } catch (Throwable e) {
+                                    fresh = null;
+                                    try { DebugSink.textNow("export-full",
+                                            "could not re-decode at " + fw + "x" + fh + ": " + e); }
+                                    catch (Throwable ignored) { }
+                                } finally {
+                                    if (fullBmp != null) fullBmp.recycle();
+                                    if (fullBuf != null) SpektraLabEngine.freeDirect(fullBuf);
+                                }
+                            }
+                            if (fresh == null) {
+                                try { fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3); }
+                                catch (Throwable ignored) { fresh = null; }
+                            }
+                            CrashTrail.markNow(MainActivity.this,
+                                    "export:session " + (fresh != null ? "fresh" : "none"));
                         } else if (keep != null && rawFilePath != null) {
                             // **No budget gate here.** One was added in 1.4.1t and it
                             // refused frames the engine goes on to render: it compared
@@ -9646,24 +13262,122 @@ public class MainActivity extends Activity {
                                 // The budget is checked above, before the `try`, so a
                                 // refusal reaches the user instead of becoming a null
                                 // session. Here we only size the decode by it.
-                                final int exportPixels = budgetPixels;
-                                final int exportEdge = importedWidth > 0 && importedHeight > 0
-                                        ? Math.max(importedWidth, importedHeight)
-                                        : (importCapPixels > 0 ? IMPORT_LONG_EDGE
-                                           : Math.max(sourceWidth, sourceHeight));
-                                fresh = engine.openRawSession(rawFilePath,
-                                        "{\"print_stock\":\"" + (printStock == null ? "kodak_portra_endura" : printStock)
-                                                + "\",\"input_color_space\":\"ProPhoto RGB\","
-                                                + "\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\","
-                                                + "\"preview_long_edge\":2048}",
-                                        exportPixels, exportEdge);
+                                // **0, 0 -- the file's own size, not the import's.**
+                                // This used to pass the budget the import settled
+                                // on, which is derived from free RAM and therefore
+                                // moves: the same frame exported 42 MP and then
+                                // 36 MP without anything changing. An export that
+                                // changes size between two presses of the same
+                                // button is not a memory strategy, it is a bug.
+                                // If the frame genuinely does not fit, the engine
+                                // refuses and names the plane -- that message is
+                                // true, and it is the one to show.
+                                final int exportPixels = 0;
+                                final int exportEdge = 0;
+                                final float[] wbMul = wbUserMul;
+                                Probe.log("wb", "export tier=" + tier + " mul=" + Probe.mul(wbMul)
+                                        + " px=" + exportPixels + " edge=" + exportEdge);
+                                // **What the fresh session is opened with.** The
+                                // enlarger exposure has now been sent three ways
+                                // (delta, forced delta, open params) and the owner
+                                // still sees no change in the file, so the next
+                                // report has to say which value actually left the
+                                // app. `export-params` reads the session's copy;
+                                // this line is the string the engine parsed.
+                                try {
+                                    DebugSink.text("export-open", "pex=" + f("%.6f", printExposure)
+                                            + " auto=" + exportAutoExposure
+                                            + " pin=" + (pinEv ? f("%.6f", lastAppliedEv) : "none")
+                                            + " offset=" + f("%.4f", cameraEv)
+                                            + " paper=" + printStock + " raw=" + rawFilePath);
+                                } catch (Throwable ignored) { }
+                                fresh = wbMul != null
+                                        ? engine.openRawSessionTuned(rawFilePath,
+                                                "{\"print_stock\":\"" + (printStock == null ? "kodak_portra_endura" : printStock)
+                                                        + "\",\"input_color_space\":\"ProPhoto RGB\","
+                                                        + "\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\","
+                                                        // **The meter travels with the export.** This
+                                                        // string used to name five fields, so the
+                                                        // fresh session fell back to the engine's
+                                                        // own defaults: `auto_exposure` true. On a
+                                                        // frame whose meter clamps (it read +12 EV
+                                                        // here) that put the whole picture at white
+                                                        // -- and the rebate, painted afterwards,
+                                                        // survived it. The export is the picture on
+                                                        // screen, so it has to be told the same
+                                                        // thing the preview was told.
+                                                        // **Never meter again on export.** The
+                                                        // preview's own value, measured once at
+                                                        // import; letting the fresh session run
+                                                        // the meter a second time is what turned
+                                                        // 0.0756 into a clamped +12 and pushed
+                                                        // the picture to white.
+                                                        + "\"auto_exposure\":" + b(exportAutoExposure) + ","
+                                                        + "\"exposure_compensation_ev\":" + f("%.6f", cameraEv) + ","
+                                                        // **Open with the enlarger exposure too.** It is
+                                                        // a live PRINT field: sent as a delta the engine
+                                                        // updates the session's copy while the render
+                                                        // keeps the pipeline's, so the file came back as
+                                                        // if the slider had never moved (6/6 exports at
+                                                        // 0.41, `export-params` in D1). Opening with it
+                                                        // puts it on the pipeline from the first frame.
+                                                        + "\"print_exposure\":" + f("%.6f", printExposure) + ","
+                                                        + "\"preview_long_edge\":2048}",
+                                                exportPixels, exportEdge, wbMul)
+                                        : engine.openRawSession(rawFilePath,
+                                                "{\"print_stock\":\"" + (printStock == null ? "kodak_portra_endura" : printStock)
+                                                        + "\",\"input_color_space\":\"ProPhoto RGB\","
+                                                        + "\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\","
+                                                        // **The meter travels with the export.** This
+                                                        // string used to name five fields, so the
+                                                        // fresh session fell back to the engine's
+                                                        // own defaults: `auto_exposure` true. On a
+                                                        // frame whose meter clamps (it read +12 EV
+                                                        // here) that put the whole picture at white
+                                                        // -- and the rebate, painted afterwards,
+                                                        // survived it. The export is the picture on
+                                                        // screen, so it has to be told the same
+                                                        // thing the preview was told.
+                                                        // **Never meter again on export.** The
+                                                        // preview's own value, measured once at
+                                                        // import; letting the fresh session run
+                                                        // the meter a second time is what turned
+                                                        // 0.0756 into a clamped +12 and pushed
+                                                        // the picture to white.
+                                                        + "\"auto_exposure\":" + b(exportAutoExposure) + ","
+                                                        + "\"exposure_compensation_ev\":" + f("%.6f", cameraEv) + ","
+                                                        // **Open with the enlarger exposure too.** It is
+                                                        // a live PRINT field: sent as a delta the engine
+                                                        // updates the session's copy while the render
+                                                        // keeps the pipeline's, so the file came back as
+                                                        // if the slider had never moved (6/6 exports at
+                                                        // 0.41, `export-params` in D1). Opening with it
+                                                        // puts it on the pipeline from the first frame.
+                                                        + "\"print_exposure\":" + f("%.6f", printExposure) + ","
+                                                        + "\"preview_long_edge\":2048}",
+                                                exportPixels, exportEdge);
                             } catch (Throwable ignored) { fresh = null; }
+                            CrashTrail.markNow(MainActivity.this,
+                                    "export:raw-session " + (fresh != null ? "fresh" : "none"));
                         }
                         // **Never swap the global session for an export.**
                         // The export runs on its own local object; assigning it
                         // to `session` let a concurrent UI call write the next
                         // preview's parameters into the export's frame.
                         final SpektraLabEngine.Session exportSession = fresh != null ? fresh : keep;
+                        if (exportSession == null) {
+                            // The frame's session went away between `export:lock`
+                            // and here. Saying so is the honest end of this
+                            // frame; dereferencing it was a null pointer.
+                            try {
+                                DebugSink.text("export-error", "tier=" + tier + " no session for the export");
+                            } catch (Throwable ignored) { }
+                            runOnUiThread(() -> {
+                                showInAppToast("这张照片还没准备好，跳过");
+                                if (onDone != null) onDone.run();
+                            });
+                            return;
+                        }
                         if (fresh != null) {
                             try { DebugSink.text("export", "fresh session for tier=" + tier); }
                             catch (Throwable ignored) { }
@@ -9690,7 +13404,54 @@ public class MainActivity extends Activity {
                             // be exported as the *preview* had it, or not at all.
                             // Re-state the complete Look on the export object,
                             // without routing it through the global `session`.
-                            applyParamsTo(exportSession, filmStock, printStock == null ? "kodak_portra_endura" : printStock, PREVIEW_LONG_EDGE);
+                            // **Exports are sRGB, whatever the canvas is set to.**
+                            // The JPEG and TIFF writers carry an sRGB ICC; a P3
+                            // image with an sRGB profile would be read as the
+                            // wrong colours by everything that believes it.
+                            // **Force.** Diffed against the canvas session this
+                            // was a no-op, so every export kept the parameters
+                            // its session was opened with -- the enlarger
+                            // exposure among them.
+                            applyParamsTo(exportSession, filmStock,
+                                    printStock == null ? "kodak_portra_endura" : printStock,
+                                    PREVIEW_LONG_EDGE, "sRGB", true);
+                            // **Same frame, same EV, same node.** Pinning puts
+                            // the meter's gain back in `film_prefix`, where the
+                            // canvas applied it -- not after the highlight
+                            // rolloff, where an export used to put it. When the
+                            // EV belongs to another frame (a batch walking the
+                            // strip) clearing is the honest state: the meter is
+                            // on and its own whole-frame measurement is exactly
+                            // what the canvas would have got.
+                            try {
+                                if (pinEv) exportSession.pinAutoExposureEv(lastAppliedEv);
+                                else exportSession.clearPinAutoExposureEv();
+                            } catch (Throwable ignored) { }
+                            // **Which object got the parameters.** The owner's
+                            // files come out at print_exposure 1.0 while this app
+                            // sends 0.41 -- on the same frame the host answers
+                            // 21410 vs 11996, so the engine is fine and the
+                            // parameter is fine. Either this session is not the
+                            // one that renders, or something replaces its value
+                            // between here and the write. These two lines answer
+                            // that with identity, not inference.
+                            try {
+                                final String gp = exportSession.getParams();
+                                int j = gp.indexOf("\"print_exposure\"");
+                                DebugSink.text("export-ident", "sent hash=" + System.identityHashCode(exportSession)
+                                        + " fresh=" + (fresh != null) + " keep=" + (keep != null)
+                                        + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
+                            } catch (Throwable ignored) { }
+                            try {
+                                DebugSink.text("export-exposure", "tier=" + tier
+                                        + " auto=" + exportAutoExposure
+                                        + " method=" + (exportMeter.isEmpty() ? "balanced" : exportMeter)
+                                        + " pin=" + (pinEv ? f("%.4f", lastAppliedEv) + " same-frame" : "none")
+                                        + " seenEv=" + f("%.4f", lastAppliedEv)
+                                        + (lastAppliedEvValid ? "" : " (none)")
+                                        + " solveEv=" + f("%.4f", meteredEv)
+                                        + " offset=" + f("%.2f", cameraEv));
+                            } catch (Throwable ignored) { }
                             try {
                                 DebugSink.text("overscan-geom", "tier=" + tier + " before "
                                         + exportSession.overscanGeometry());
@@ -9716,11 +13477,30 @@ public class MainActivity extends Activity {
                             } catch (Throwable metaError) {
                                 DebugSink.text("exif", "export metadata skipped: " + metaError);
                             }
-                            info = dng
-                                    ? exportSession.exportDng(tmp.getAbsolutePath(), tier)
-                                    : tiff
-                                    ? exportSession.exportTiff(tmp.getAbsolutePath(), tier)
-                                    : exportSession.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
+                            // **The export's own black box.** This call runs the
+                            // whole film and print chain at `full` and then
+                            // encodes it; on a 51 MP frame it is a minute and a
+                            // half of native code with no Java frame anywhere in
+                            // it. The ticker makes "it died somewhere" into "it
+                            // died after 74 seconds".
+                            try {
+                                final String gp = exportSession.getParams();
+                                int j = gp.indexOf("\"print_exposure\"");
+                                DebugSink.text("export-ident", "call hash=" + System.identityHashCode(exportSession)
+                                        + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
+                            } catch (Throwable ignored) { }
+                            CrashTrail.markNow(this, "export:write " + tier + " " + format);
+                            Thread wtick = startTick("export", exportSession);
+                            try {
+                                info = dng
+                                        ? exportSession.exportDng(tmp.getAbsolutePath(), tier)
+                                        : tiff
+                                        ? exportSession.exportTiff(tmp.getAbsolutePath(), tier)
+                                        : exportSession.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
+                            } finally {
+                                stopTick(wtick);
+                            }
+                            CrashTrail.markNow(this, "export:written " + info[0] + "x" + info[1]);
                             try {
                                 DebugSink.text("overscan-geom", "tier=" + tier + " " + info[0] + "x" + info[1]
                                         + " " + exportSession.overscanGeometry());
@@ -9782,23 +13562,7 @@ public class MainActivity extends Activity {
                 final int fw = w, fh = h;
                 runOnUiThread(() -> statusText.setText("导出中：写入相册 " + fw + "x" + fh + "..."));
                 String fileName = "SpektraLab_" + System.currentTimeMillis() + ext;
-                android.content.ContentValues values = new android.content.ContentValues();
-                values.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, fileName);
-                values.put(android.provider.MediaStore.Images.Media.MIME_TYPE, mime);
-                values.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
-                    android.os.Environment.DIRECTORY_PICTURES + "/SpektraLab");
-                values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
-                android.content.ContentResolver resolver = getContentResolver();
-                Uri outUri = resolver.insert(
-                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                if (outUri == null) throw new RuntimeException("无法创建媒体文件");
-                try (java.io.InputStream in = new java.io.FileInputStream(tmp);
-                     java.io.OutputStream out = resolver.openOutputStream(outUri)) {
-                    if (out == null) throw new RuntimeException("无法打开输出流");
-                    byte[] buf = new byte[262144];
-                    int len;
-                    while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
-                }
+                final Uri outUri = writeExportFile(tmp, fileName, ext, mime);
                 // **Does the file look like the picture we think we wrote?**
                 // Two measurements of the smoothed result: the mean difference
                 // between neighbouring rows and between neighbouring columns.
@@ -9815,13 +13579,12 @@ public class MainActivity extends Activity {
                         });
                     }
                 }
-                values.clear();
-                values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0);
-                resolver.update(outUri, values, null, null);
-
                 try {
                     long len = tmp.length();
                     DebugSink.text("export", "format=" + format + " tier=" + tier + " w=" + w + " h=" + h + " renderMs=" + renderMs
+                            + (info.length > 4 ? " mean16=" + info[4] : "")
+                            + (info.length > 6 ? " pipelinePe=" + (info[5] / 1000.0)
+                                    + " pipelineGain=" + (info[6] / 1000.0) : "")
                             + " bytes=" + len);
                     if (len > 0 && len < 30L * 1024 * 1024) {
                         byte[] buf = new byte[(int) len];
@@ -9876,6 +13639,7 @@ public class MainActivity extends Activity {
                 if (code == 1001 || code == 1009) offerSmallerImport();
             } finally {
                 if (tmp.exists()) tmp.delete();
+                if (onDone != null) runOnUiThread(onDone);
             }
         }).start();
     }
@@ -9974,16 +13738,37 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // Coming back is the only place this clears; `startPrefetch` refuses to
+        // open a queue while it is set.
+        appPaused = false;
+    }
+
+    @Override
     protected void onPause() {
         // **Leaving is not dying.** Swiping the app out of recents kills the
         // process without `onDestroy`, which made every ordinary exit look like
         // a crash on the next launch. `onPause` is the last callback that always
         // runs, so it is where "this was deliberate" gets recorded.
-        CrashTrail.mark(this, "app:paused");
+        // **Forced, not throttled.** A throttled write inside the same 100 ms
+        // window as the last edit would be the one that got dropped, and then
+        // the next launch reports an ordinary exit as a crash.
+        CrashTrail.markNow(this, "app:paused");
+        // **The shelf keeps painting after the user leaves.** The 1.5.0o trail
+        // shows fifteen `prefetch:card` lines *after* `app:paused`: a
+        // background thread still holding the GPU while the process is a
+        // candidate for reclaim. That is wasted work at the one moment it
+        // costs the most, and it also overwrote the pause as the ring's last
+        // step -- which is why the exit looked like a crash.
+        appPaused = true;
+        stopPrefetch();
+        cancelLivePreview();
         // The system can reclaim this process the moment another app needs the
         // memory, and a 20 MP frame plus a Vulkan context is exactly what it
         // reclaims first. Save before it does, not in onDestroy, which is not
         // called on a kill.
+        persistHandler.removeCallbacks(persistSession);
         try { saveLookIntoFrames(); } catch (Throwable ignored) { }
         saveSessionState();
         super.onPause();
@@ -9991,10 +13776,13 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        // A clean exit erases the trail: next launch reads non-empty only when
-        // this one did not get here.
-        CrashTrail.clear(this);
+        // **Cleared last, not first.** Tearing the engine down is itself a
+        // place this can die (device buffers freed while a shelf card still
+        // holds them), and clearing on entry would erase the evidence for that
+        // one before it happened.
+        CrashTrail.markNow(this, "app:onDestroy");
         stopPrefetch();
+        cancelLivePreview();
         // Session *and* engine go down under the same lock the render runs
         // under: a shelf card that is mid-`renderBegin` is holding device
         // buffers owned by this engine, and tearing it down outside the lock
@@ -10002,7 +13790,16 @@ public class MainActivity extends Activity {
         synchronized (renderMutex) {
             if (session != null) { session.close(); session = null; }
             if (engine != null) { engine.close(); engine = null; }
+            // The source block is the app's largest allocation and has no
+            // cleaner behind it; the engine took its own copy at `spk_open`.
+            if (sourcePixels != null) { SpektraLabEngine.freeDirect(sourcePixels); sourcePixels = null; }
         }
+        // A clean exit erases the trail: next launch reads non-empty only when
+        // this one did not get here.
+        CrashTrail.clear(this);
+        // Nothing may paint after this point: the canvas is going away with the
+        // window, and a live frame's callback holds a reference to it.
+        uiReady = false;
         super.onDestroy();
     }
 }

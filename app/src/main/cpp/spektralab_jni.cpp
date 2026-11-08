@@ -3,6 +3,13 @@
  * GPLv3. Bridges app.spektralab.engine.SpektraLabEngine (Kotlin) to spk_engine.h C ABI.
  */
 #include <jni.h>
+#include <unwind.h>
+#include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstdio>
+#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
@@ -13,6 +20,7 @@
 #include <chrono>
 #include <jpeglib.h>
 #include <string>
+#include <mutex>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -112,6 +120,23 @@ JNI(jlong, nativeTrimPool)(JNIEnv*, jclass, jlong engineHandle) {
 // Both return `spk_status` rather than throwing: a session with nowhere to
 // write its scratch file is not an error the caller can act on, and an export
 // that ignores the return is no worse off than before it asked.
+// **The EV the canvas applied, handed to a session that has to reproduce that
+// frame.** `auto_exposure` and `exposure_compensation_ev` are not
+// interchangeable -- the first multiplies the frame in `film_prefix`, before
+// `scene_latitude` rolls the highlights off; the second does it after. Same
+// stops, two different pictures (21410 vs 10061 mean16 at 20 MP on the host).
+JNI(void, nativePinAutoExposureEv)(JNIEnv*, jclass, jlong sessionHandle, jdouble ev) {
+    spk_session* s = reinterpret_cast<spk_session*>(sessionHandle);
+    if (!s) return;
+    spk_pin_auto_exposure_ev(s, double(ev));
+}
+
+JNI(void, nativeClearPinAutoExposureEv)(JNIEnv*, jclass, jlong sessionHandle) {
+    spk_session* s = reinterpret_cast<spk_session*>(sessionHandle);
+    if (!s) return;
+    spk_clear_pin_auto_exposure_ev(s);
+}
+
 JNI(jint, nativeSuspendSession)(JNIEnv*, jclass, jlong sessionHandle) {
     spk_session* s = reinterpret_cast<spk_session*>(sessionHandle);
     if (!s) return SPK_ERR_INVALID_ARG;
@@ -122,6 +147,109 @@ JNI(jint, nativeResumeSession)(JNIEnv*, jclass, jlong sessionHandle) {
     spk_session* s = reinterpret_cast<spk_session*>(sessionHandle);
     if (!s) return SPK_ERR_INVALID_ARG;
     return jint(spk_resume_session(s));
+}
+
+// ---------------------------------------------------------------------------
+// **What the process was doing when it died.** The engine's failures are Java
+// exceptions with codes; a crash inside a dispatch is not, and this ROM does
+// not hand out `ApplicationExitInfo`, so a SIGSEGV leaves nothing at all. A
+// backtrace captured in the signal handler is the difference between "it
+// crashed again" and the function that did it.
+//
+// Everything here is async-signal-safe: no malloc, no printf, one pre-opened
+// fd, and `_Unwind_Backtrace` (which libgcc documents as usable from a
+// handler when the stack is intact).
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr int kMaxCrashFrames = 48;
+struct CrashFrame { uintptr_t pc; uintptr_t base; const char* lib; };
+CrashFrame g_crash_frames[kMaxCrashFrames];
+int g_crash_frame_count = 0;
+int g_crash_fd = -1;
+
+_Unwind_Reason_Code crash_unwind(_Unwind_Context* ctx, void*) {
+    if (g_crash_frame_count >= kMaxCrashFrames) return _URC_END_OF_STACK;
+    const uintptr_t pc = uintptr_t(_Unwind_GetIP(ctx));
+    if (!pc) return _URC_END_OF_STACK;
+    Dl_info info{};
+    CrashFrame& f = g_crash_frames[g_crash_frame_count];
+    f.pc = pc;
+    f.base = 0;
+    f.lib = "?";
+    if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fname) {
+        f.lib = info.dli_fname;
+        f.base = uintptr_t(info.dli_fbase);
+    }
+    ++g_crash_frame_count;
+    return _URC_NO_REASON;
+}
+
+void crash_write(const char* text, int len) {
+    if (g_crash_fd >= 0 && len > 0) {
+        ssize_t ignored = write(g_crash_fd, text, size_t(len));
+        (void)ignored;
+    }
+}
+
+void crash_handler(int sig, siginfo_t* info, void*) {
+    char line[512];
+    int n = std::snprintf(line, sizeof line,
+                          "\n=== native crash: signal %d (%s) addr=%p tid=%d\n",
+                          sig,
+                          sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT"
+                          : sig == SIGBUS ? "SIGBUS" : sig == SIGFPE ? "SIGFPE"
+                          : sig == SIGILL ? "SIGILL" : "?", 
+                          info ? info->si_addr : nullptr,
+                          int(gettid()));
+    crash_write(line, n);
+    g_crash_frame_count = 0;
+    _Unwind_Backtrace(crash_unwind, nullptr);
+    for (int i = 0; i < g_crash_frame_count; ++i) {
+        const CrashFrame& f = g_crash_frames[i];
+        const char* lib = f.lib ? f.lib : "?";
+        // Only the file name: the full path is noise in a log line.
+        const char* slash = std::strrchr(lib, '/');
+        if (slash) lib = slash + 1;
+        n = std::snprintf(line, sizeof line, "  #%02d pc=%016llx %s+0x%llx\n", i,
+                          (unsigned long long)f.pc, lib,
+                          (unsigned long long)(f.base ? f.pc - f.base : 0));
+        crash_write(line, n);
+    }
+    crash_write("=== end\n", 8);
+    if (g_crash_fd >= 0) fsync(g_crash_fd);
+    struct sigaction dfl{};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    sigaction(sig, &dfl, nullptr);
+    raise(sig);
+}
+
+}  // namespace
+
+JNI(void, nativeInstallCrashHandler)(JNIEnv* env, jclass, jstring path) {
+    if (!path || g_crash_fd >= 0) return;
+    const char* p = env->GetStringUTFChars(path, nullptr);
+    if (!p) return;
+    g_crash_fd = ::open(p, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    env->ReleaseStringUTFChars(path, p);
+    if (g_crash_fd < 0) return;
+    // **The handler needs a stack of its own.** A stack overflow is one of the
+    // ways this process dies, and a handler that runs on the stack it just
+    // exhausted cannot unwind anything -- it faults again and the frames are
+    // lost. 256 KB is well past what 48 frames need.
+    static char crash_stack[256 * 1024];
+    stack_t ss{};
+    ss.ss_sp = crash_stack;
+    ss.ss_size = sizeof crash_stack;
+    ss.ss_flags = 0;
+    sigaltstack(&ss, nullptr);
+    struct sigaction sa{};
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    const int signals[] = {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL};
+    for (int sig : signals) sigaction(sig, &sa, nullptr);
 }
 
 JNI(jlong, nativeCreateEngine)(JNIEnv* env, jclass, jstring resourcesDir) {
@@ -149,6 +277,38 @@ JNI(jlong, nativeCreateEngine)(JNIEnv* env, jclass, jstring resourcesDir) {
 
 JNI(void, nativeDestroyEngine)(JNIEnv*, jclass, jlong handle) {
     if (handle) spk_engine_destroy(reinterpret_cast<spk_engine*>(handle));
+}
+
+// **A direct buffer ART's native-allocation ledger does not count.**
+//
+// `ByteBuffer.allocateDirect` registers its memory with the runtime, and that
+// ledger is capped by the heap's growth limit -- 512 MB on the phone that
+// reported this. A 50 MP frame needs 12 bytes a pixel for the engine's float32
+// door, which is 600 MB: the allocation is refused before the device's real
+// free memory is ever consulted, and the message reads like the phone is out of
+// RAM while it has 4 GB spare. malloc has no such ceiling. `spk_open` copies
+// what it is given, so all this really needs is memory that exists.
+JNI(jobject, nativeAllocDirect)(JNIEnv* env, jclass, jlong bytes) {
+    if (bytes <= 0 || bytes > (jlong(1) << 40)) {
+        throw_runtime(env, "direct buffer size is invalid"); return nullptr;
+    }
+    void* p = std::malloc(size_t(bytes));
+    if (!p) {
+        throw_runtime(env, "out of native memory for a %lld MB buffer",
+                      (long long)(bytes >> 20));
+        return nullptr;
+    }
+    jobject buf = env->NewDirectByteBuffer(p, bytes);
+    if (!buf) { std::free(p); throw_runtime(env, "cannot wrap the buffer"); return nullptr; }
+    return buf;
+}
+
+// Free one from `nativeAllocDirect`. `NewDirectByteBuffer` installs no cleaner,
+// so the Java reference going away frees nothing at all.
+JNI(void, nativeFreeDirect)(JNIEnv* env, jclass, jobject buffer) {
+    if (!buffer) return;
+    void* p = env->GetDirectBufferAddress(buffer);
+    if (p) std::free(p);
 }
 
 JNI(jlong, nativeOpenSession)(JNIEnv* env, jclass, jlong engineHandle,
@@ -192,6 +352,22 @@ JNI(jlong, nativeOpenSession)(JNIEnv* env, jclass, jlong engineHandle,
  * returns what was *asked for*, not what the frame got. Without this, "the
  * picture looks darker on that phone" has no measurable answer.
  */
+/**
+ * The stage label the render is inside, for the watchdog.
+ *
+ * Reads the seqlock snapshot, never the pipeline's `std::string`, so it is safe
+ * to call while a render is running -- which is the only time it is useful.
+ * Returns null when no consistent read was possible in three tries: that means
+ * the render is crossing nodes quickly, not that it is stuck.
+ */
+JNI(jstring, nativeStageSnapshot)(JNIEnv* env, jclass, jlong sessionHandle) {
+    spk_session* session = reinterpret_cast<spk_session*>(sessionHandle);
+    if (!session) return nullptr;
+    char buf[96];
+    if (!spk_stage_snapshot(session, buf, sizeof buf)) return nullptr;
+    return env->NewStringUTF(buf);
+}
+
 JNI(jstring, nativeProgressJson)(JNIEnv* env, jclass, jlong sessionHandle) {
     spk_session* session = reinterpret_cast<spk_session*>(sessionHandle);
     if (!session) return nullptr;
@@ -437,8 +613,44 @@ static void grade_result(spk_result& r) {
 // exposure, so "before" and "after" are a comparison of the film, not of two
 // different exposures.
 static double g_source_display_gain = 1.0;
+// Encoded-domain lift for the canvas: 0.85 when the canvas auto-levels, 1.0
+// (identity) when it shows the decode as measured. See `lift8`.
+static double g_source_display_lift = 1.0;
 
-JNI(void, nativeSetSourceDisplayEv)(JNIEnv*, jclass, jdouble ev) {
+// **The vendor's display profile, when the source ships one.**
+//
+// `profile_tone_curve` is the (x, y) list from DNG tag 50940 -- the phone's own
+// statement of how the linear scene should be read -- and
+// `g_source_baseline_ev` is tag 50730, applied first. Empty means the file has
+// no profile (every camera DNG, every NEF/RAF tested), and the canvas falls
+// back to the plain sRGB rendering below.
+static std::vector<float> g_source_curve;
+static double g_source_baseline_ev = 0.0;
+static std::mutex g_source_profile_mutex;
+
+JNI(void, nativeSetSourceDisplayEv)(JNIEnv*, jclass, jdouble ev, jboolean auto_level) {
+    // **The canvas defaults to "as measured".**
+    //
+    // `auto_level` is the opt-in that used to be the only behaviour: put the
+    // frame's median on 18 % of linear (sRGB mid-grey), capped where p99.5
+    // would clip, plus a `pow(v, 0.85)` lift in the encoded domain. It reads
+    // well next to a phone's own preview -- which is where the 18 % came from,
+    // after an imported raw came back at 2/255 and looked like a black
+    // rectangle -- but it is a rendering, not the file: two frames get
+    // different gains, and the picture's own exposure disappears into it.
+    //
+    // Measured against Lightroom on one OnePlus 13 DNG: the auto canvas sat
+    // 2.54 EV above Lightroom's (linear median 0.0421 against 0.00725). With
+    // the gain at 1.0 and no lift the same frame lands at 0.0108 against
+    // 0.00725 -- 0.4 EV, which is Lightroom's own tone curve. The default is
+    // therefore the measurement; the switch in 光学 -> 亮度 turns the old
+    // behaviour back on for anyone who prefers it.
+    if (!auto_level) {
+        g_source_display_gain = 1.0;
+        g_source_display_lift = 1.0;
+        return;
+    }
+    g_source_display_lift = 0.85;
     const double clamped = ev < -4.0 ? -4.0 : (ev > 6.0 ? 6.0 : ev);
     double gain = std::pow(2.0, clamped);
     // **Cap the display gain so the frame's own highlights survive it.**
@@ -510,7 +722,14 @@ static const uint8_t* srgb_display_lut() {
     return table;
 }
 
-JNI(jintArray, nativeRenderBegin)(JNIEnv* env, jclass, jlong sessionHandle, jstring tier) {
+// `reprint` runs the print side over the session's cached negative instead of
+// developing the film again. The two are byte-identical when the negative is
+// current (`live_probe` H: grain and glare off, reprint == render on every
+// parameter step); what it saves is the whole film side -- 200 ms of an
+// 800-pixel drag frame against 32 ms. The engine itself drops the cache when a
+// shoot-layer field changes, so this flag can never reprint a stale negative.
+JNI(jintArray, nativeRenderBegin)(JNIEnv* env, jclass, jlong sessionHandle, jstring tier,
+                                  jboolean reprint) {
     spk_session* session = reinterpret_cast<spk_session*>(sessionHandle);
     if (!session) { throw_runtime(env, "session is null"); return nullptr; }
     const char* t = env->GetStringUTFChars(tier, nullptr);
@@ -519,11 +738,13 @@ JNI(jintArray, nativeRenderBegin)(JNIEnv* env, jclass, jlong sessionHandle, jstr
     if (g_result_valid) { spk_result_free(&g_result); g_result_valid = false; }
     std::memset(&g_result, 0, sizeof g_result);
 
-    spk_status st = spk_render(session, t, &g_result);
+    spk_status st = reprint ? spk_reprint(session, t, &g_result)
+                            : spk_render(session, t, &g_result);
     env->ReleaseStringUTFChars(tier, t);
     if (st != SPK_OK) {
         char msg[512];
-        std::snprintf(msg, sizeof msg, "spk_render failed (%d): %s", (int)st, spk_last_error(session ? nullptr : nullptr));
+        std::snprintf(msg, sizeof msg, "%s failed (%d): %s",
+                      reprint ? "spk_reprint" : "spk_render", (int)st, spk_last_error(nullptr));
         throw_runtime(env, msg);
         return nullptr;
     }
@@ -585,7 +806,9 @@ JNI(jintArray, nativeExportSource)(JNIEnv* env, jclass, jlong sessionHandle, jst
 
 
 // Encoded-domain lift: 0 stays 0, 255 stays 255, the shadows come up.
+// Identity unless the canvas is auto-levelling -- see `g_source_display_lift`.
 static inline uint8_t lift8(uint8_t v) {
+    if (g_source_display_lift >= 0.9999) return v;
     static uint8_t table[256];
     static bool ready = false;
     if (!ready) {
@@ -594,6 +817,24 @@ static inline uint8_t lift8(uint8_t v) {
         ready = true;
     }
     return table[v];
+}
+
+// Piecewise-linear read of a DNG tone curve. Values outside the ends clamp to
+// the end points, which is what a DNG reader does with scene values past 1.0.
+static double curve_lookup(const std::vector<float>& c, double x) {
+    const int n = int(c.size() / 2);
+    if (n < 2) return x;
+    if (x <= double(c[0])) return double(c[1]);
+    const int last = 2 * (n - 1);
+    if (x >= double(c[last])) return double(c[last + 1]);
+    int lo = 0, hi = n - 1;
+    while (hi - lo > 1) {
+        const int mid = (lo + hi) / 2;
+        if (double(c[2 * mid]) <= x) lo = mid; else hi = mid;
+    }
+    const double x0 = c[2 * lo], y0 = c[2 * lo + 1];
+    const double x1 = c[2 * hi], y1 = c[2 * hi + 1];
+    return (x1 > x0) ? y0 + (y1 - y0) * (x - x0) / (x1 - x0) : y0;
 }
 
 JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffset, jint rowCount) {
@@ -606,6 +847,16 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
 
     const jsize cap = env->GetArrayLength(dst);
     if (jsize(rows) * jsize(w) > cap) { throw_runtime(env, "argb array too small"); return -1; }
+
+    // The profile is copied once per call: it can be replaced from the UI
+    // thread between frames, and reading it per pixel would need the lock.
+    std::vector<float> curve;
+    double curve_base = 1.0;
+    {
+        std::lock_guard<std::mutex> lk(g_source_profile_mutex);
+        curve = g_source_curve;
+        curve_base = std::pow(2.0, std::clamp(g_source_baseline_ev, -6.0, 6.0));
+    }
 
     std::vector<jint> tmp(size_t(rows) * w);
     const uint16_t* px = g_result.rgba16;
@@ -622,9 +873,41 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
                 const int b = int(std::clamp(c[2], 0.0, 1.0) * 255.0 + 0.5);
                 line[x] = jint(0xFF000000u) | (jint(r) << 16) | (jint(g) << 8) | jint(b);
             }
+        } else if (g_result_is_source && !curve.empty()) {
+            // **The vendor's own rendering.**
+            //
+            // `ProfileToneCurve` is defined on the scene-linear PCS values,
+            // which is exactly what `spk_export_source` hands back (LibRaw's
+            // ProPhoto linear). Apply `BaselineExposure`, then the curve per
+            // channel, then encode -- no auto-level, no shadow lift, no extra
+            // saturation: the phone already said what it wants. Measured
+            // against Lightroom on the same OnePlus 13 DNG: p95 188.4 against
+            // 187.7, median 23.6 against 20.5, linear median 0.00889 against
+            // 0.00725.
+            const uint8_t* lut = srgb_display_lut();
+            static const double p2s[9] = {
+                 2.0340758, -0.7273341, -0.3067418,
+                -0.2288131,  1.2317301, -0.0029169,
+                -0.0085698, -0.1532866,  1.1618564,
+            };
+            for (uint32_t x = 0; x < w; ++x) {
+                const double pr = curve_lookup(curve, double(src[x * 4 + 0]) / 65535.0 * curve_base);
+                const double pg = curve_lookup(curve, double(src[x * 4 + 1]) / 65535.0 * curve_base);
+                const double pb = curve_lookup(curve, double(src[x * 4 + 2]) / 65535.0 * curve_base);
+                const uint32_t ir = uint32_t(std::clamp(p2s[0] * pr + p2s[1] * pg + p2s[2] * pb, 0.0, 1.0) * 65535.0 + 0.5);
+                const uint32_t ig = uint32_t(std::clamp(p2s[3] * pr + p2s[4] * pg + p2s[5] * pb, 0.0, 1.0) * 65535.0 + 0.5);
+                const uint32_t ib = uint32_t(std::clamp(p2s[6] * pr + p2s[7] * pg + p2s[8] * pb, 0.0, 1.0) * 65535.0 + 0.5);
+                line[x] = jint(0xFF000000u)
+                        | (jint(lut[ir]) << 16)
+                        | (jint(lut[ig]) << 8)
+                        | jint(lut[ib]);
+            }
         } else if (g_result_is_source) {
             const uint8_t* lut = srgb_display_lut();
-            const double gain = g_source_display_gain;
+            // `curve_base` carries `BaselineExposure` even when there is no
+            // tone curve -- most cameras and most older phones ship only the
+            // exposure, and the DNG spec applies it either way.
+            const double gain = g_source_display_gain * curve_base;
             // **The reference has two decodes, not one.** Its engine reads a
             // `.linear` decode with every tone rendering switched off
             // (`boostAmount = 0`, `localToneMapAmount = 0`, gamut mapping off);
@@ -645,10 +928,25 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
             // 就是很寡淡", and it is why the highlight lift did not help.
             //
             // ProPhoto (D50) -> linear sRGB (D65), Bradford adapted.
+            //
+            // **Every row must sum to 1.** That is the transform's answer for a
+            // neutral: (1,1,1) in has to come out (1,1,1), or every grey in the
+            // frame picks up a cast. The matrix that shipped through 1.6.6
+            // summed to 1.039 / 0.984 / **1.212** -- blue 21 % high, so a white
+            // wall read as cool grey and the whole picture looked washed out
+            // next to the same file in Photos.
+            //
+            // Measured on one OnePlus 13 DNG against LibRaw's own sRGB
+            // development of the same file: mean 49.2/49.2/53.0 (B/G 1.077,
+            // hue centroid 235 deg) before; 47.8/49.4/47.6 (B/G 0.964, hue 100
+            // deg) after, against LibRaw's 47.5/49.0/47.3 and B/G 0.966. The
+            // per-pixel hue difference is then mean 3.1 deg, p50 2.3, p90 6.8,
+            // 0.2 % of samples past 20 deg. The old matrix put that at 235 deg
+            // against 92 -- a blue-violet cast over the whole canvas.
             static const double p2s[9] = {
-                 1.3459433, -0.2556075, -0.0511118,
-                -0.5445989,  1.5081673,  0.0205351,
-                 0.0000000,  0.0000000,  1.2118128,
+                 2.0340758, -0.7273341, -0.3067418,
+                -0.2288131,  1.2317301, -0.0029169,
+                -0.0085698, -0.1532866,  1.1618564,
             };
             for (uint32_t x = 0; x < w; ++x) {
                 const double pr = double(src[x * 4 + 0]) / 65535.0;
@@ -696,6 +994,21 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
     }
     env->SetIntArrayRegion(dst, 0, jsize(tmp.size()), tmp.data());
     return jint(rows * w);
+}
+
+// [baselineEV, x0, y0, x1, y1, ...]; null or shorter than two points clears it.
+JNI(void, nativeSetSourceToneCurve)(JNIEnv* env, jclass, jfloatArray curve) {
+    std::lock_guard<std::mutex> lk(g_source_profile_mutex);
+    g_source_curve.clear();
+    g_source_baseline_ev = 0.0;
+    if (!curve) return;
+    const jsize n = env->GetArrayLength(curve);
+    if (n < 1) return;
+    // [baseline] alone is legal: no curve, but the exposure still applies.
+    std::vector<float> buf(static_cast<size_t>(n));
+    env->GetFloatArrayRegion(curve, 0, jsize(n), buf.data());
+    g_source_baseline_ev = double(buf[0]);
+    if (n >= 5) g_source_curve.assign(buf.begin() + 1, buf.end());
 }
 
 JNI(void, nativeRenderEnd)(JNIEnv*, jclass) {
@@ -765,6 +1078,71 @@ static void trim_to_canvas(spk_session* session, spk_result& r, const std::strin
 // bottom. A band of film has structure; a band of an unwritten buffer, or of
 // film past the frame, is a flat wash. When an export disagrees with the
 // preview, this line says whether the canvas was short or the placement was.
+// **Where a "ruler" would show, and on which side.**
+//
+// The report is "one export has a column of little bars along the left edge,
+// another does not" -- and it is true for some frames and not others, which
+// rules out the encoder and points at something the frame's own size decides.
+// Guessing has not found it, so this records the evidence instead: each side's
+// thin strip is reduced to a per-line mean, and a line counts as *hot* when it
+// stands out from both neighbours by more than 24/255. A real picture's edge is
+// smooth; a seam, a resample fold or a half-written band is not.
+//
+// Four counts and where the first hot line sits, in one log line. Read-only.
+static void log_edge_profile(const spk_result& r, const std::string& progPath) {
+    if (!r.rgba16 || !r.width || !r.height) return;
+    const uint32_t stride = r.row_stride_px ? r.row_stride_px : r.width;
+    const uint32_t w = r.width, h = r.height;
+    const uint32_t bw = std::max<uint32_t>(3, w / 64);
+    const uint32_t bh = std::max<uint32_t>(3, h / 64);
+    auto strip_mean = [&](uint32_t line, bool vertical, int which) -> int {
+        const uint32_t span = vertical ? bw : bh;
+        long sum = 0;
+        for (uint32_t j = 0; j < span; ++j) {
+            uint32_t x = 0, y = 0;
+            if (vertical) { y = line; x = (which == 0) ? j : (w - 1u - j); }
+            else          { x = line; y = (which == 0) ? j : (h - 1u - j); }
+            const uint16_t* p = r.rgba16 + (size_t(y) * stride + x) * 4;
+            sum += (uint32_t(p[0]) + p[1] + p[2]) / 3u;
+        }
+        return int((sum / long(span)) / 257L);
+    };
+    // `period` is the whole point. Picture content makes an edge rough in
+    // whatever rhythm it likes; a ruler is evenly spaced, so the gaps between
+    // hot lines agree with each other. 0 means "not a ruler".
+    auto scan = [&](bool vertical, int which, int& hot, int& first, int& period) {
+        const uint32_t lines = vertical ? h : w;
+        std::vector<int> m(lines);
+        for (uint32_t i = 0; i < lines; ++i) m[i] = strip_mean(i, vertical, which);
+        hot = 0; first = -1; period = 0;
+        std::vector<int> hots;
+        for (uint32_t i = 1; i + 1 < lines; ++i) {
+            const int d = std::abs(m[i - 1] - 2 * m[i] + m[i + 1]);
+            if (d > 24) { if (first < 0) first = int(i); ++hot; hots.push_back(int(i)); }
+        }
+        if (hots.size() < 4) return;
+        std::vector<int> gaps;
+        for (size_t i = 1; i < hots.size(); ++i) gaps.push_back(hots[i] - hots[i - 1]);
+        std::sort(gaps.begin(), gaps.end());
+        const int med = gaps[gaps.size() / 2];
+        if (med <= 0) return;
+        int near = 0;
+        for (int g : gaps) if (std::abs(g - med) <= std::max(1, med / 5)) ++near;
+        if (near * 5 >= int(gaps.size()) * 4) period = med;
+    };
+    int lh, lf, lp, rh, rf, rp, th, tf, tp, bhot, bf, bp;
+    scan(true, 0, lh, lf, lp);
+    scan(true, 1, rh, rf, rp);
+    scan(false, 0, th, tf, tp);
+    scan(false, 1, bhot, bf, bp);
+    char line[224];
+    std::snprintf(line, sizeof line,
+                  "edge %ux%u stride=%u  L=%d@%d p%d R=%d@%d p%d T=%d@%d p%d B=%d@%d p%d  (strip %ux%u)",
+                  w, h, stride, lh, lf, lp, rh, rf, rp, th, tf, tp, bhot, bf, bp, bw, bh);
+    prog_line(progPath, "%s", line);
+    std::fprintf(stderr, "[edge] %s\n", line);
+}
+
 static void log_content_profile(const spk_result& r, const std::string& progPath) {
     if (!r.rgba16 || !r.width || !r.height) return;
     const uint32_t stride = r.row_stride_px ? r.row_stride_px : r.width;
@@ -995,12 +1373,37 @@ JNI(jintArray, nativeExportJpeg)(JNIEnv* env, jclass, jlong sessionHandle,
     }
     trim_to_canvas(session, result, progPath);
     grade_result(result);
+    log_edge_profile(result, progPath);
     log_content_profile(result, progPath);
     prog_line(progPath, "rendered %ux%u render_ms=%.0f", result.width, result.height,
               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     const double render_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const int w = int(result.width), h = int(result.height);
+    // **The buffer the encoder is about to see.** The app logs
+    // `print_exposure: 0.41` at both ends of this call, and the file comes back
+    // at 1.0 on the owner's device while the same sequence renders 21410 vs
+    // 11996 on the host. One number settles which half is wrong: 21410 here
+    // and 11700 in the file means the encoder path; 11700 here means the
+    // engine rendered with 1.0.
+    double mean16 = 0.0;
+    {
+        const uint16_t* px = reinterpret_cast<const uint16_t*>(result.rgba16);
+        const size_t npx = size_t(result.width) * result.height;
+        if (px && npx) {
+            // Row by row: `row_stride_px` is the padded pitch the engine hands
+            // back, and on a backend whose alignment is above 1 a flat walk
+            // reads the padding as pixels and reports a mean nobody rendered.
+            const uint32_t st = result.row_stride_px ? result.row_stride_px : result.width;
+            double sum = 0.0;
+            for (uint32_t y = 0; y < result.height; ++y) {
+                const uint16_t* row = px + size_t(y) * st * 4;
+                for (uint32_t x = 0; x < result.width; ++x)
+                    sum += row[x * 4] + row[x * 4 + 1] + row[x * 4 + 2];
+            }
+            mean16 = sum / (double(npx) * 3.0);
+        }
+    }
     const bool ok = write_jpeg_file(outPath.c_str(), result, int(quality), g_export_exif);
     const double total_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -1012,11 +1415,22 @@ JNI(jintArray, nativeExportJpeg)(JNIEnv* env, jclass, jlong sessionHandle,
     }
     prog_line(progPath, "done total_ms=%.0f", total_ms);
 
-    jintArray arr = env->NewIntArray(4);
+    // **What the pipeline itself read and multiplied by.** `getParams` is the
+    // session's copy; these two come from the object that ran `print_output`.
+    // pe 1.0 means the delta never reached `params_.enlarger`; pe 0.41 with
+    // gain 1.0 means the paper factor cancelled it; both right means the node
+    // ran and something downstream lifts the picture back.
+    const double dbg_pe = spk_debug_print_exposure(session);
+    const double dbg_gain = spk_debug_print_gain(session);
+    prog_line(progPath, "pipeline pe=%.6f gain=%.6f", dbg_pe, dbg_gain);
+
+    jintArray arr = env->NewIntArray(7);
     if (!arr) return nullptr;
-    jint v[4] = { w, h, jint(render_ms), jint(total_ms) };
-    env->SetIntArrayRegion(arr, 0, 4, v);
-    LOGI("export %dx%d render=%.1fms total=%.1fms", w, h, render_ms, total_ms);
+    jint v[7] = { w, h, jint(render_ms), jint(total_ms), jint(mean16),
+                  jint(dbg_pe * 1000.0), jint(dbg_gain * 1000.0) };
+    env->SetIntArrayRegion(arr, 0, 7, v);
+    LOGI("export %dx%d render=%.1fms total=%.1fms mean16=%.0f pe=%.4f gain=%.4f",
+         w, h, render_ms, total_ms, mean16, dbg_pe, dbg_gain);
     return arr;
 }
 
@@ -1054,6 +1468,7 @@ JNI(jintArray, nativeExportTiff)(JNIEnv* env, jclass, jlong sessionHandle, jstri
     }
     trim_to_canvas(session, result, progPath);
     grade_result(result);
+    log_edge_profile(result, progPath);
     log_content_profile(result, progPath);
     const double render_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -1118,6 +1533,7 @@ JNI(jintArray, nativeExportDng)(JNIEnv* env, jclass, jlong sessionHandle, jstrin
     }
     trim_to_canvas(session, result, progPath);
     grade_result(result);
+    log_edge_profile(result, progPath);
     log_content_profile(result, progPath);
     const double render_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

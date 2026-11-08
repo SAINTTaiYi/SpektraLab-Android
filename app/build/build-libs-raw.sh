@@ -34,6 +34,14 @@ if ! grep -q "JPEG-XS bitstream" "$SRC/src/metadata/tiff.cpp"; then
   patch -p1 -d "$ROOT" < app/build/libraw-he-sniff.patch
 fi
 
+# **Every body upstream knows and this tarball does not.** `adobe_coeff` is a
+# prefix table: a body with no row keeps `cam_xyz` at the sRGB->XYZ default, so
+# its colour is never corrected at all. The Nikon Z 50II is what surfaced it --
+# it reports `Z50_2`, with no space, and misses the `"Z 50"` row. The rows come
+# from LibRaw master and are appended at the end of the table, so every existing
+# lookup is unchanged. Idempotent: safe on every build.
+python3 app/build/libraw-new-cameras.py "$SRC/src/tables/colordata.cpp"
+
 # *_ph.cpp are placeholder translation units; they duplicate symbols that the
 # real files define.
 build_one() {   # $1 = extra flags, $2 = output, $3 = object dir

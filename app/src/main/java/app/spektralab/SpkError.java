@@ -34,6 +34,21 @@ public final class SpkError {
     private static final String IMPORT_PERMISSION =
             "照片的读取权限已失效（系统收回了文件选择器给的临时授权）。请点「导入」重新选择这张照片";
 
+    /**
+     * The pixels are finished and on disk; the provider refused its own new
+     * row. That distinction matters: "render failed" sends the user to their
+     * photo library, "the album would not take the file" sends them to a
+     * restart, and the two need different words.
+     */
+    private static final String ALBUM_WRITE =
+            "照片已经渲染完成，是系统相册拒绝接收这个文件（不是渲染失败）。"
+            + "重启手机再导出一次；如果每次都这样，把这条发给我";
+
+    static boolean isAlbumWriteFailure(String raw) {
+        if (raw == null) return false;
+        return raw.contains("相册写入失败") || raw.contains("No item at content://media/");
+    }
+
     static boolean isPermissionFailure(String raw) {
         if (raw == null) return false;
         return raw.contains("SecurityException") || raw.contains("Permission Denial")
@@ -43,6 +58,7 @@ public final class SpkError {
     public static String format(String raw) {
         if (raw == null || raw.isEmpty()) return "[E-0000] 未知错误";
         if (isPermissionFailure(raw)) return "[E-1304] " + IMPORT_PERMISSION + "（" + raw + "）";
+        if (isAlbumWriteFailure(raw)) return "[E-1306] " + ALBUM_WRITE + "（" + raw + "）";
         int code = codeOf(raw);
         if (code == 0) code = 9000;
         if (code == 9000 && isNativeLoadFailure(raw)) {
@@ -89,9 +105,22 @@ public final class SpkError {
     public static String explain(int code) {
         switch (code) {
             // 1xxx — the GPU, or the frame it was asked to take
-            case 1001: return "这张图超过了本机 GPU 的单缓冲上限，请用较小的尺寸导入或导出";
+            // **Never "use a smaller size".** The banded renderer exists so a
+            // frame is not refused for the driver's binding range; if a kernel
+            // still binds a whole plane, that is our bug, not the picture's.
+            case 1001: return "渲染器有一个阶段仍按整块绑定这张图，超过了本机 GPU 的单缓冲上限。"
+                             + "这是引擎里还没分带的路径，不是你图片的问题——请把这条和图片尺寸发给我";
             case 1002: return "渲染调度超出本机上限（图像太大）";
-            case 1003: return "显存不足";
+            // Byte-for-byte the honest sentence: `maxPixelsByMemory` reserves
+            // 1.5 GiB and budgets 100 B/px (12 B/px decode + 4 B/px ARGB +
+            // 76 B/px of GPU planes). A 50 MP frame wants ~5 GB by that
+            // measure, so an 8 GB phone's ~4.5 GB of free memory cannot hold
+            // it at native size. Nothing here is a cap in the code -- it is
+            // the picture outgrowing the machine.
+            case 1003: return "导入时内存不够：这张图按原尺寸解码（12 字节/像素）再加渲染要用的显存"
+                             + "（约 76 字节/像素），超过了本机当前可用的内存。"
+                             + "关掉其它应用或重启手机再试；如果还不够，就是这张图的尺寸超过了"
+                             + "这台机器的物理内存，不是程序设了上限";
             case 1004: return "GPU 驱动被重置（过热或单次运算过久），请等机器凉下来再试";
             case 1005: return "本机没有可用的 Vulkan 驱动，或驱动版本低于引擎要求"
                              + "（需要 Vulkan 1.1 以上的计算管线）。"
@@ -104,14 +133,15 @@ public final class SpkError {
             // nearly always the device refusing to allocate the planes, so the
             // advice is the same as 1001's rather than "internal error", which
             // tells the user nothing and the developer less.
-            case 1009: return "图形后端调用失败（大图多为显存不足）：可关掉片边、或按较小尺寸重新导入后重试";
+            case 1009: return "图形后端调用失败，大图时多为显存不足。关掉其它应用或重启手机再试一次；"
+                             + "把这条发给我可以定位是哪一次分配失败";
             // The rebate's canvas, which is a frame of its own: a source that
             // fits can still lay out a canvas that cannot be rendered.
             case 1011: return "渲染引擎没能在这台设备上启动：Vulkan 设备建立失败，"
                              + "多半是驱动不完整或显存被别的应用占着。"
                              + "重启手机再试一次；仍然不行就是这台机器的驱动跑不了这个引擎";
-            case 1010: return "开了片边之后，画布超过了安卓端冲洗引擎的单帧上限（约 42 MP）："
-                             + "请关掉片边，或按更小的尺寸重新导入";
+            case 1010: return "开了片边之后，画布超过了安卓端冲洗引擎的单帧上限（约 42 MP）。"
+                             + "这是画布分配的上限，不是引擎的渲染上限——请把尺寸发给我";
             // 11xx — the file
             case 1101: return "RAW 打开失败：格式或压缩方式不受支持";
             case 1102: return "RAW 解包失败：文件确实损坏或没有下载完整（换一份重传试试）";

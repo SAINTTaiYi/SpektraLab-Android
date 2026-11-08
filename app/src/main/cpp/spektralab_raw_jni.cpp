@@ -72,6 +72,20 @@ static void throw_runtime(JNIEnv* env, const char* msg) {
 
 // Open a session from a RAW file path.
 // Returns session handle, or 0 on failure.
+// **The open file, kept across white-balance changes.** A temperature drag
+// used to reopen and unpack the whole frame (3.0 s at 20 MP); `dcraw_process`
+// is what the balance actually changes, so the unpacked file is kept and only
+// that step re-runs (2.4 s measured, byte-identical to a fresh decode --
+// `raw_reuse_test`). The mutex is here because the cache owns a LibRaw object
+// and two decodes must not share it.
+static spk::io::RawDecodeCache g_raw_cache;
+static std::mutex g_raw_cache_mutex;
+
+JNI(void, nativeClearRawCache)(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(g_raw_cache_mutex);
+    g_raw_cache.clear();
+}
+
 static jlong open_raw_impl(JNIEnv* env, jlong engineHandle, jstring filePath,
                           jstring paramsJson, jint maxPixels, jint maxLongEdge,
                           const std::array<float, 4>* user_mul) {
@@ -90,8 +104,12 @@ static jlong open_raw_impl(JNIEnv* env, jlong engineHandle, jstring filePath,
     // maxPixels is a decode-time hint as well: a frame more than four times
     // the budget is decoded at half size, which is a quarter of the memory
     // and still more pixels than the session will keep.
-    bool ok = spk::io::decode_raw_compatible(path, user_mul, raw, error,
-                                            size_t(maxPixels > 0 ? maxPixels : 0));
+    bool ok;
+    {
+        std::lock_guard<std::mutex> lock(g_raw_cache_mutex);
+        ok = g_raw_cache.decode(path, user_mul, raw, error,
+                                size_t(maxPixels > 0 ? maxPixels : 0));
+    }
     env->ReleaseStringUTFChars(filePath, path);
     
     if (!ok) {
@@ -202,6 +220,33 @@ static jlong open_raw_impl(JNIEnv* env, jlong engineHandle, jstring filePath,
 // *before* the decode so it can say what the frame is and what it will cost; a
 // sheet that appears after the memory is already spent is a post-mortem, not a
 // choice.
+// **The vendor's display profile for the canvas.**
+//
+// Returns [baselineEV, x0, y0, x1, y1, ...] read from DNG tags 50730 and 50940,
+// or null when the file carries no tone curve (every camera DNG, every NEF/RAF
+// tested). Only the canvas uses it; the engine's working numbers stay linear.
+JNI(jfloatArray, nativeSourceDisplayProfile)(JNIEnv* env, jclass, jstring filePath) {
+    if (!filePath) return nullptr;
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    if (!path) return nullptr;
+    std::vector<float> curve;
+    double baseline = 0.0;
+    const bool ok = spk::io::read_dng_display_profile(path, curve, baseline);
+    env->ReleaseStringUTFChars(filePath, path);
+    // A file with no tone curve can still carry a BaselineExposure, which the
+    // DNG spec requires a reader to apply -- LibRaw parses it and never uses
+    // it. Samsung writes +3.00 EV on the S21 Ultra; ignoring that renders the
+    // frame three stops under.
+    if (curve.empty() && baseline == 0.0) return nullptr;
+    std::vector<float> out;
+    out.reserve(curve.size() + 1);
+    out.push_back(float(baseline));
+    out.insert(out.end(), curve.begin(), curve.end());
+    jfloatArray arr = env->NewFloatArray(jsize(out.size()));
+    if (arr) env->SetFloatArrayRegion(arr, 0, jsize(out.size()), out.data());
+    return arr;
+}
+
 JNI(jintArray, nativeRawDimensions)(JNIEnv* env, jclass, jstring filePath) {
     if (!filePath) return nullptr;
     const char* path = env->GetStringUTFChars(filePath, nullptr);

@@ -2,12 +2,34 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="app.spektralab"
-    android:versionCode="181"
-    android:versionName="1.5.0e">
+    android:versionCode="323"
+    android:versionName="1.6.0b">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" tools:ignore="GradleOverrides"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- **What the pickers are.** targetSdk is 36, so package visibility is in
+         force: without these declarations `resolveActivity("…GET_CONTENT")`
+         answers null even when the system picker exists, and every storage
+         entry in the app reports "本机没有…". The launch path no longer depends
+         on it, but declaring them also keeps the queries honest for anything
+         that does. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT"/>
+            <category android:name="android.intent.category.OPENABLE"/>
+            <data android:mimeType="*/*"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT"/>
+            <category android:name="android.intent.category.OPENABLE"/>
+            <data android:mimeType="*/*"/>
+        </intent>
+        <intent>
+            <action android:name="android.provider.action.PICK_IMAGES"/>
+            <data android:mimeType="image/*"/>
+        </intent>
+    </queries>
     <application
         android:usesCleartextTraffic="true"
         android:label="SpektraLab"
