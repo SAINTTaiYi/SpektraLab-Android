@@ -53,6 +53,16 @@ public class MainActivity extends Activity {
     private boolean e1001Offered = false;
     /** A render is in flight: one native result buffer, one renderer. */
     private volatile boolean rendering = false;
+    /**
+     * Which canvas a render belongs to.
+     *
+     * <p>Bumped whenever the frame underneath is replaced -- a new import, a
+     * reset, deleting the strip. A render that comes back for an epoch that no
+     * longer exists must not paint, and (just as important) it must hand the
+     * RENDERING plate back: the old code dropped the bitmap and returned, which
+     * took the only `rendering = false` with it.
+     */
+    private int renderEpoch = 0;
     // `volatile`: a batch export polls it from a worker while the UI thread
     // assigns it after a decode.
     private volatile SpektraLabEngine.Session session;
@@ -452,6 +462,10 @@ public class MainActivity extends Activity {
     private Typeface tfHan;          // OPPO Sans — Chinese, and anything mixed
     private View emptyState, rawState;
     private TextView fileLabel, rawName, busyLabel, originalLabel, paperValue, edgeValue, formatFootValue;
+    /** The 尺度 page's foot caption -- it says who owns the frame's length. */
+    private TextView formatFootLabel;
+    /** True while the millimetre cards are locked because a rebate is on. */
+    private boolean formatLocked = false;
     /**
      * One adjustable, as the panel shows it: a name, a glyph for the chip, and
      * a getter/setter pair that is the single source of truth. The panel shows
@@ -569,6 +583,12 @@ public class MainActivity extends Activity {
     private static final String[] EDGE_RATIO_LABELS = {
             "3:2", "4:3", "65:24", "4:3", "1:1", "5:4", "4:3", "3:2", "2:1", "3:1"};
 
+    /** The gate's position in EDGE_IDS (an array, not a list). */
+    private static int gateIndex(String id) {
+        for (int i = 0; i < EDGE_IDS.length; ++i) if (EDGE_IDS[i].equals(id)) return i;
+        return -1;
+    }
+
     /** The gate's frame length, by id (not by position -- `edgeIds` is a
      *  filtered subset of EDGE_IDS). */
     private static float gateMm(String id) {
@@ -600,9 +620,7 @@ public class MainActivity extends Activity {
             if (Math.abs(FORMAT_MM[i] - mm) < Math.abs(FORMAT_MM[best] - mm)) best = i;
         }
         formatIndex = best;
-        if (formatFootValue != null) {
-            formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", FORMAT_MM[best]));
-        }
+        refreshFormatFoot();
         rebuildFormatCards();
     }
     private final List<String> edgeLabels = new ArrayList<>(), edgeIds = new ArrayList<>();
@@ -822,6 +840,15 @@ public class MainActivity extends Activity {
         final String name;
         Bitmap thumb;
         Look look = new Look();
+        /**
+         * Whether this frame was left on 原图.
+         *
+         * <p>The look and the view are two different things: a frame can carry
+         * a film *and* be sitting on the source. Reopening it re-ran the film
+         * because `look.filmStock` was all that was remembered -- "来回切换
+         * 缩略图，照片会自己变回上一次选择的胶片".
+         */
+        boolean original = true;
         Frame(Uri uri, boolean raw, String name) {
             this.uri = uri; this.raw = raw; this.name = name;
         }
@@ -1110,6 +1137,7 @@ public class MainActivity extends Activity {
                 o.put("raw", f.raw);
                 o.put("name", f.name == null ? "" : f.name);
                 o.put("look", lookToJson(f.look));
+                o.put("orig", f.original);
                 arr.put(o);
             }
             final org.json.JSONObject root = new org.json.JSONObject();
@@ -1149,6 +1177,11 @@ public class MainActivity extends Activity {
                 final Uri uri = Uri.parse(u);
                 final Frame frame = new Frame(uri, o.optBoolean("raw", false), o.optString("name", ""));
                 frame.look = lookFromJson(o.optJSONObject("look"));
+                // **Legacy sessions open on their print.** A frame saved before
+                // this flag existed had no way to say "I was looking at the
+                // source"; defaulting to true would bring every old edit back
+                // unrendered and read as lost work.
+                frame.original = o.optBoolean("orig", false);
                 frame.thumb = readThumb(uri);
                 frames.add(frame);
             }
@@ -1171,13 +1204,18 @@ public class MainActivity extends Activity {
             importBudgetAccepted = true;
             suppressBudgetDialog = true;
             reopeningFrame = true;
+            // **Bring the frame back the way it was left.** A frame that was
+            // parked on 原图 must not come back developed just because it still
+            // carries a look -- that is the same jump the chips had.
+            final boolean restoredOriginal = frames.get(currentFrame).original;
+            reopenToOriginal = restoredOriginal;
             loadImage(frames.get(currentFrame).uri);
             // **A frame that had a film gets its print back.** The decode is
             // the whole of `loadImage`; without this an edit that was safely
             // on disk still came back as the original, because nothing ever
             // asked for a render. The strip already says "this is the
             // photograph you were working on" -- the canvas has to agree.
-            if (filmStock != null) renderImage();
+            if (filmStock != null && !restoredOriginal) renderImage();
             return true;
         } catch (Throwable t) {
             try { DebugSink.text("session", "restore failed: " + t); } catch (Throwable ignored) { }
@@ -1195,6 +1233,8 @@ public class MainActivity extends Activity {
     /** Set while a chip is re-opening a frame, so the import does not append a
      *  second copy of a photograph the strip already has. */
     private boolean reopeningFrame = false;
+    /** Set by `reopenFrameForced`: this frame was left on 原图, so do not render it. */
+    private boolean reopenToOriginal = false;
     private int currentFrame = -1;
     private LinearLayout originalAction;
     private ToolGlyph originalGlyph;
@@ -1364,8 +1404,14 @@ public class MainActivity extends Activity {
 
     private static final String[] BRAND_IDS = {"all", "kodak", "fujifilm", "ilford", "cinestill"};
     private static final String[] BRAND_NAMES = {"全部", "KODAK", "FUJIFILM", "ILFORD", "CINESTILL"};
-    private static final String[] FORMAT_NAMES = {"135 全画幅", "135 半格", "135 XPan", "645", "6×6", "6×7", "6×9", "6×12", "6×17"};
-    private static final float[] FORMAT_MM = {36f, 24f, 65f, 56f, 56f, 70f, 84f, 120f, 170f};
+    // **One card per gate, in the gates' own order.** This used to be a
+    // separate ladder (36/24/65/56/56/70/84/120/170) that only resembled the
+    // gates: 6x8 had no card, 6x12 and 6x17 were 120/170, and 56 appeared twice
+    // with nothing to say which was which -- so "645" and "135 半格" could not be
+    // told apart from "6x6", and two of the ten gates had no card at all. Now
+    // index i is EDGE_IDS[i], which is what `applyGate` needs.
+    private static final String[] FORMAT_NAMES = EDGE_LABELS;
+    private static final float[] FORMAT_MM = EDGE_MM;
     private final View[] tabCells = new View[6];
     private final View[] tabBars = new View[6];
     private final TextView[] tabLabels = new TextView[6];
@@ -1746,7 +1792,7 @@ public class MainActivity extends Activity {
         refreshEdgeFormats();
         setTab(0);
         setPanelCollapsed(false);
-        setOpticsUnlocked(false);
+        refreshPanelLocks();
         rebuildFrameChips();
     }
 
@@ -2344,6 +2390,9 @@ public class MainActivity extends Activity {
         rawAutoBright = getSharedPreferences("ui", MODE_PRIVATE)
                 .getBoolean("raw_auto_bright", false);
         histogram = new HistogramView(this);
+        // The curve page draws the same bins as a backdrop; without this it
+        // would sit on the distribution from the last time *it* was laid out.
+        histogram.setOnChanged(() -> { if (curveView != null) curveView.invalidate(); });
         final android.widget.FrameLayout.LayoutParams hlp =
                 new android.widget.FrameLayout.LayoutParams(dp(148), dp(54),
                         android.view.Gravity.TOP | android.view.Gravity.START);
@@ -2715,10 +2764,10 @@ public class MainActivity extends Activity {
         for (int i = 0; i < FORMAT_MM.length; ++i) {
             if (Math.abs(FORMAT_MM[i] - filmFormatMm) < 0.5f) { formatIndex = i; break; }
         }
-        if (formatFootValue != null) {
-            formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", filmFormatMm));
-        }
+        rebuildFormatCards();
+        refreshFormatFoot();
         refreshPaperLabel();
+        refreshViewLock();
     }
 
     /** Park the live controls on the frame that owns them, before leaving it. */
@@ -2810,7 +2859,9 @@ public class MainActivity extends Activity {
 
     private void saveLookIntoFrames() {
         if (currentFrame < 0 || currentFrame >= frames.size()) return;
-        frames.get(currentFrame).look = captureLook();
+        final Frame f = frames.get(currentFrame);
+        f.look = captureLook();
+        f.original = showingOriginal;
     }
 
     private void updateShelfHandle() {
@@ -2894,6 +2945,7 @@ public class MainActivity extends Activity {
         }
         final Frame frame = new Frame(uri, isRawFile, name);
         frame.look = captureLook();
+        frame.original = true;            // an import lands on 原图
         if (beforeBitmap != null) {
             try {
                 final int w = Math.max(1, dp(42));
@@ -2991,6 +3043,10 @@ public class MainActivity extends Activity {
             showingOriginal = false;
             setStage(0, null);
             statusText.setText("等待导入");
+            // No frame, no chain: the same state a reset lands in.
+            filmStock = null;
+            renderEpoch++;
+            refreshPanelLocks();
             rebuildFilmCards();
         }
         rebuildFrameChips();
@@ -3023,6 +3079,7 @@ public class MainActivity extends Activity {
         saveLookIntoFrames();
         currentFrame = index;
         reopeningFrame = true;
+        reopenToOriginal = frame.original;
         suppressBudgetDialog = true;
         rebuildFrameChips();
         loadImage(frame.uri);
@@ -3692,6 +3749,7 @@ public class MainActivity extends Activity {
         }
         if (index < 0 || index >= filmIds.size()) return;
         filmStock = filmIds.get(index);
+        refreshViewLock();
         // The film's declared paper, exactly as `selectFilmStock` does on the
         // macOS side. Without this a black-and-white stock stayed on whatever
         // colour paper was there -- and a silver negative on Portra Endura is
@@ -3842,6 +3900,8 @@ public class MainActivity extends Activity {
     private HistogramView histogram = null;
     /** A display preference, not a look: it is stored beside the theme. */
     private boolean histogramOn = true;
+    /** Live frames between histogram refreshes (see `drawLivePreview`). */
+    private int liveHistCounter;
     /** Which 光学 sub-page is showing; 重置 acts on this one only. */
     private int viewPage = 0;
     private TextView[] viewCatChips;
@@ -3869,10 +3929,16 @@ public class MainActivity extends Activity {
     private static class HistogramView extends View {
         /** A tenth of a percent of the samples: below this it is noise. */
         private static final double CLIP_SHARE = 0.001;
+        /** The three traces' colours, shared with the curve page's backdrop. */
+        static final int RED = 0xFFFF5A4E, GREEN = 0xFF47D97A, BLUE = 0xFF4E9BFF;
 
         private final int[] r = new int[256], g = new int[256], b = new int[256];
         private final int[] rs = new int[256], gs = new int[256], bs = new int[256];
+        /** Rec.709 luma: the 亮度 curve edits this, not the three channels. */
+        private final int[] y = new int[256], ys = new int[256];
         private int clipLo, clipHi, samples = 1;
+        /** Told when the bins moved, so the curve page's backdrop repaints too. */
+        private Runnable onChanged;
         private final android.graphics.Paint paint =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private final android.graphics.Path path = new android.graphics.Path();
@@ -3887,14 +3953,15 @@ public class MainActivity extends Activity {
             screenBlend = android.os.Build.VERSION.SDK_INT >= 29;
         }
 
+        void setOnChanged(Runnable r) { onChanged = r; }
+
+        private void changed() {
+            invalidate();
+            if (onChanged != null) onChanged.run();
+        }
+
         void setBitmap(Bitmap bm) {
-            java.util.Arrays.fill(r, 0);
-            java.util.Arrays.fill(g, 0);
-            java.util.Arrays.fill(b, 0);
-            clipLo = 0;
-            clipHi = 0;
-            samples = 1;
-            if (bm == null || bm.getWidth() < 8 || bm.getHeight() < 8) { invalidate(); return; }
+            if (bm == null || bm.getWidth() < 8 || bm.getHeight() < 8) { applyBins(null); return; }
             // A fixed sample budget. 40 000 samples resolve 256 bins as well
             // as 3 M do; walking a full 12 MP bitmap would cost 48 MB and
             // stall the UI thread the moment a render finishes.
@@ -3907,23 +3974,72 @@ public class MainActivity extends Activity {
             final int[] px = new int[w * h];
             small.getPixels(px, 0, w, 0, 0, w, h);
             if (small != bm) small.recycle();
-            int lo = 0, hi = 0;
-            for (int i = 0; i < px.length; ++i) {
-                final int p = px[i];
-                final int ri = (p >> 16) & 255, gi = (p >> 8) & 255, bi = p & 255;
-                ++r[ri];
-                ++g[gi];
-                ++b[bi];
-                if (ri == 0 || gi == 0 || bi == 0) ++lo;
-                if (ri == 255 || gi == 255 || bi == 255) ++hi;
+            applyBins(computeBins(px, w, h));
+        }
+
+        /**
+         * The same bins from a frame's ARGB array, with a strided sample and no
+         * Bitmap in between.
+         *
+         * <p>The floating histogram only moved when a full 2048 render finished,
+         * so dragging a slider left both it and the curve page's backdrop frozen
+         * on the previous picture -- "两个直方图都不能实时预览". A live frame
+         * already holds its pixels (`copyArgbRange` wrote them), so counting them
+         * directly is a few hundred microseconds instead of a scaled bitmap.
+         *
+         * <p>Returns `{samples, clipLo, clipHi, r[256], g[256], b[256], y[256]}`;
+         * null when there is nothing to count. Static and allocation-light so the
+         * render thread can call it without touching a View.
+         */
+        static int[] computeBins(int[] px, int w, int h) {
+            if (px == null || w < 8 || h < 8 || px.length < w * h) return null;
+            final int[] out = new int[3 + 4 * 256];
+            final int stride = Math.max(1,
+                    (int) Math.round(Math.sqrt((double) w * h / 40000.0)));
+            int n = 0, lo = 0, hi = 0;
+            for (int yy = 0; yy < h; yy += stride) {
+                final int row = yy * w;
+                for (int xx = 0; xx < w; xx += stride) {
+                    final int p = px[row + xx];
+                    final int ri = (p >> 16) & 255, gi = (p >> 8) & 255, bi = p & 255;
+                    ++out[3 + ri];
+                    ++out[3 + 256 + gi];
+                    ++out[3 + 512 + bi];
+                    ++out[3 + 768 + Math.max(0, Math.min(255,
+                            (ri * 2126 + gi * 7152 + bi * 722) / 10000))];
+                    if (ri == 0 || gi == 0 || bi == 0) ++lo;
+                    if (ri == 255 || gi == 255 || bi == 255) ++hi;
+                    ++n;
+                }
             }
-            samples = px.length;
-            clipLo = lo;
-            clipHi = hi;
+            out[0] = Math.max(1, n);
+            out[1] = lo;
+            out[2] = hi;
+            return out;
+        }
+
+        /** Install a bin set produced by `computeBins` (UI thread). */
+        void applyBins(int[] packed) {
+            java.util.Arrays.fill(r, 0);
+            java.util.Arrays.fill(g, 0);
+            java.util.Arrays.fill(b, 0);
+            java.util.Arrays.fill(y, 0);
+            clipLo = 0;
+            clipHi = 0;
+            samples = 1;
+            if (packed == null || packed.length < 3 + 4 * 256) { changed(); return; }
+            samples = Math.max(1, packed[0]);
+            clipLo = packed[1];
+            clipHi = packed[2];
+            System.arraycopy(packed, 3, r, 0, 256);
+            System.arraycopy(packed, 259, g, 0, 256);
+            System.arraycopy(packed, 515, b, 0, 256);
+            System.arraycopy(packed, 771, y, 0, 256);
             smooth(r, rs);
             smooth(g, gs);
             smooth(b, bs);
-            invalidate();
+            smooth(y, ys);
+            changed();
         }
 
         /** 1-2-1: a one-bin spike becomes a peak several columns wide. */
@@ -4047,9 +4163,22 @@ public class MainActivity extends Activity {
 
     private LinearLayout buildViewPanel() {
         final LinearLayout panel = new LinearLayout(this);
+        viewRoot = panel;
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.addView(sectionHead("OPTICS / 光学调整", this::resetViewPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
+        // **Say why, instead of letting a live page do nothing.**
+        //
+        // The optics layer is applied to the engine's *output* -- `grade_result`
+        // on export, `copyArgbRange` on the canvas -- so with no film there is
+        // nothing for it to sit on: the sliders moved and the picture did not.
+        // A dead page with no explanation is what made a user ask for a "no
+        // film mode"; he read the silence as a missing feature. This line is the
+        // cheap half of that answer.
+        viewLockNote = label("选一张胶片后可用 · 光学是叠在成片之上的调色，不改变胶片本身",
+                8.5f, UI_MUTED, tfHan);
+        viewLockNote.setPadding(dp(2), dp(4), dp(2), dp(8));
+        panel.addView(viewLockNote, new LinearLayout.LayoutParams(-1, -2));
 
         final String[] cats = {"亮度", "颜色", "效果", "曲线", "分级"};
         final LinearLayout catRow = new LinearLayout(this);
@@ -4087,6 +4216,10 @@ public class MainActivity extends Activity {
             curvePoints[i].add(new float[]{0f, 0f});
             curvePoints[i].add(new float[]{1f, 1f});
         }
+        // **Locked from the first frame.** An import lands with no film, so the
+        // page has nothing to act on; leaving it bright until the first render
+        // would teach the opposite of what the note says.
+        refreshViewLock();
         return panel;
     }
 
@@ -4200,6 +4333,9 @@ public class MainActivity extends Activity {
         parent.addView(box, new LinearLayout.LayoutParams(-1, -2));
     }
 
+    /** The 光学 page's root and its "what this page is" line. */
+    private LinearLayout viewRoot;
+    private TextView viewLockNote;
     private LinearLayout wbDecodeBox;
     private TextView wbDecodeNote;
 
@@ -4819,23 +4955,127 @@ public class MainActivity extends Activity {
 
     /** A square you draw the curve in: drag a point, tap to add, hold to remove. */
     private final class CurveView extends View {
-        private final int padPx = dp(10);
+        // **Room for the numbers.** The plot used to sit 10 dp from every edge,
+        // which left nowhere to print an axis: the curve was a shape with no
+        // scale, and "is this point at 128 or at 140" could only be guessed.
+        // The left gutter carries the output axis, the bottom one the input.
+        private final int padL = dp(26), padR = dp(8), padT = dp(8), padB = dp(16);
         private int dragging = -1;
 
         CurveView() { super(MainActivity.this); }
 
         private android.graphics.PointF toScreen(float x, float y) {
-            final float w = getWidth() - 2f * padPx, h = getHeight() - 2f * padPx;
-            return new android.graphics.PointF(padPx + x * w, padPx + (1f - y) * h);
+            final float w = getWidth() - padL - padR, h = getHeight() - padT - padB;
+            return new android.graphics.PointF(padL + x * w, padT + (1f - y) * h);
         }
 
         private float[] fromScreen(float px, float py) {
-            final float w = Math.max(1, getWidth() - 2f * padPx), h = Math.max(1, getHeight() - 2f * padPx);
-            return new float[]{Math.max(0, Math.min(1, (px - padPx) / w)),
-                               Math.max(0, Math.min(1, 1f - (py - padPx) / h))};
+            final float w = Math.max(1, getWidth() - padL - padR), h = Math.max(1, getHeight() - padT - padB);
+            return new float[]{Math.max(0, Math.min(1, (px - padL) / w)),
+                               Math.max(0, Math.min(1, 1f - (py - padT) / h))};
+        }
+
+        /**
+         * The photograph's own distribution, behind the curve.
+         *
+         * <p>Every real curve editor puts it there for one reason: the curve is
+         * a decision about <em>this</em> picture's tones, and a bare grid says
+         * nothing about where those tones are. Only the channel being edited is
+         * drawn -- three traces for RGB, one for 亮度 and for R/G/B -- and all
+         * of it stays low and translucent so the curve and its handles remain
+         * the brightest thing in the box.
+         */
+        private void drawHistogramBackdrop(android.graphics.Canvas canvas, float plotW, float plotH) {
+            if (histogram == null || histogram.samples <= 1) return;
+            switch (curveChannel) {
+                case 1:
+                    drawHistogramTrace(canvas, histogram.ys, 0xFFFFFFFF, 0x34, plotW, plotH);
+                    return;
+                case 2:
+                    drawHistogramTrace(canvas, histogram.rs, HistogramView.RED, 0x58, plotW, plotH);
+                    return;
+                case 3:
+                    drawHistogramTrace(canvas, histogram.gs, HistogramView.GREEN, 0x58, plotW, plotH);
+                    return;
+                case 4:
+                    drawHistogramTrace(canvas, histogram.bs, HistogramView.BLUE, 0x58, plotW, plotH);
+                    return;
+                default:
+                    // RGB: three traces at a third of the weight, so their
+                    // overlap whitens where all three are strong -- the same
+                    // read as the floating histogram, minus its plate.
+                    drawHistogramTrace(canvas, histogram.rs, HistogramView.RED, 0x40, plotW, plotH);
+                    drawHistogramTrace(canvas, histogram.gs, HistogramView.GREEN, 0x40, plotW, plotH);
+                    drawHistogramTrace(canvas, histogram.bs, HistogramView.BLUE, 0x40, plotW, plotH);
+            }
+        }
+
+        private void drawHistogramTrace(android.graphics.Canvas canvas, int[] bins, int color,
+                                        int alpha, float plotW, float plotH) {
+            final int w = Math.max(8, Math.round(plotW));
+            final int[] heights = new int[w];
+            int max = 1;
+            for (int i = 0; i < w; ++i) {
+                final int a = i * 256 / w, e = Math.max(a + 1, (i + 1) * 256 / w);
+                int v = 0;
+                for (int k = a; k < e && k < 256; ++k) v = Math.max(v, bins[k]);
+                heights[i] = v;
+                if (v > max) max = v;
+            }
+            // Same normalisation as the floating histogram: 1.5x the 97th
+            // percentile, floored at max/8. A lone spike may reach the top; it
+            // may not flatten the other 255 bins into the bottom row.
+            final int[] sorted = heights.clone();
+            java.util.Arrays.sort(sorted);
+            final int cut = sorted[Math.min(sorted.length - 1, (int) (sorted.length * 0.97f))];
+            final int norm = Math.max(Math.max(1, max / 8),
+                    Math.min(max, Math.max(1, cut) * 3 / 2));
+            final float bottom = padT + plotH;
+            final float top = padT + dp(1);
+            final android.graphics.Path p = new android.graphics.Path();
+            p.moveTo(padL, bottom);
+            for (int i = 0; i < w; ++i) {
+                final float t = Math.min(1f, heights[i] / (float) norm);
+                p.lineTo(padL + i, bottom - t * (bottom - top));
+            }
+            p.lineTo(padL + plotW, bottom);
+            p.close();
+            // **A vertical fade, not a flat wash.** Top-weighted is how a
+            // histogram reads as a shape rather than as a coloured block, and
+            // the fade keeps the bottom -- where the curve's shadow and the
+            // 0..64 tones live -- quiet enough that the orange curve stays the
+            // brightest line in the box.
+            final int rgb = color & 0x00FFFFFF;
+            final android.graphics.Paint fill =
+                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            fill.setStyle(android.graphics.Paint.Style.FILL);
+            fill.setShader(new android.graphics.LinearGradient(0, top, 0, bottom,
+                    rgb | (alpha << 24), rgb | ((alpha / 3) << 24),
+                    android.graphics.Shader.TileMode.CLAMP));
+            canvas.drawPath(p, fill);
+            // A crisp top edge. A translucent fill alone reads as a smudge,
+            // and the curve needs a clear silhouette underneath it.
+            final android.graphics.Paint edge =
+                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+            edge.setStyle(android.graphics.Paint.Style.STROKE);
+            edge.setStrokeWidth(Math.max(1f, dp(0.7f)));
+            edge.setColor(color);
+            edge.setAlpha(Math.min(255, alpha * 2));
+            p.reset();
+            for (int i = 0; i < w; ++i) {
+                final float t = Math.min(1f, heights[i] / (float) norm);
+                final float x = padL + i, y = bottom - t * (bottom - top);
+                if (i == 0) p.moveTo(x, y); else p.lineTo(x, y);
+            }
+            canvas.drawPath(p, edge);
         }
 
         @Override protected void onDraw(android.graphics.Canvas canvas) {
+            // **The tones first, the decision on top of them.** The backdrop
+            // shares this view's x axis, so a control point sits directly over
+            // the tones it is about to move.
+            drawHistogramBackdrop(canvas, Math.max(1f, getWidth() - padL - padR),
+                    Math.max(1f, getHeight() - padT - padB));
             final android.graphics.Paint grid = new android.graphics.Paint();
             grid.setColor(UI_LINE);
             grid.setStrokeWidth(1f);
@@ -4846,6 +5086,43 @@ public class MainActivity extends Activity {
                 final android.graphics.PointF c = toScreen(0f, i / 4f), d = toScreen(1f, i / 4f);
                 canvas.drawLine(c.x, c.y, d.x, d.y, grid);
             }
+            // The plot's own frame: without it the ticks float next to nothing.
+            final android.graphics.Paint frame = new android.graphics.Paint();
+            frame.setColor(UI_LINE);
+            frame.setStrokeWidth(1f);
+            frame.setStyle(android.graphics.Paint.Style.STROKE);
+            canvas.drawRect(padL, padT, padL + (getWidth() - padL - padR),
+                    padT + (getHeight() - padT - padB), frame);
+
+            // **The axis values, in the units the user reads everywhere else.**
+            // The curve is applied to 8-bit levels, so 0/64/128/192/255 is the
+            // scale a photographer expects; a bare grid is not.
+            final android.graphics.Paint tick = new android.graphics.Paint(
+                    android.graphics.Paint.ANTI_ALIAS_FLAG);
+            tick.setColor(UI_MUTED);
+            tick.setTextSize(dp(7));
+            tick.setTypeface(tfBody);
+            final int[] levels = {0, 64, 128, 192, 255};
+            for (int i = 0; i < levels.length; ++i) {
+                final float t = i / 4f;
+                final android.graphics.PointF y = toScreen(0f, t);
+                tick.setTextAlign(android.graphics.Paint.Align.RIGHT);
+                canvas.drawText(String.valueOf(levels[i]), padL - dp(3), y.y + dp(2.5f), tick);
+                final android.graphics.PointF x = toScreen(t, 0f);
+                // The two end labels align to the plot's own edges; centring
+                // them would push half a glyph outside the view.
+                if (i == 0) {
+                    tick.setTextAlign(android.graphics.Paint.Align.LEFT);
+                    canvas.drawText(String.valueOf(levels[i]), dp(1), getHeight() - dp(4), tick);
+                } else if (i == levels.length - 1) {
+                    tick.setTextAlign(android.graphics.Paint.Align.RIGHT);
+                    canvas.drawText(String.valueOf(levels[i]), getWidth() - dp(1), getHeight() - dp(4), tick);
+                } else {
+                    tick.setTextAlign(android.graphics.Paint.Align.CENTER);
+                    canvas.drawText(String.valueOf(levels[i]), x.x, getHeight() - dp(4), tick);
+                }
+            }
+
             final java.util.List<float[]> pts = curvePoints[curveChannel];
             final android.graphics.Paint line = new android.graphics.Paint();
             line.setColor(UI_BLUE);
@@ -4863,6 +5140,21 @@ public class MainActivity extends Activity {
             for (float[] q : pts) {
                 final android.graphics.PointF p = toScreen(q[0], q[1]);
                 canvas.drawRect(p.x - dp(4), p.y - dp(4), p.x + dp(4), p.y + dp(4), dot);
+            }
+            // **The point under the finger, in numbers.** Dragging a dot moved a
+            // shape; the readout is what makes it a curve editor rather than a
+            // drawing. Shown only while dragging, top right, so it never sits
+            // on top of the curve the user is aiming at.
+            if (dragging >= 0 && dragging < pts.size()) {
+                final int in = Math.round(pts.get(dragging)[0] * 255f);
+                final int out = Math.round(pts.get(dragging)[1] * 255f);
+                final android.graphics.Paint read = new android.graphics.Paint(
+                        android.graphics.Paint.ANTI_ALIAS_FLAG);
+                read.setColor(UI_BLUE);
+                read.setTextSize(dp(8));
+                read.setTypeface(tfBody);
+                read.setTextAlign(android.graphics.Paint.Align.RIGHT);
+                canvas.drawText(in + " → " + out, getWidth() - padR, padT + dp(9), read);
             }
         }
 
@@ -4921,6 +5213,11 @@ public class MainActivity extends Activity {
 
     private LinearLayout buildOpticsPanel() {
         LinearLayout panel = new LinearLayout(this);
+        // **The field the lock reads.** Without this line `setOpticsUnlocked`
+        // hit `if (opticsPanel == null) return;` every single time and the page
+        // was never dimmed -- which is why "原图状态下冲印还是亮的" survived a
+        // version that was supposed to fix it.
+        opticsPanel = panel;
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.addView(sectionHead("PRINT / 胶片冲印参数", this::resetOpticsPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
@@ -5706,11 +6003,14 @@ public class MainActivity extends Activity {
             final String want = cropRatioIndex < EDGE_IDS.length
                     ? EDGE_IDS[cropRatioIndex]
                     : PORTRAIT_GATES[cropRatioIndex - EDGE_IDS.length];
-            if (!want.equals(overscanFormat)) {
-                overscanFormat = want;
-                final double mm = gateMm(want);
-                if (mm > 0) filmFormatMm = (float) mm;
-            }
+            // **State the frame length whether or not the id changed.** The
+            // default `filmFormatMm` is 24, and a 3:2 crop that keeps
+            // `overscanFormat = "135"` used to leave it there: the rebate
+            // rendered at 36 (wireFormatMm takes it from the gate) while the
+            // 尺度 page showed 24, and the two numbers never met again.
+            overscanFormat = want;
+            final double mm = gateMm(want);
+            if (mm > 0) filmFormatMm = (float) mm;
         }
         cropRatioIndex = -1;
         commitCompose();
@@ -5800,6 +6100,12 @@ public class MainActivity extends Activity {
 
     /** One write, one render: every control on this page ends here. */
     private void commitCompose() {
+        // **The gate list is a function of the shape being rendered.** A crop
+        // or a quarter turn changes that shape, and until this call the list
+        // (and therefore `overscanFormat`) still described the picture before
+        // the edit -- so the very next render was refused with E-1305 on a
+        // gate the app itself had offered.
+        refreshEdgeFormats();
         applyParams();
         if (uiReady && session != null) {
             showingOriginal = false;
@@ -6133,8 +6439,8 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        foot.addView(label("物理尺幅 · 裁切与旋转在「构图」页", 8.5f, UI_MUTED, tfHan),
-                new LinearLayout.LayoutParams(0, -2, 1f));
+        formatFootLabel = label("物理尺幅 · 裁切与旋转在「构图」页", 8.5f, UI_MUTED, tfHan);
+        foot.addView(formatFootLabel, new LinearLayout.LayoutParams(0, -2, 1f));
         formatFootValue = label("36 mm", 9, UI_BLUE, tfBody);
         foot.addView(formatFootValue);
         panel.addView(foot, new LinearLayout.LayoutParams(-1, dp(28)));
@@ -6143,13 +6449,56 @@ public class MainActivity extends Activity {
         return panel;
     }
 
+    /** 76, not 76.0 -- but 69.5 has to stay 69.5. */
+    private static String mmText(float mm) {
+        return Math.abs(mm - Math.round(mm)) < 0.05f
+                ? String.format(java.util.Locale.US, "%.0f", mm)
+                : String.format(java.util.Locale.US, "%.1f", mm);
+    }
+
+    /**
+     * The 尺度 page's foot line.
+     *
+     * <p>**A rebate owns the frame's length.** `wireFormatMm` forwards the
+     * gate's own `along` the moment a rebate is on, so the millimetre cards
+     * decide nothing then -- and they used to keep looking live anyway: 24, 36,
+     * 56 and 65 mm rendered byte-identical pictures (measured, hash
+     * `be003cc212e7e8be` all four). A control that looks live and is not is
+     * worse than no control, so the caption says who is holding the pen and the
+     * cards below it grey out.
+     */
+    private void refreshFormatFoot() {
+        if (formatFootLabel != null) {
+            formatFootLabel.setText(overscanOn ? "物理尺幅 · 由片门决定，点数字换片门"
+                                               : "物理尺幅 · 裁切与旋转在「构图」页");
+        }
+        if (formatFootValue == null) return;
+        formatFootValue.setText(String.format(java.util.Locale.US, "%s mm",
+                mmText(overscanOn ? gateMm(overscanFormat) : filmFormatMm)));
+    }
+
+    /** Rebuild the cards only when the rebate took the length over, or gave it
+     *  back -- every other edge toggle leaves them (and their scroll) alone. */
+    private void syncFormatLock() {
+        refreshFormatFoot();
+        if (formatLocked != overscanOn) rebuildFormatCards();
+    }
+
     private void rebuildFormatCards() {
         if (formatCardStrip == null) return;
         formatCardStrip.removeAllViews();
         formatCards.clear();
+        // **A rebate owns the length**, so the ladder becomes a readout: it
+        // still shows every size (so the user can see where the gate sits) but
+        // only the one the gate picked is lit, and none of them take a tap.
+        final boolean byGate = overscanOn;
+        formatLocked = byGate;
+        // The lit card is the gate's own card; with the tables aligned that is
+        // just its index (56 mm is 645 *and* 6x6, 76 mm is 6x8).
+        final int byGateCard = byGate ? gateIndex(overscanFormat) : -1;
         for (int i = 0; i < FORMAT_NAMES.length; ++i) {
             final int index = i;
-            boolean active = i == formatIndex;
+            boolean active = byGate ? i == byGateCard : i == formatIndex;
 
             android.widget.FrameLayout card = new android.widget.FrameLayout(this);
             card.setBackground(cardBorder(active));
@@ -6173,7 +6522,7 @@ public class MainActivity extends Activity {
             valueRow.addView(unit, unitLp);
             top.addView(valueRow);
 
-            TextView kind = label(i == 2 || i >= 7 ? "宽幅" : "常规", 7, UI_MUTED, tfHan);
+            TextView kind = label(i == 2 || i >= 8 ? "宽幅" : "常规", 7, UI_MUTED, tfHan);
             LinearLayout.LayoutParams kindLp = new LinearLayout.LayoutParams(-2, -2);
             kindLp.topMargin = dp(4);
             top.addView(kind, kindLp);
@@ -6209,10 +6558,21 @@ public class MainActivity extends Activity {
 
     private void pickFormat(int index) {
         if (index < 0 || index >= FORMAT_MM.length) return;
+        if (overscanOn) {
+            // **A card is a gate.** With a rebate on the engine takes the
+            // frame's length from the gate, so a card cannot mean "the frame is
+            // this long" -- but with the tables aligned it means exactly "this
+            // gate", index for index. Locking them (1.6.0n) made them feel dead;
+            // mapping by nearest millimetre (1.6.0o) could not tell 645 from 6x6
+            // and left 6x8 unreachable.
+            applyGate(EDGE_IDS[index]);
+            return;
+        }
         formatIndex = index;
         filmFormatMm = FORMAT_MM[index];
-        // ... and the other way: a frame length picks the gate it fits.
-        final String gate = gateForMm(filmFormatMm);
+        // ... and the other way: a card *is* a gate now, so the two pages agree
+        // by construction (nearest millimetre could not tell 645 from 6x6).
+        final String gate = EDGE_IDS[index];
         if (!gate.equals(overscanFormat) && (edgeIds.isEmpty() || edgeIds.contains(gate))) {
             overscanFormat = gate;
             if (edgeValue != null) {
@@ -6220,9 +6580,7 @@ public class MainActivity extends Activity {
                 edgeValue.setText(gi >= 0 ? edgeLabels.get(gi) : gateLabelsFallback(gate));
             }
         }
-        if (formatFootValue != null) {
-            formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", FORMAT_MM[index]));
-        }
+        refreshFormatFoot();
         rebuildFormatCards();
         if (index < formatCards.size() && formatScroll != null) {
             final View target = formatCards.get(index);
@@ -6373,7 +6731,10 @@ public class MainActivity extends Activity {
         overscanRow = toggleRow("开启片边", overscanMark, () -> overscanOn, on -> {
             if (on && edgeIds.isEmpty()) {
                 overscanMark.setLit(false);
-                showInAppToast("这张图的长宽比不对应任何片门");
+                // **Point at the way out.** A 16:9 frame has no gate at all, and
+                // this switch used to answer "does not correspond to any gate"
+                // while the picker that could fix it was dimmed a few rows down.
+                showInAppToast("先选一个片门（会自动把画面裁成它的比例）");
                 return;
             }
             overscanOn = on;
@@ -6381,17 +6742,37 @@ public class MainActivity extends Activity {
             onEdgeChanged();
         });
         edgePage.addView(overscanRow, new LinearLayout.LayoutParams(-1, dp(52)));
-        LinearLayout edgeInner = new LinearLayout(this);
+        // **The field, not a local that shadows it.** `refreshEdgeGroups` dims
+        // `edgeInner`, and a local here left the field null -- so every switch
+        // it was meant to grey stayed lit and enabled, which is the opposite of
+        // what the page says it does.
+        edgeInner = new LinearLayout(this);
         edgeInner.setOrientation(LinearLayout.VERTICAL);
 
+        // **The two rows that *decide* the shape live outside the dimmed block.**
+        // `refreshEdgeGroups` disables `edgeInner` while the rebate is off, and
+        // these two used to be inside it -- so a 1.777:1 frame could not be
+        // given a gate at all: the 开启片边 switch refused ("no gate fits"),
+        // and the picker one row below was greyed out and untappable. The only
+        // way through was to crop in 构图 first. Now the entries stay live and
+        // choosing a gate crops the picture and turns the rebate on.
         {
             final int at = edgeIds.indexOf(overscanFormat);
             final String current = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
-            addChoice(edgeInner, "片门格式", current, tv -> {
+            addChoice(edgePage, "片门格式", current, tv -> {
                 edgeValue = tv;
                 showEdgePicker();
             });
         }
+        // **方向, where the user looks for it.** A rebate is cut by a gate and a
+        // gate's shape is fixed -- the film runs along the picture's short edge
+        // -- so "turn the rebate" can only mean "turn the picture". That is one
+        // quarter turn, and `commitCompose` then re-picks the gates for the new
+        // shape. The rebate follows; the canvas shows both.
+        addChoice(edgePage, "片边方向", "点一次，画面与片边同转 90°", tv -> {
+            turnBy(1);
+            showInAppToast("已转 90° · 片边方向跟着画面");
+        });
 
         edgeTextMark = new Square(this, UI_BLUE, uiToggleOff());
         edgeInner.addView(toggleRow("片边文字（厂标 / 张数）", edgeTextMark, () -> edgeTextOn, on -> {
@@ -6444,7 +6825,10 @@ public class MainActivity extends Activity {
                     redraw.accept(null);
                 }));
         this.edgeInner = edgeInner;
-        edgePage.addView(cappedScroll(edgeInner, 340), new LinearLayout.LayoutParams(-1, -2));
+        // **240, not 340.** 片门格式 and 片边方向 moved out of the scroll and
+        // into the page, so the block keeps its old total height instead of
+        // pushing the tab bar off the bottom of a 640 dp screen.
+        edgePage.addView(cappedScroll(edgeInner, 240), new LinearLayout.LayoutParams(-1, -2));
         edgeRoot.addView(edgePage, new LinearLayout.LayoutParams(-1, -2));
 
         datePage = new LinearLayout(this);
@@ -6458,7 +6842,7 @@ public class MainActivity extends Activity {
             onEdgeChanged();
         });
         datePage.addView(dateRow, new LinearLayout.LayoutParams(-1, dp(52)));
-        LinearLayout dateInner = new LinearLayout(this);
+        dateInner = new LinearLayout(this);
         dateInner.setOrientation(LinearLayout.VERTICAL);
         // The one field the app used to decide for the user: it read the date
         // out of EXIF and gave no way to write a different one.
@@ -6600,6 +6984,7 @@ public class MainActivity extends Activity {
         Probe.log("toggle", "sync overscan=" + overscanOn + " date=" + dateOn
                 + " edgeText=" + edgeTextOn);
         refreshEdgeCards();
+        syncFormatLock();
     }
 
     /** `setEnabledDeep`, but never touching `keep` or anything inside it. */
@@ -6635,13 +7020,83 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Put the picture in a gate: label, frame length, crop, the switch, and the
+     * list of gates that still fit.
+     *
+     * <p>**Both entries go through here.** The 片门格式 row and the 尺度 page's
+     * millimetre cards are two ways to say the same thing, and they used to
+     * carry two copies of this sequence -- which is how the cards ended up
+     * changing the gate without cropping the picture to it.
+     */
+    private void applyGate(String id) {
+        if (id == null) return;
+        final int at = gateIndex(id);
+        if (at < 0) return;
+        final String before = overscanFormat;
+        overscanFormat = id;
+        // The frame that goes in this gate, not whatever the scale page was on.
+        filmFormatMm = EDGE_MM[at];
+        formatIndex = at;
+        // **Choosing a gate is asking for the rebate.**
+        overscanOn = true;
+        if (overscanMark != null) overscanMark.setLit(true);
+        if (edgeValue != null) edgeValue.setText(EDGE_LABELS[at]);
+        // **The picture takes the gate's shape**, in the picture's own
+        // orientation: a portrait frame is the portrait of the gate, not a
+        // rotated landscape.
+        final float cur = originalAspect();
+        float want = (float) EDGE_RATIOS[at];
+        if (cur > 0f && cur < 1f) want = 1f / want;
+        // **Always re-cut, from the whole frame.** `cropToRatio` recomputes its
+        // window from `originalAspect()` every time, so calling it is
+        // idempotent -- and skipping it when the target merely *resembled the
+        // source* left the previous gate's crop on the canvas: on a 3:4 picture,
+        // 135 (which cuts to 2:3) followed by 135 half (whose target *is* 3:4)
+        // kept the 2:3 window, so the frame no longer matched the gate and the
+        // switch refused with "裁不成 135 半格的比例". 645 (0.741) and 6x8
+        // (0.737) are the same distance from 3:4 and failed the same way, while
+        // 6x7 (0.806) was far enough to be cut. The comparison has to be against
+        // the *current window*, never the source.
+        final boolean cropped = cur > 0f && Math.abs(currentAspect() / want - 1f) > 0.045f;
+        if (cur > 0f) {
+            cropToRatio(want);
+            if (cropped && composeBody != null) showComposePage(composeSubPage);
+        }
+        rebuildFormatCards();
+        refreshEdgeGroups();
+        // The picture may have a new shape, so the list of gates that fit it has
+        // to be the new one -- otherwise the switch would refuse the next tap.
+        refreshEdgeFormats();
+        // **Say when the gate did not take.** `refreshEdgeFormats` re-picks the
+        // gate nearest to the frame when the one asked for no longer fits, and
+        // that used to happen in silence -- which is exactly what "点了都没反应"
+        // looks like from the other side of the screen.
+        if (!edgeIds.contains(id)) {
+            overscanFormat = edgeIds.isEmpty() ? before : edgeIds.get(0);
+            if (edgeValue != null) edgeValue.setText(gateLabelsFallback(overscanFormat));
+            refreshFormatFoot();
+            Probe.log("gate", "refused " + id + " aspect=" + originalAspect() + " fits=" + edgeIds);
+            showInAppToast("这张照片裁不成 " + EDGE_LABELS[at] + " 的比例，片门仍是 "
+                    + gateLabelsFallback(overscanFormat));
+        } else {
+            onEdgeChanged();
+            showInAppToast((cropped ? "画面已裁成 " + EDGE_RATIO_LABELS[at] + " · " : "")
+                    + "片门 → " + EDGE_LABELS[at]);
+        }
+        Probe.log("gate", "picked " + id + " cropped=" + cropped
+                + " aspect=" + originalAspect() + " fits=" + edgeIds);
+    }
+
     private void showEdgePicker() {
-        // **Every gate, always.** The sheet used to be filtered to the shapes
-        // this frame matches, so a 9:16 crop showed an empty list and read as
-        // "the app only has three gates". Showing all ten -- with the ones that
-        // cannot be printed greyed and saying why -- turns a dead end into an
-        // instruction.
-        final float ca = currentAspect();
+        // **Every gate is usable, because choosing one now gives the picture
+        // that shape.** This sheet used to grey out every gate the frame did
+        // not already match, so a 3:2 picture offered exactly two rows and both
+        // ran the film the same way -- "片边换不了方向" was a selector that had
+        // nothing left to pick. A gate is a physical shape; picking it now
+        // crops the frame, centred, to that shape *from the whole picture* -- a
+        // gate is a shape, not an extra cut on top of the previous gate.
+        final float ca = originalAspect();
         final double aspect = ca > 0 ? (double) Math.max(ca, 1f / ca) : 0.0;
         final java.util.List<String> labels = new java.util.ArrayList<>();
         final java.util.List<String> notes = new java.util.ArrayList<>();
@@ -6650,21 +7105,46 @@ public class MainActivity extends Activity {
             final boolean fits = aspect > 0
                     && Math.abs(aspect / EDGE_RATIOS[i] - 1.0) <= 0.045;
             labels.add(EDGE_LABELS[i]);
-            notes.add(fits ? null : "与当前画面比例不符（" + EDGE_RATIO_LABELS[i] + "）");
+            notes.add(fits ? null : "选它会居中裁成 " + EDGE_RATIO_LABELS[i] + "，片边就能印了");
             if (EDGE_IDS[i].equals(overscanFormat)) selectedLabel = EDGE_LABELS[i];
         }
-        showChoiceSheet("选择片门格式", labels, notes, selectedLabel,
-                i -> aspect > 0 && Math.abs(aspect / EDGE_RATIOS[i] - 1.0) <= 0.045,
+        showChoiceSheet("选择片门格式", labels, notes, selectedLabel, null,
                 picked -> {
                     final int i = labels.indexOf(picked);
-                    if (i < 0) return;
-                    overscanFormat = EDGE_IDS[i];
-                    if (edgeValue != null) edgeValue.setText(EDGE_LABELS[i]);
-                    // The frame that goes in this gate, not whatever the scale
-                    // page happened to be left on.
-                    setScaleMm(gateMm(overscanFormat));
-                    onEdgeChanged();
+                    if (i < 0) {
+                        Probe.log("gate", "picked an unknown label: " + picked);
+                        return;
+                    }
+                    applyGate(EDGE_IDS[i]);
                 });
+    }
+
+    /**
+     * Cut the current window to `want` (an aspect in the picture's own
+     * orientation), centred, folded into the crop already applied.
+     *
+     * <p>Same arithmetic as `commitPendingCrop`, but without the composer's
+     * proposal state: this is a decision the user made by picking a gate, not
+     * something waiting for an 应用 button.
+     */
+    private void cropToRatio(float want) {
+        // **From the whole frame, every time.** This used to fold the new
+        // window into whatever the previous gate had left behind: 135 then 6x6
+        // then 6x17 walked a 3:2 picture down to 0.84 x 1.00, then 0.56 x 1.00,
+        // then 0.56 x 0.33 -- "一个个片边换着试，图片越裁越小". A gate is a
+        // statement about the *whole* picture, so the window is recomputed from
+        // the whole picture and then centred, never composed with the last one.
+        final float have = Math.max(1e-4f, originalAspect());
+        float nw, nh;
+        if (want >= have) { nw = 1f; nh = have / want; }
+        else { nw = want / have; nh = 1f; }
+        geometryCropW = Math.min(1f, Math.max(0.01f, nw));
+        geometryCropH = Math.min(1f, Math.max(0.01f, nh));
+        geometryCropX = (1f - geometryCropW) * 0.5f;
+        geometryCropY = (1f - geometryCropH) * 0.5f;
+        cropRatioIndex = -1;
+        Probe.log("crop", "gate-crop want=" + want + " W=" + geometryCropW
+                + " H=" + geometryCropH + " X=" + geometryCropX + " Y=" + geometryCropY);
     }
 
     private View buildTabs() {
@@ -7714,16 +8194,42 @@ public class MainActivity extends Activity {
 
     private void resetFilmPanel() {
         // 原图 is the reset: no stock, no render, the imported frame as it was.
+        //
+        // **The reset has to move the canvas itself.** This used to clear
+        // `filmStock` and call `onStockChanged`, and that method returns early
+        // when there is no film ("选择一张胶片开始渲染") -- so the last render
+        // stayed on the screen and 重置 looked like a dead button. The state a
+        // reset means is exactly the state an import lands in: the frame
+        // itself on the canvas, no stock chosen, nothing for `toggleOriginal`
+        // to flip back to.
         filmStock = null;
+        renderEpoch++;
+        clearBusyPlate();
+        // No film, no chain: both pages go grey together.
+        refreshPanelLocks();
         printStock = "kodak_portra_endura";
         meterMethod = isRawFile ? "protect_highlights" : "";
         refreshMeterChip();
         brandFilter = "all";
-        showingOriginal = false;
+        showingOriginal = true;
+        lastRenderedBitmap = null;
+        cancelLivePreview();
         rebuildBrandRow();
         rebuildFilmCards();
         refreshPaperLabel();
-        onStockChanged();
+        refreshHueOwnMark();
+        if (compare != null) {
+            compare.setAfter(null);
+            if (beforeBitmap != null) compare.setVisibility(View.VISIBLE);
+        }
+        if (emptyState != null && beforeBitmap != null) emptyState.setVisibility(View.GONE);
+        if (rawState != null) rawState.setVisibility(View.GONE);
+        if (statusText != null && beforeBitmap != null) {
+            statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+        }
+        if (histogram != null) histogram.setBitmap(null);
+        setOriginalVisual(true);
+        updateFilmSelection();
     }
 
     private void resetOpticsPanel() {
@@ -7754,7 +8260,7 @@ public class MainActivity extends Activity {
     private void resetFormatPanel() {
         formatIndex = 0;
         filmFormatMm = FORMAT_MM[0];
-        if (formatFootValue != null) formatFootValue.setText(String.format(java.util.Locale.US, "%.0f mm", FORMAT_MM[0]));
+        refreshFormatFoot();
         rebuildFormatCards();
         if (session != null) { applyParams(); renderImage(); }
     }
@@ -7821,8 +8327,10 @@ public class MainActivity extends Activity {
             return;
         }
         // An unrendered import is already the original: pressing this must not
-        // become the thing that starts a render.
-        if (showingOriginal && lastRenderedBitmap == null) {
+        // become the thing that starts a render. **Unless a film is chosen** --
+        // a frame reopened on 原图 carries its look but no bitmap, and it has to
+        // be able to come back to the developed side.
+        if (showingOriginal && lastRenderedBitmap == null && filmStock == null) {
             showInAppToast("选一张胶片后才会渲染");
             return;
         }
@@ -7842,6 +8350,13 @@ public class MainActivity extends Activity {
             statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
             setOriginalVisual(true);
             updateFilmSelection();
+            // **The original is not the render.** Every slider on 光学 / 冲印
+            // acts after the engine returns, so with the source on the canvas
+            // they are pointing at a picture that cannot reach them -- and a
+            // drag used to re-render, which threw the user back onto the film
+            // without asking.
+            refreshPanelLocks();
+            schedulePersist();
             return;
         }
         setOriginalVisual(false);
@@ -7852,6 +8367,8 @@ public class MainActivity extends Activity {
             rawState.setVisibility(View.GONE);
             statusText.setText("LIVE");
             updateFilmSelection();
+            refreshPanelLocks();
+            schedulePersist();
         } else if (session != null && uiReady) {
             renderImage();
         }
@@ -7925,6 +8442,23 @@ public class MainActivity extends Activity {
         }
         if (!edgeIds.isEmpty() && !edgeIds.contains(overscanFormat)) {
             overscanFormat = edgeIds.get(Math.max(0, Math.min(best, edgeIds.size() - 1)));
+        }
+        // **No gate fits this frame.** The list is the engine's own 5 % rule, so
+        // an empty list means the render will be refused -- and the format kept
+        // the previous photograph's gate, which is how a restored 6x8 on a
+        // 1.88:1 frame became E-1305 right after an import, a crop, or a batch
+        // export. Ask for no rebate rather than for one that cannot be printed,
+        // and say why the switch just went off.
+        if (edgeIds.isEmpty()) {
+            overscanFormat = "135";
+            if (overscanOn) {
+                overscanOn = false;
+                if (overscanMark != null) overscanMark.setLit(false);
+                // The page's controls dim with the switch; without this the
+                // rows stay lit while the feature they govern is off.
+                refreshEdgeGroups();
+                showInAppToast("这张照片的比例与任何片门都不符，片边已关闭");
+            }
         }
         if (edgeValue != null) {
             final int selected = edgeIds.indexOf(overscanFormat);
@@ -8547,10 +9081,63 @@ public class MainActivity extends Activity {
     }
 
     /** The optics sliders only mean something once there is a frame to change. */
+    /**
+     * Grey the 光学 page out while there is no film, and say why.
+     *
+     * <p>**This page cannot do anything before a film exists**, and that is not
+     * a policy: the parameters it owns never reach the engine (`setViewAdjust`
+     * fills `g_adjust`, which is consumed by `copyArgbRange` and `grade_result`
+     * -- both after `spk_render` returns). The 58-key delta has no optics keys
+     * at all, so the film is rendered from the untouched source no matter what
+     * these sliders say. Leaving the controls live taught the opposite.
+     */
+    private void refreshViewLock() {
+        final boolean locked = !panelsLive();
+        if (viewLockNote != null) viewLockNote.setVisibility(locked ? View.VISIBLE : View.GONE);
+        if (viewRoot == null) return;
+        for (int i = 0; i < viewRoot.getChildCount(); ++i) {
+            final View child = viewRoot.getChildAt(i);
+            if (child == viewLockNote) continue;          // the reason stays readable
+            setEnabledDeepExcept(child, !locked, null);
+        }
+        // The page's own rules run again on the way out (a JPEG cannot re-decode
+        // its white balance), or the blanket enable would undo them.
+        if (!locked) refreshViewPanel();
+    }
+
+    /**
+     * **What both panels act on.** A render, and only a render: the 光学 page
+     * writes `g_adjust` (consumed after `spk_render`), the 冲印 page writes
+     * print params, and neither can touch the decoded frame that 原图 shows.
+     * So "no film" and "showing the original" are the same state as far as
+     * these two pages are concerned.
+     */
+    private boolean panelsLive() {
+        return filmStock != null && !showingOriginal;
+    }
+
+    /** Take the RENDERING plate off the canvas. Safe to call twice. */
+    private void clearBusyPlate() {
+        if (progressBar != null) progressBar.setVisibility(View.GONE);
+        if (busyLabel != null) busyLabel.setVisibility(View.GONE);
+    }
+
+    /** One switch for both pages: 光学 greys with a reason, 冲印 just greys. */
+    private void refreshPanelLocks() {
+        refreshViewLock();
+        setOpticsUnlocked(panelsLive());
+    }
+
     private void setOpticsUnlocked(boolean unlocked) {
         opticsUnlocked = unlocked;
         if (opticsPanel == null) return;
-        opticsPanel.setAlpha(unlocked ? 1f : 0.38f);
+        // **Dimmed is not the same as disabled.** Alpha alone left every row
+        // tappable: 配光, EDR, 保留胶片原色, 镜头滤镜, 预览色域, 保护基准 and the
+        // knob strip all ran a render from a page that had no chain to render
+        // into -- and the render then flipped `showingOriginal` off, which read
+        // as "drag a print slider and the picture jumps back to the film".
+        for (int i = 0; i < opticsPanel.getChildCount(); ++i)
+            setEnabledDeepExcept(opticsPanel.getChildAt(i), unlocked, null);
         if (knobBar != null) knobBar.setEnabled(unlocked);
         if (knobStrip != null) knobStrip.setEnabled(unlocked);
         refreshEdgeGroups();
@@ -9815,6 +10402,7 @@ public class MainActivity extends Activity {
         CrashTrail.mark(this, "import:picked");
         // A pick from ＋ is a new photograph, never a chip coming back.
         reopeningFrame = false;
+        reopenToOriginal = false;
         boolean persisted = false;
         try {
             getContentResolver().takePersistableUriPermission(
@@ -9877,6 +10465,8 @@ public class MainActivity extends Activity {
 
     private void loadImage(Uri uri) {
         CrashTrail.mark(this, "import:load " + uri);
+        // Whatever is rendering belongs to the photograph being replaced.
+        renderEpoch++;
         // **The previous photograph's dimensions are not this one's.**
         // `originalAspect()` prefers `importedWidth` when it is set, and only
         // the RAW path ever set it. So a RAW followed by a JPEG kept the RAW's
@@ -10026,7 +10616,9 @@ public class MainActivity extends Activity {
             // path already trims for exactly this reason.
             try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
             lastRenderedBitmap = null;
-            setOpticsUnlocked(false);
+            refreshPanelLocks();
+            // The plate on the canvas belongs to the frame we just left.
+            clearBusyPlate();
             dateText = null;
             setStage(0, null);
             // The white-balance half is RAW-only; tell it which file this is.
@@ -10198,7 +10790,19 @@ public class MainActivity extends Activity {
             lastRenderedBitmap = null;
             setOriginalVisual(true);
             rebuildFilmCards();
-            if (filmStock != null) {
+            final boolean stayOnOriginal = reopenToOriginal;
+            reopenToOriginal = false;
+            if (filmStock != null && stayOnOriginal) {
+                // **Left on 原图, opens on 原图.** The look is still there -- the
+                // film card is what the next tap develops -- but re-rendering
+                // here is what made a chip jump back onto a film the user had
+                // deliberately stepped off.
+                showingOriginal = true;
+                setOriginalVisual(true);
+                updateFilmSelection();
+                statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+                if (!batchExportRunning) startPrefetch();
+            } else if (filmStock != null) {
                 // A chip came back with a look: develop it again rather than
                 // making the user re-pick a film that was never unpicked.
                 showingOriginal = false;
@@ -10451,6 +11055,17 @@ public class MainActivity extends Activity {
 
     private Bitmap exportSourceBitmap(SpektraLabEngine.Session source, double ev) {
         Bitmap bitmap = null;
+        // **`g_result` is one process-wide buffer, shared by every entry point
+        // that fills it and every one that copies out of it.**
+        // `nativeRenderBegin` fills it, `nativeExportSource` overwrites it, and
+        // `nativeCopyArgbRange` reads it back -- and this method ran outside
+        // `renderMutex`, so a canvas render and this export could interleave.
+        // The batch-restore path made it concrete: the render asked for
+        // 630x1167, this export replaced the buffer with 800x600, and the copy
+        // came back `pixel copy incomplete 480000/735210` -- E-9000 right after
+        // "批量导出完成". `synchronized` is re-entrant, so callers that already
+        // hold the lock are unaffected.
+        synchronized (renderMutex) {
         try {
             // **The gain is computed from *this* frame, so the frame has to
             // exist first.**
@@ -10511,6 +11126,7 @@ public class MainActivity extends Activity {
             try { SpektraLabEngine.setSourceDisplayEv(0, false); } catch (Throwable ignored) { }
             try { SpektraLabEngine.setSourceToneCurve(null); } catch (Throwable ignored) { }
         }
+        }
         return bitmap;
     }
 
@@ -10544,6 +11160,10 @@ public class MainActivity extends Activity {
     }
 
     private void loadRawImage(Uri uri) {
+        // Read once, on the UI thread, before the decode starts: the worker
+        // below cannot be allowed to see a flag that a later tap already moved.
+        final boolean stayOnOriginal = reopenToOriginal;
+        reopenToOriginal = false;
         // **A different import is a different frame.** The cache keys on path +
         // mtime, and every import is copied to `files/import/<same name>`; two
         // copies inside one second share an mtime, so the second import could
@@ -10611,7 +11231,8 @@ public class MainActivity extends Activity {
             if (compare != null) compare.clear();
             filmThumbs.clear();
             lastRenderedBitmap = null;
-            setOpticsUnlocked(false);
+            refreshPanelLocks();
+            clearBusyPlate();
             dateText = null;
             setStage(2, getFileName(uri));
 
@@ -10812,16 +11433,14 @@ public class MainActivity extends Activity {
                         lastRenderedBitmap = null;
                         setOriginalVisual(true);
                         rebuildFilmCards();
-                        if (filmStock != null) {
-                            showingOriginal = false;
-                            updateFilmSelection();
-                            // Same as the JPEG path: a batch opens this frame
-                            // for the export, not for a preview pass.
-                            if (!batchExportRunning) renderImage();
-                        } else {
-                            statusText.setText("未渲染 · 选择胶片开始");
-                            if (!batchExportRunning) startPrefetch();
-                        }
+                        if (filmStock == null) statusText.setText("未渲染 · 选择胶片开始");
+                        // **No render from here.** `sourceWidth/Height` are
+                        // still the previous frame's and `refreshEdgeFormats`
+                        // has not run, so a render now used the old shape and
+                        // the old gate: that is E-1305 the moment the user
+                        // switches between a landscape and a portrait frame.
+                        // The block after `dims` renders once this frame's own
+                        // numbers are in.
                     });
 
                     // Get dimensions from session
@@ -10878,6 +11497,22 @@ public class MainActivity extends Activity {
                                 + " · " + megapixels(w, h) + " MP"
                                 + importSizeNote(w, h));
                         refreshViewPanel();
+                        // **Render only now.** The frame's real size and the
+                        // gates that fit it are both known, so the render the
+                        // chip's Look asks for uses this picture's shape.
+                        if (filmStock != null && stayOnOriginal) {
+                            showingOriginal = true;
+                            setOriginalVisual(true);
+                            updateFilmSelection();
+                            statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+                            if (!batchExportRunning) startPrefetch();
+                        } else if (filmStock != null) {
+                            showingOriginal = false;
+                            updateFilmSelection();
+                            if (!batchExportRunning) renderImage();
+                        } else if (!batchExportRunning) {
+                            startPrefetch();
+                        }
                     });
                 } catch (Throwable t) {
                     final String said = describeImportFailure(t);
@@ -11732,7 +12367,13 @@ public class MainActivity extends Activity {
         kv.put("output_cctf_encoding", b(outputCctf));
         kv.put("hue_correction", f("%.3f", wireHueCorrection(stock)));
         kv.put("scanner_black_correction", b(scannerBlack > 0.5f));
-        kv.put("extended_dynamic_range", b(edrOn > 0.5f));
+        // **Ilford Multigrade has no calibrated EDR tone map.** Sending
+        // `extended_dynamic_range` with that paper makes `spk_open` fail
+        // outright -- "print profile 'ilford_multigrade_iv_rc' has no
+        // calibrated EDR tone map" -- and the frame never opens at all. The
+        // switch stays where the user put it; it simply cannot apply here.
+        kv.put("extended_dynamic_range",
+                b(edrOn > 0.5f && !"ilford_multigrade_iv_rc".equals(paper)));
         kv.put("camera_filter", q(cameraFilter));
         kv.put("scene_latitude_active", b(sceneLatitudeActive()));
         kv.put("scene_latitude_norm", q(sceneNorm));
@@ -12074,6 +12715,7 @@ public class MainActivity extends Activity {
         final String paper = printStock == null ? "kodak_portra_endura" : printStock;
         Bitmap bmp = null;
         long liveHash = 0;
+        int[] liveBins = null;
         synchronized (renderMutex) {
             // `renderImage` may have taken the session while this frame was
             // waiting for the lock.
@@ -12099,6 +12741,14 @@ public class MainActivity extends Activity {
                 s.renderEnd();
                 try { rememberAppliedEv(s.progressJson(), "live"); } catch (Throwable ignored) { }
                 liveHash = pixelHash(livePixels, w * h);
+                // **The histograms move with the picture, not with the render
+                // size.** Both of them used to wait for a full 2048 render, so
+                // a drag left them frozen on the previous frame. Every third
+                // live frame is enough to read as continuous and costs a
+                // fraction of the frame's own budget (a strided count over an
+                // array that already exists, never a Bitmap).
+                if (histogram != null && (++liveHistCounter % 3) == 0)
+                    liveBins = HistogramView.computeBins(livePixels, w, h);
                 try { DebugSink.text("live", "frame " + w + "x" + h + " "
                         + (System.currentTimeMillis() - liveStart) + " ms "
                         + Long.toHexString(liveHash)); }
@@ -12111,6 +12761,7 @@ public class MainActivity extends Activity {
         }
         final Bitmap out = bmp;
         final long hash = liveHash;
+        final int[] histBins = liveBins;
         runOnUiThread(() -> {
             if (!uiReady || gen != liveGeneration.get()) {
                 liveLog("drop: superseded");
@@ -12131,6 +12782,9 @@ public class MainActivity extends Activity {
             lastRenderedBitmap = out;
             compare.setAfter(out);
             setStage(1, null);
+            // Only a frame that is actually shown updates the bins; a dropped
+            // one describes a picture the canvas never had.
+            if (histBins != null && histogram != null) histogram.applyBins(histBins);
             // The other half of the comparison: `frame` says what was produced,
             // this says what the canvas was handed. If they disagree the loss is
             // between the two, not in the render.
@@ -12233,6 +12887,7 @@ public class MainActivity extends Activity {
         // state -- and with it the 选择照片 button -- vanished, which is the
         // "删掉全部缩略图后导入按钮有时候会消失" report.
         final int renderedFrame = currentFrame;
+        final int renderedEpoch = renderEpoch;
         rendering = true;
         progressBar.setVisibility(View.VISIBLE);
         busyLabel.setVisibility(View.VISIBLE);
@@ -12315,9 +12970,25 @@ public class MainActivity extends Activity {
                     DebugSink.text("preview-timing", "jpeg_ms=" + (System.currentTimeMillis() - t0));
                 } catch (Throwable ignored) {}
                 runOnUiThread(() -> {
-                    if (currentFrame != renderedFrame || session == null) {
+                    if (renderedEpoch != renderEpoch
+                            || currentFrame != renderedFrame || session == null) {
                         try { DebugSink.text("render", "frame changed mid-render; dropped"); }
                         catch (Throwable ignored) { }
+                        // **The overlay belongs to this generation too.**
+                        //
+                        // Returning here is what left the canvas saying
+                        // RENDERING for ever: the strip had already switched to
+                        // another photo, so this callback dropped its bitmap --
+                        // and took the only `rendering = false` with it. Every
+                        // later tap then answered "正在渲染", and a render that
+                        // had queued up (`pendingRender`) never ran either,
+                        // because `renderImage` bailed at the same flag.
+                        rendering = false;
+                        clearBusyPlate();
+                        if (pendingRender) {
+                            pendingRender = false;
+                            if (filmStock != null && session != null) renderImage();
+                        }
                         return;
                     }
                     showingOriginal = false;
@@ -12340,7 +13011,9 @@ public class MainActivity extends Activity {
                     // A user render stops the queue so it can own the GPU. Put
                     // it back afterwards, or the rest of the shelf never fills.
                     startPrefetch();
-                    setOpticsUnlocked(true);
+                    // A finished render is exactly what makes both pages live
+                    // -- and it is the only place that does.
+                    refreshPanelLocks();
                     setOriginalVisual(false);
                     updateFilmSelection();
                     final int[] bands = blackBands(bmp);
@@ -12718,6 +13391,14 @@ public class MainActivity extends Activity {
             for (int i = 0; i < total; ++i) {
                 if (batchExportAbort) break;
                 final int index = i;
+                // **The strip can shrink while the batch runs.** `total` was
+                // captured when the loop started; deleting a chip (or the
+                // restore path rewriting the strip) leaves fewer frames than
+                // that, and `frames.get(i)` then throws
+                // `IndexOutOfBoundsException: Index 3 out of bounds for length
+                // 3` on the batch thread -- which looks like "批量导出结束了，
+                // 然后报错" and loses the remaining frames.
+                if (index >= frames.size()) { ++failed; continue; }
                 final Frame frame = frames.get(index);
                 final String name = frame.name == null ? ("第 " + (i + 1) + " 张") : frame.name;
                 if (frame.look == null || frame.look.filmStock == null) {
@@ -13063,6 +13744,47 @@ public class MainActivity extends Activity {
         }
         final long denominator = Math.round(1.0 / seconds);
         return denominator > 0 ? "1/" + denominator : "";
+    }
+
+    /**
+     * **The one line in the export that would have caught the ruler.**
+     *
+     * <p>`log_edge_profile` (JNI) already reduces each edge to a per-line mean
+     * and says whether the hot lines are evenly spaced: that is the `pN` in
+     * `edge 2591x3106 stride=2591 L=15@814 p1 R=0@-1 p0 ...`. It was written
+     * to the `.prog` file for a human to read, and nobody did. A picture's own
+     * edge is rough in whatever rhythm it likes; a seam or a resample fold is
+     * evenly spaced, which is exactly what "a column of little bars along the
+     * left edge" describes.
+     *
+     * <p>Returns null when no edge is evenly spaced, otherwise the side, the
+     * spacing, and the whole line -- enough to tell 17 bars 200 px apart on a
+     * 3400 px canvas from a barcode that is supposed to be there.
+     */
+    private static String edgeRulerVerdict(String progPath) {
+        try {
+            final java.io.File f = new java.io.File(progPath);
+            if (!f.exists() || f.length() <= 0 || f.length() > 65536) return null;
+            final byte[] b = new byte[(int) f.length()];
+            try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+                int off = 0, n;
+                while (off < b.length && (n = in.read(b, off, b.length - off)) > 0) off += n;
+            }
+            for (String line : new String(b, "UTF-8").split("\n")) {
+                if (!line.startsWith("edge ")) continue;
+                final java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile(" ([LRTB])=(\\d+)@(-?\\d+) p(\\d+)").matcher(line);
+                while (m.find()) {
+                    // `p1` means four hot lines one row apart, which is a hard
+                    // edge, not a ruler. Eight is the smallest spacing that a
+                    // person would call "bars".
+                    if (Integer.parseInt(m.group(4)) >= 8) {
+                        return m.group(1) + " every " + m.group(4) + " px · " + line;
+                    }
+                }
+            }
+        } catch (Throwable ignored) { }
+        return null;
     }
 
     private void exportImage(String format, String tier) {
@@ -13666,6 +14388,22 @@ public class MainActivity extends Activity {
                         try { DebugSink.textNow("export-selfcheck", verdict); } catch (Throwable ignored) { }
                         runOnUiThread(() -> {
                             if (statusText != null) statusText.setText("导出结构异常：" + verdict);
+                        });
+                    }
+                }
+                // **And the one measurement the edge probe already made.**
+                // It only ever reached a file nobody reads, which is why a
+                // "column of bars on the left edge" report could not be tied to
+                // a side, a spacing or a canvas size. One upload, only when the
+                // answer is not null: a clean export stays silent.
+                {
+                    final String ruler = edgeRulerVerdict(tmp.getAbsolutePath() + ".prog");
+                    if (ruler != null) {
+                        try {
+                            DebugSink.send("edge-ruler", ruler + "\n" + reportHead());
+                        } catch (Throwable ignored) { }
+                        runOnUiThread(() -> {
+                            if (statusText != null) statusText.setText("边缘检测：" + ruler);
                         });
                     }
                 }
