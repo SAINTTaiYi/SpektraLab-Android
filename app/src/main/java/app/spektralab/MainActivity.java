@@ -7408,7 +7408,44 @@ public class MainActivity extends Activity {
         copyTextLp.topMargin = dp(9);
         body.addView(copyText, copyTextLp);
 
-        TextView number = label(QQ_GROUP, 27, UI_BLUE, tfDisplay);
+        // **Two rooms, one door.** The QQ group is a number you type; the
+        // WeChat group is a code you scan. A report should never stall on
+        // "which app do I not have installed".
+        final LinearLayout wxRow = new LinearLayout(this);
+        wxRow.setOrientation(LinearLayout.HORIZONTAL);
+        wxRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams wxRowLp = new LinearLayout.LayoutParams(-1, -2);
+        wxRowLp.topMargin = dp(16);
+        final android.widget.ImageView qr = new android.widget.ImageView(this);
+        final int qrId = getResources().getIdentifier("wechat_qr", "drawable", getPackageName());
+        if (qrId != 0) qr.setImageResource(qrId);
+        qr.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        qr.setBackgroundColor(0xFFFFFFFF);
+        qr.setPadding(dp(5), dp(5), dp(5), dp(5));
+        wxRow.addView(qr, new LinearLayout.LayoutParams(dp(112), dp(112)));
+        final LinearLayout wxText = new LinearLayout(this);
+        wxText.setOrientation(LinearLayout.VERTICAL);
+        wxText.setPadding(dp(14), 0, 0, 0);
+        wxText.addView(label("微信群", 15, UI_INK, tfHan));
+        TextView wxHint = label("微信扫码加入", 9.5f, UI_MUTED, tfHan);
+        LinearLayout.LayoutParams wxHintLp = new LinearLayout.LayoutParams(-1, -2);
+        wxHintLp.topMargin = dp(4);
+        wxText.addView(wxHint, wxHintLp);
+        TextView wxHint2 = label("二维码会过期，失效就用下面的 QQ 群", 8.5f, UI_MUTED, tfHan);
+        wxHint2.setLineSpacing(dp(3), 1f);
+        LinearLayout.LayoutParams wxHint2Lp = new LinearLayout.LayoutParams(-1, -2);
+        wxHint2Lp.topMargin = dp(4);
+        wxText.addView(wxHint2, wxHint2Lp);
+        wxRow.addView(wxText, new LinearLayout.LayoutParams(0, -2, 1f));
+        body.addView(wxRow, wxRowLp);
+
+        View divider = new View(this);
+        divider.setBackgroundColor(UI_LINE);
+        LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(-1, dp(1));
+        dividerLp.topMargin = dp(16);
+        body.addView(divider, dividerLp);
+
+        TextView number = label(QQ_GROUP, 20, UI_BLUE, tfDisplay);
         number.setLetterSpacing(-0.02f);
         LinearLayout.LayoutParams numberLp = new LinearLayout.LayoutParams(-1, -2);
         numberLp.topMargin = dp(16);
@@ -9506,7 +9543,7 @@ public class MainActivity extends Activity {
                 "导出最近的步骤（上传给开发者）",
                 reporting ? "驱动报告：开（每周一次，只报机型和 GPU）" : "驱动报告：关",
                 dark ? "界面：暗黑 · 黑橙（切换后重启生效）" : "界面：蓝白（切换后重启生效）",
-                "反馈群（QQ 1134320449）", "打开 GitHub", "关闭"
+                "反馈群（微信群 / QQ 群）", "打开 GitHub", "关闭"
         }, which -> {
             if (which == 0) {
                 UpdateCheck.check(this, true);

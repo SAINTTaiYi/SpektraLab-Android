@@ -1,6 +1,6 @@
 {
-  "latest_version_code": 326,
-  "latest_version_name": "1.6.0e",
+  "latest_version_code": 327,
+  "latest_version_name": "1.6.0f",
   "url": "https://spektralab.workshop.skin/download",
   "notes": [
     "下载地址 spektralab.workshop.skin/download",
@@ -72,8 +72,9 @@
     "新增 · 六个冲印参数",
     "新增 · 预览色域可选",
     "新增 · 崩溃栈自动抓取",
-    "新增 · 错误记录号"
+    "新增 · 错误记录号",
+    "新增 · 微信群入口"
   ],
-  "updated_at": "2026-11-08T22:06:58Z",
+  "updated_at": "2026-11-09T08:42:40Z",
   "channel": "stable"
 }
