@@ -113,8 +113,8 @@ public class SpektraLabEngine implements AutoCloseable {
      * arrives as "the process is gone", and this ROM does not report
      * `ApplicationExitInfo` either. Idempotent: the first call wins.
      */
-    public static void installCrashHandler(String path) {
-        try { nativeInstallCrashHandler(path); } catch (Throwable ignored) { }
+    public static int installCrashHandler(String path) {
+        try { return nativeInstallCrashHandler(path); } catch (Throwable ignored) { return 5; }
     }
 
     public static SpektraLabEngine create(String resourcesDir) {
@@ -254,6 +254,12 @@ public class SpektraLabEngine implements AutoCloseable {
         return 0;
     }
 
+    /** The edge measurement on the frame the engine last produced. `nativeCopyArgbRange`
+     *  does not free it, so this must be called before `renderEnd`. */
+    public static String edgeReport() {
+        try { return nativeEdgeReport(); } catch (Throwable t) { return null; }
+    }
+
     @Override
     public void close() {
         if (handle != 0) nativeDestroyEngine(handle);
@@ -262,7 +268,12 @@ public class SpektraLabEngine implements AutoCloseable {
     public static class Session implements AutoCloseable {
         /** Guards the single native result buffer against a second thread. */
         private static final Object RENDER_LOCK = new Object();
-        private final long handle;
+        /** **Not final: it has to be zeroed on close.** A final handle outlived
+         *  its session, so a `solve()` still in flight after `close()` reached
+         *  `spk_solve` with a dangling pointer and died inside the meter
+         *  (SL-261110-F858: SIGSEGV addr=0x1340). Zeroing it turns that into a
+         *  catchable "session is null" instead of a dead process. */
+        private volatile long handle;
         public final int width;
         public final int height;
 
@@ -461,8 +472,15 @@ public class SpektraLabEngine implements AutoCloseable {
 
         @Override
         public void close() {
-            if (handle != 0) nativeCloseSession(handle);
+            final long h = handle;
+            // Zero first: every caller that has not entered native code yet
+            // now gets "session is null" instead of a released pointer.
+            handle = 0;
+            if (h != 0) nativeCloseSession(h);
         }
+
+        /** For call sites that must not touch a closed session. */
+        public boolean isClosed() { return handle == 0; }
     }
 
     public static class SimResult {
@@ -491,6 +509,10 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeDestroyEngine(long handle);
     /** The rebate's layout for whatever was rendered last: canvas, mm/px, gate quads. */
     private static native String nativeOverscanGeometry(long handle);
+
+    /** The edge measurement on whatever the engine last rendered, or null.
+     *  Same line `log_edge_profile` writes to the export's `.prog`; read-only. */
+    private static native String nativeEdgeReport();
     private static native String nativeGetBuildInfo();
     private static native String nativeCapabilities(long handle);
     private static native String nativeMemoryReport(long handle);
@@ -534,7 +556,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native long nativeMaxPlaneBytes(long engineHandle);
     private static native String nativeProbeCanary(long engineHandle, long needBytes);
 
-    private static native void nativeInstallCrashHandler(String path);
+    private static native int nativeInstallCrashHandler(String path);
     /** The RAW's own dimensions from its header. Does not decode. */
     private static native int[] nativeRawDimensions(String path);
 

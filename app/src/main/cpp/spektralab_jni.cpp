@@ -227,13 +227,19 @@ void crash_handler(int sig, siginfo_t* info, void*) {
 
 }  // namespace
 
-JNI(void, nativeInstallCrashHandler)(JNIEnv* env, jclass, jstring path) {
-    if (!path || g_crash_fd >= 0) return;
+// 0 = armed, 1 = already armed, 2 = no path, 3 = open failed, 4 = sigaction
+// failed. **A status, not a void**: this was installed before the library was
+// loaded and every call threw `UnsatisfiedLinkError` into a `catch (Throwable)`
+// -- so for three months every native crash wrote nothing, and the reports said
+// only "reason=5". The caller records this number in the trail.
+JNI(jint, nativeInstallCrashHandler)(JNIEnv* env, jclass, jstring path) {
+    if (!path) return 2;
+    if (g_crash_fd >= 0) return 1;
     const char* p = env->GetStringUTFChars(path, nullptr);
-    if (!p) return;
+    if (!p) return 2;
     g_crash_fd = ::open(p, O_WRONLY | O_CREAT | O_APPEND, 0600);
     env->ReleaseStringUTFChars(path, p);
-    if (g_crash_fd < 0) return;
+    if (g_crash_fd < 0) return 3;
     // **The handler needs a stack of its own.** A stack overflow is one of the
     // ways this process dies, and a handler that runs on the stack it just
     // exhausted cannot unwind anything -- it faults again and the frames are
@@ -249,7 +255,9 @@ JNI(void, nativeInstallCrashHandler)(JNIEnv* env, jclass, jstring path) {
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     const int signals[] = {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL};
-    for (int sig : signals) sigaction(sig, &sa, nullptr);
+    int bad = 0;
+    for (int sig : signals) if (sigaction(sig, &sa, nullptr) != 0) ++bad;
+    return bad ? 4 : 0;
 }
 
 JNI(jlong, nativeCreateEngine)(JNIEnv* env, jclass, jstring resourcesDir) {
@@ -1089,8 +1097,8 @@ static void trim_to_canvas(spk_session* session, spk_result& r, const std::strin
 // smooth; a seam, a resample fold or a half-written band is not.
 //
 // Four counts and where the first hot line sits, in one log line. Read-only.
-static void log_edge_profile(const spk_result& r, const std::string& progPath) {
-    if (!r.rgba16 || !r.width || !r.height) return;
+static std::string edge_profile_line(const spk_result& r) {
+    if (!r.rgba16 || !r.width || !r.height) return std::string();
     const uint32_t stride = r.row_stride_px ? r.row_stride_px : r.width;
     const uint32_t w = r.width, h = r.height;
     const uint32_t bw = std::max<uint32_t>(3, w / 64);
@@ -1135,12 +1143,164 @@ static void log_edge_profile(const spk_result& r, const std::string& progPath) {
     scan(true, 1, rh, rf, rp);
     scan(false, 0, th, tf, tp);
     scan(false, 1, bhot, bf, bp);
-    char line[224];
+    // **The first few columns, as numbers.** The ruler test above needs four
+    // evenly spaced lines before it says anything, and the report that matters
+    // most -- "one column along the left edge is wrong" -- leaves it silent.
+    // Three column means cost 3 * h reads and turn a guess into a measurement.
+    auto col_mean = [&](uint32_t x) -> int {
+        if (x >= w) return -1;
+        long sum = 0;
+        for (uint32_t y = 0; y < h; ++y) {
+            const uint16_t* p = r.rgba16 + (size_t(y) * stride + x) * 4;
+            sum += (uint32_t(p[0]) + p[1] + p[2]) / 3u;
+        }
+        return int((sum / long(h)) / 257L);
+    };
+    // **Which column of the left band is darkest, and by how much against its
+    // neighbour.** The report is "a hairline down the left edge"; four evenly
+    // spaced samples (0,1,2,8) can miss it, and a whole-column mean dilutes a
+    // 1 px mark. This walks the band and names the column.
+    int dark_x = -1, dark_v = 1000, dark_gap = 0;
+    for (uint32_t x = 0; x < bw; ++x) {
+        const int v = col_mean(x);
+        if (v < dark_v) {
+            dark_v = v; dark_x = int(x);
+            const int nb = (x + 1 < bw) ? col_mean(x + 1) : v;
+            dark_gap = nb - v;
+        }
+    }
+    // **The whole frame, not just the left band.** Every probe above looks at
+    // x < w/64. The reports say the line moves between the canvas and the file
+    // and sits mid-frame on some pictures, so walk all the columns and report
+    // the steepest step in the column means: a seam anywhere in the picture
+    // lands on exactly one pair of neighbours. Sampling every eighth row keeps
+    // it cheap (425 x 3400 reads) and a 1 px line still moves a whole column's
+    // mean by 1/8 of its own contrast.
+    int vmax = 0, vmax_x = -1;
+    if (w > 4 && h > 16) {
+        std::vector<uint64_t> sum(w, 0);
+        uint32_t used = 0;
+        for (uint32_t y = 0; y < h; y += 8) {
+            const uint16_t* rp = r.rgba16 + size_t(y) * stride * 4;
+            for (uint32_t x = 0; x < w; ++x)
+                sum[x] += uint64_t(rp[x * 4]) + uint64_t(rp[x * 4 + 1]) + uint64_t(rp[x * 4 + 2]);
+            ++used;
+        }
+        if (used) {
+            // **Divide by 257 before comparing.** `sum` holds 16-bit values, so
+            // this used to report 1129 for a step of 4.4/255 -- and the Java
+            // side, which was calibrated on 8-bit numbers, called every clean
+            // export a vertical line. `SL-261110-460E` is six of those.
+            for (uint32_t x = 1; x < w; ++x) {
+                const int a = int(sum[x - 1] / (3ull * used) / 257ull);
+                const int b = int(sum[x] / (3ull * used) / 257ull);
+                const int d = int(std::abs(b - a));
+                if (d > vmax) { vmax = d; vmax_x = int(x); }
+            }
+        }
+    }
+    // **The left band, row by row.** Everything above averages a whole column
+    // or a whole row. The report that started this is neither: it is a run of
+    // short horizontal dashes along the left edge, each about a pixel tall and
+    // a dozen wide, one every six per cent of the height. A dash that covers
+    // one row out of two thousand moves a column mean by 0.7/255 -- which is
+    // why four days of `edge` lines all read p0 -- and a column mean cannot see
+    // it at all. Row means can: a dash is a step of tens, a vignette is a step
+    // of nothing.
+    //
+    // Second difference, not first: the edge is darker than the middle on
+    // almost every photograph (the lens does that), and that offset is a slow
+    // curve. `y-1, y, y+1` on a smooth curve cancels to near zero; on a single
+    // dark row it is twice the dash's own contrast.
+    // Two bands, not one. `w/64` is the edge itself; the reports say "left
+    // side", which on a 3400-wide frame is anywhere in the first few hundred
+    // columns, and a 53-column strip cannot see that. The wide band is a
+    // quarter of the frame, so picture content moves it -- it is reported as a
+    // second number to compare across tiers, never on its own.
+    struct RowBand { int peak, y, hot, gap; int ys[8]; int nys; };
+    auto row_band = [&](uint32_t band) -> RowBand {
+        RowBand out{0, -1, 0, 0, {0}, 0};
+        std::vector<int> rowm(h);
+        for (uint32_t y = 0; y < h; ++y) {
+            const uint16_t* rp = r.rgba16 + size_t(y) * stride * 4;
+            uint64_t s = 0;
+            for (uint32_t x = 0; x < band; ++x)
+                s += uint64_t(rp[x * 4]) + uint64_t(rp[x * 4 + 1]) + uint64_t(rp[x * 4 + 2]);
+            rowm[y] = int(s / (3ull * band) / 257ull);
+        }
+        std::vector<int> hrows;
+        for (uint32_t y = 1; y + 1 < h; ++y) {
+            const int resid = rowm[y - 1] - 2 * rowm[y] + rowm[y + 1];
+            const int a = std::abs(resid);
+            if (a > out.peak) { out.peak = a; out.y = int(y); }
+            if (a > 8) hrows.push_back(int(y));
+        }
+        out.hot = int(hrows.size());
+        // Group adjacent hot rows first, THEN take the gaps. `g` used to be the
+        // median gap between raw hot rows, which is 1 for any run of two or
+        // more -- it said "contiguous" for every defect that has a height.
+        std::vector<int> lead;
+        for (size_t i = 0; i < hrows.size(); ++i)
+            if (i == 0 || hrows[i] - hrows[i - 1] > 2) {
+                lead.push_back(hrows[i]);
+                if (out.nys < 8) out.ys[out.nys++] = hrows[i];
+            }
+        if (lead.size() >= 4) {
+            std::vector<int> gaps;
+            for (size_t i = 1; i < lead.size(); ++i) gaps.push_back(lead[i] - lead[i - 1]);
+            std::sort(gaps.begin(), gaps.end());
+            const int med = gaps[gaps.size() / 2];
+            int near = 0;
+            for (int g : gaps) if (std::abs(g - med) <= std::max(1, med / 5)) ++near;
+            if (med > 0 && near * 5 >= int(gaps.size()) * 4) out.gap = med;
+        }
+        return out;
+    };
+    const RowBand nb = row_band(std::max<uint32_t>(4, std::min<uint32_t>(64, w / 64)));
+    const RowBand wb = row_band(std::max<uint32_t>(32, std::min<uint32_t>(256, w / 8)));
+    const int lrow_peak = nb.peak, lrow_y = nb.y, lrow_hot = nb.hot, lrow_gap = nb.gap;
+
+    char ys[72]; ys[0] = 0;
+    if (nb.nys) {
+        size_t at = 0;
+        for (int k = 0; k < nb.nys && at + 8 < sizeof ys; ++k)
+            at += size_t(std::snprintf(ys + at, sizeof ys - at, "%s%d", k ? "," : "", nb.ys[k]));
+    } else {
+        std::snprintf(ys, sizeof ys, "-");
+    }
+    const int c0 = col_mean(0), c1 = col_mean(1), c2 = col_mean(2), c8 = col_mean(8);
+    const int c16 = col_mean(16), c32 = col_mean(32);
+    char line[1200];
     std::snprintf(line, sizeof line,
-                  "edge %ux%u stride=%u  L=%d@%d p%d R=%d@%d p%d T=%d@%d p%d B=%d@%d p%d  (strip %ux%u)",
-                  w, h, stride, lh, lf, lp, rh, rf, rp, th, tf, tp, bhot, bf, bp, bw, bh);
-    prog_line(progPath, "%s", line);
-    std::fprintf(stderr, "[edge] %s\n", line);
+                  "edge %ux%u stride=%u  cols L0=%d L1=%d L2=%d L8=%d L16=%d L32=%d  "
+                  "Ldark=%d@%d gap%d Vmax=%d@%d  "
+                  "Lrow=%d@%d n%d g%d Y=%s Wrow=%d@%d n%d g%d  "
+                  "L=%d@%d p%d R=%d@%d p%d T=%d@%d p%d B=%d@%d p%d  (strip %ux%u)",
+                  w, h, stride, c0, c1, c2, c8, c16, c32,
+                  dark_v, dark_x, dark_gap, vmax, vmax_x,
+                  lrow_peak, lrow_y, lrow_hot, lrow_gap, ys,
+                  wb.peak, wb.y, wb.hot, wb.gap,
+                  lh, lf, lp, rh, rf, rp, th, tf, tp, bhot, bf, bp, bw, bh);
+    return std::string(line);
+}
+
+static void log_edge_profile(const spk_result& r, const std::string& progPath) {
+    const std::string line = edge_profile_line(r);
+    if (line.empty()) return;
+    prog_line(progPath, "%s", line.c_str());
+    std::fprintf(stderr, "[edge] %s\n", line.c_str());
+}
+
+// The same measurement on whatever `spk_render` last produced, so the canvas
+// can be asked without exporting. The reports say the ruler is already visible
+// while editing, and `log_edge_profile` only ever ran on an export -- three
+// rounds of "send me the export" is three rounds of asking the user to do our
+// work. Read-only, ~2 ms on a 2048 tier.
+JNI(jstring, nativeEdgeReport)(JNIEnv* env, jclass) {
+    if (!g_result_valid) return nullptr;
+    const std::string line = edge_profile_line(g_result);
+    if (line.empty()) return nullptr;
+    return env->NewStringUTF(line.c_str());
 }
 
 static void log_content_profile(const spk_result& r, const std::string& progPath) {

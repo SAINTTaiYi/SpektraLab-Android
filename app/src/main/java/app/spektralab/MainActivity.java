@@ -139,6 +139,46 @@ public class MainActivity extends Activity {
     /** What the import put on the stage: the frame before any film. */
     private Bitmap beforeBitmap;
     private TextView statusText;
+    /** **A way out that is on screen for the whole batch.** `showExportDialog`
+     *  already offers 停止, but it is two taps deep and the sheet that holds it
+     *  is the same one that *starts* an export. A batch can run ten minutes;
+     *  the stop control belongs next to the progress, not behind a menu. */
+    private TextView abortBatchPill;
+    /** The 构图 → 旋转 reference grid. On by default: the whole point of the
+     *  dial is levelling a horizon, and without lines there is nothing to
+     *  level against. */
+    private boolean rotateGridOn = true;
+    private RotateScale rotateArc;
+    /** The committed angle when the finger went down: a failed render has to
+     *  put the picture back where it was, not leave it turned in the numbers
+     *  and straight on the screen. */
+    private float rotationBeforeDrag = 0f;
+    private boolean rotationPending = false;
+    /**
+     * **The geometry as it was when the user committed it.**
+     *
+     * <p>The render thread sends this, not the live fields. It used to read
+     * them ~90 ms after the commit -- `spk_set_params` spends that long in a
+     * rebuild -- and on another thread. `SL-261111-FAA1` shows what that
+     * window costs: the full delta read `geometry_rotation_deg = -8.643` at
+     * 59.971 and `sendGeometry` read `-0.000` at 00.059, on the same render
+     * thread. Something on the UI thread zeroed the field in between, the
+     * engine got 0, and the picture came back upright with the scale still
+     * reading 8.64. A value that is decided on one thread and delivered on
+     * another has to be captured where it is decided.
+     */
+    private float geoSnapRot, geoSnapX, geoSnapY, geoSnapW = 1f, geoSnapH = 1f;
+    private int geoSnapTurns;
+    private boolean geoSnapFlipH, geoSnapFlipV, geoSnapValid;
+    /**
+     * **A geometry edit is owed to the engine.** Set by every crop / rotate
+     * commit and consumed by the render thread, which sends it on its own
+     * before the ordinary delta. See `sendGeometry`.
+     */
+    private boolean pendingGeometry = false;
+    /** Bumped by every geometry commit; a render from before it must not clear
+     *  the preview turn (it does not carry it). */
+    private int geometrySeq = 0;
     private ProgressBar progressBar;
     private ProgressBar exportProgressBar;
     private final List<String> filmIds = new ArrayList<>(), filmLabels = new ArrayList<>();
@@ -321,10 +361,12 @@ public class MainActivity extends Activity {
         // down, so init has to come first.
         DebugSink.init(this);
         installCrashLogger();
-        // **A native death leaves nothing for the Java handler.** Install the
-        // signal handler before the engine exists -- the first dispatch can
-        // crash -- and ship whatever the last death wrote.
-        installNativeCrashHandler();
+        // **The handler is installed further down, not here.** It lives in the
+        // engine library, and a call made before `prepare` loads that library
+        // threw `UnsatisfiedLinkError` straight into a `catch (Throwable)` --
+        // so every native crash for three months wrote nothing at all and the
+        // reports said only "reason=5". Ship what the last death wrote now;
+        // arm the handler the moment the library exists.
         uploadCrashFiles();
         // Before anything else touches the engine: what the last launch was
         // doing, and how it ended. See `reportPreviousExit`.
@@ -345,6 +387,10 @@ public class MainActivity extends Activity {
         String nativeDir = null;
         try { nativeDir = getApplicationInfo().nativeLibraryDir; } catch (Throwable ignored) {}
         try { SpektraLabEngine.prepare(nativeDir); } catch (Throwable e) { lastImportError = describe(e); }
+        // **Now, and only now.** `prepare` is what loads the library the
+        // handler lives in; the first dispatch can crash, so this is as early
+        // as it can be armed and as late as it must be.
+        installNativeCrashHandler();
         // **Recorded, not uploaded.** `app-start` used to be a POST on every
         // launch, and it alone was enough to fill the free D1 quota over a few
         // hundred users. It now goes into the in-memory ring, which is what a
@@ -488,11 +534,21 @@ public class MainActivity extends Activity {
          * which; the readout row now says it.
          */
         final boolean heavy;
+        /**
+         * **Logarithmic travel, so the default lands in the middle.**
+         *
+         * <p>An enlarger's exposure is multiplicative: 0.25, 1.0 and 4.0 are
+         * equal steps, and a linear bar put the default -- 1.0 -- at 20 % of
+         * the way, which read as "this slider is broken, it only goes up".
+         * Only fields whose neutral value is geometric can use this; a field
+         * whose default is zero has no ratio to divide by.
+         */
+        final boolean logScale;
         Knob(String label, String glyph, float lo, float hi,
              java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
-             boolean heavy) {
+             boolean heavy, boolean logScale) {
             this.label = label; this.glyph = glyph; this.lo = lo; this.hi = hi;
-            this.set = set; this.get = get; this.heavy = heavy;
+            this.set = set; this.get = get; this.heavy = heavy; this.logScale = logScale;
         }
     }
     private final java.util.List<Knob> knobs = new java.util.ArrayList<>();
@@ -1187,7 +1243,33 @@ public class MainActivity extends Activity {
             }
             if (frames.isEmpty()) return false;
             final int saved = root.optInt("current", -1);
-            currentFrame = (saved >= 0 && saved < frames.size()) ? saved : frames.size() - 1;
+            final String savedUri = (saved >= 0 && saved < frames.size())
+                    ? frames.get(saved).uri.toString() : "";
+            // **A frame whose grant expired can never be opened again.** Left in
+            // the strip it re-ran `loadImage`, hit the same dialog, and kept the
+            // dead chip for the next launch; dropped here it costs one toast and
+            // the start is clean from then on.
+            int dropped = 0;
+            for (int i = frames.size() - 1; i >= 0; --i) {
+                if (!canReadUri(frames.get(i).uri)) {
+                    frames.remove(i);
+                    ++dropped;
+                }
+            }
+            if (dropped > 0) {
+                try {
+                    DebugSink.text("session", "dropped " + dropped + " unreadable frames");
+                } catch (Throwable ignored) { }
+                showInAppToast(dropped + " 张照片的读取权限已失效，已从照片栏移除");
+            }
+            if (frames.isEmpty()) return false;
+            // The saved index was an index into the old list. The frame itself
+            // is what has to come back, so it is looked up again by URI.
+            int pick = -1;
+            for (int i = 0; i < frames.size(); ++i) {
+                if (frames.get(i).uri.toString().equals(savedUri)) { pick = i; break; }
+            }
+            currentFrame = pick >= 0 ? pick : frames.size() - 1;
             shelfCollapsed = root.optBoolean("collapsed", false);
             rebuildFrameChips();
             setShelfCollapsed(shelfCollapsed);
@@ -1398,6 +1480,10 @@ public class MainActivity extends Activity {
     private static final String DEBUG_PREFS = "debug";
     private static final String DEBUG_CAP_MP = "pixel_cap_mp";
     private static final String DEBUG_SIM_MIB = "storage_limit_mib";
+    /** `SPK_BAND_CAP`: how many elements one band may cover. 0 = the engine's
+     *  own 2^21. Raising it is the only way to ask "is this a band seam?" on a
+     *  device that shows the symptom and not on one that does not. */
+    private static final String DEBUG_BAND_CAP = "band_cap";
     private static final String PROMO_PREFS = "promo";
     private static final String PROMO_SEEN_CODE = "qq_group_seen_code";
     private static final String PROMO_MUTED = "qq_group_muted";
@@ -1629,6 +1715,27 @@ public class MainActivity extends Activity {
         // touch moves it; everywhere else this returns false and the canvas
         // keeps its pinch, its pan and its compare handle.
         compare.setOnTouchListener(this::onCanvasTouch);
+        // **Turning the picture turns only the view.** A real re-resample is a
+        // second of GPU work and, on a 128 MiB driver, a refusal; the commit
+        // happens once, on release, and the preview angle is dropped when the
+        // rendered frame already carries it.
+        compare.setRotateSink(new CompareView.RotateSink() {
+            @Override public void onRotateStart() {
+                rotationBeforeDrag = geometryRotation;
+            }
+            @Override public void onRotateDelta(float total) { previewRotate(total); }
+            @Override public void onRotateCommit(float total) { commitRotate(total); }
+            @Override public void onRotateReset() {
+                try { DebugSink.text("rotate", "reset by double tap (was " + geometryRotation + ")"); }
+                catch (Throwable ignored) { }
+                rotationBeforeDrag = geometryRotation;
+                geometryRotation = 0f;
+                rotationPending = true;
+                if (rotateArc != null) rotateArc.setAngle(0f);
+                if (compare != null) compare.setPreviewRotation(0f);
+                commitCompose();
+            }
+        });
         compare.setVisibility(View.GONE);
         stage.addView(compare, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
@@ -2058,8 +2165,7 @@ public class MainActivity extends Activity {
             // on the launch *after* the exit -- before the user has imported
             // anything. "设备信息读取失败" there is the engine simply not having
             // been created yet, and it reads as a broken device probe.
-            text.append("device=").append(probe.valid ? probe.describe()
-                    : "（引擎本次启动尚未创建，无设备信息）").append("\n\n");
+            text.append("device=").append(deviceLine()).append("\n\n");
             text.append("ref=").append(DebugSink.REF).append('\n');
             text.append(body);
             final Intent send = new Intent(Intent.ACTION_SEND);
@@ -2093,6 +2199,64 @@ public class MainActivity extends Activity {
      * a frame stretched along the horizontal axis, which leaves the rows varied
      * and the columns nearly identical.
      */
+    /**
+     * **Does the file look like the picture that was on the canvas?**
+     *
+     * <p>The stretch check below compares a file with itself, so a frame that
+     * came back as uninitialised memory passes it: `SL-261111-252F` exported a
+     * 5973x3222 JPEG whose gate held fine row-banded noise -- row-internal std
+     * 11.5, row-to-row 8.7, ratio 1.0 -- with the rebate, the date and the
+     * sprockets all drawn perfectly on top. `X/Y contrast` cannot see that.
+     *
+     * <p>Correlating against the canvas can: the canvas is the same picture
+     * with the same look at a smaller size, so a normal export lands around
+     * 0.95 and noise lands near 0. Coarse (48 columns) so resampling and JPEG
+     * cannot move it.
+     *
+     * @return the correlation, or -1 when it cannot be measured.
+     */
+    private static double exportMatchesCanvas(String path, Bitmap canvas) {
+        if (canvas == null || canvas.getWidth() <= 0) return -1;
+        try {
+            final android.graphics.BitmapFactory.Options probeOpt =
+                    new android.graphics.BitmapFactory.Options();
+            probeOpt.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(path, probeOpt);
+            if (probeOpt.outWidth <= 0 || probeOpt.outHeight <= 0) return -1;
+            int sample = 1;
+            while (Math.max(probeOpt.outWidth, probeOpt.outHeight) / (sample * 2) >= 200) sample *= 2;
+            final android.graphics.BitmapFactory.Options o =
+                    new android.graphics.BitmapFactory.Options();
+            o.inSampleSize = sample;
+            final Bitmap bm = BitmapFactory.decodeFile(path, o);
+            if (bm == null) return -1;
+            final int gw = 48;
+            final int gh = Math.max(8, Math.round(gw * (float) bm.getHeight() / bm.getWidth()));
+            final Bitmap a = Bitmap.createScaledBitmap(bm, gw, gh, true);
+            final Bitmap b = Bitmap.createScaledBitmap(canvas, gw, gh, true);
+            final int[] pa = new int[gw * gh], pb = new int[gw * gh];
+            a.getPixels(pa, 0, gw, 0, 0, gw, gh);
+            b.getPixels(pb, 0, gw, 0, 0, gw, gh);
+            double ma = 0, mb = 0;
+            for (int i = 0; i < pa.length; ++i) {
+                ma += (pa[i] & 255) + ((pa[i] >> 8) & 255) + ((pa[i] >> 16) & 255);
+                mb += (pb[i] & 255) + ((pb[i] >> 8) & 255) + ((pb[i] >> 16) & 255);
+            }
+            ma /= pa.length * 3.0;
+            mb /= pb.length * 3.0;
+            double num = 0, da = 0, db = 0;
+            for (int i = 0; i < pa.length; ++i) {
+                final double va = ((pa[i] & 255) + ((pa[i] >> 8) & 255) + ((pa[i] >> 16) & 255)) / 3.0 - ma;
+                final double vb = ((pb[i] & 255) + ((pb[i] >> 8) & 255) + ((pb[i] >> 16) & 255)) / 3.0 - mb;
+                num += va * vb; da += va * va; db += vb * vb;
+            }
+            if (da <= 1e-9 || db <= 1e-9) return -1;
+            return num / Math.sqrt(da * db);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     private static String inspectExportedFile(String path) {
         try {
             final android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
@@ -2147,10 +2311,15 @@ public class MainActivity extends Activity {
      * lost with the process.
      */
     private void installNativeCrashHandler() {
+        int code = -1;
         try {
             java.io.File f = new java.io.File(getFilesDir(), "native-crash.txt");
-            SpektraLabEngine.installCrashHandler(f.getAbsolutePath());
+            code = SpektraLabEngine.installCrashHandler(f.getAbsolutePath());
         } catch (Throwable ignored) { }
+        // 0 armed, 1 already armed, 2 no path, 3 open failed, 4 sigaction
+        // failed, 5 the library was not loaded. In the trail of every report,
+        // so the next "reason=5 with no native-crash row" answers itself.
+        CrashTrail.mark(this, "crash-handler " + code);
     }
 
     /**
@@ -2211,6 +2380,29 @@ public class MainActivity extends Activity {
         });
     }
 
+    /**
+     * The device, or the last one this install reported.
+     *
+     * <p>Plenty of deaths happen before `ensureEngine`, and the report used to
+     * say "(engine not created this launch)" -- which is true, and useless:
+     * 181 of 291 crash reports in a week carried no GPU at all, including every
+     * native crash. `rememberDevice` keeps the last description this install
+     * managed to read.
+     */
+    private String deviceLine() {
+        if (probe != null && probe.valid) return probe.describe();
+        final String last = getSharedPreferences("ui", MODE_PRIVATE).getString("last_device", null);
+        return last == null ? "(engine not created this launch)" : last + " · 上次启动";
+    }
+
+    private void rememberDevice() {
+        try {
+            if (probe == null || !probe.valid) return;
+            getSharedPreferences("ui", MODE_PRIVATE).edit()
+                    .putString("last_device", probe.describe()).apply();
+        } catch (Throwable ignored) { }
+    }
+
     private String buildLine() {
         try { return SpektraLabEngine.buildInfo(); } catch (Throwable t) { return "(native side not loaded)"; }
     }
@@ -2223,7 +2415,7 @@ public class MainActivity extends Activity {
     private String reportHead() {
         return "build=" + buildLine() + "\n"
                 + "version=" + versionLine()
-                + "device=" + (probe.valid ? probe.describe() : "(engine not created this launch)") + "\n";
+                + "device=" + deviceLine() + "\n";
     }
 
     // **The only automatic upload that is not a crash.** At most one a minute,
@@ -2387,6 +2579,7 @@ public class MainActivity extends Activity {
         // plate over the top-left corner of a photograph is not always
         // wanted, and the switch is in 光学 -> 亮度.
         histogramOn = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("histogram", true);
+        rotateGridOn = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("rotate_grid", true);
         rawAutoBright = getSharedPreferences("ui", MODE_PRIVATE)
                 .getBoolean("raw_auto_bright", false);
         histogram = new HistogramView(this);
@@ -2429,6 +2622,24 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(-2, -2);
         statusLp.leftMargin = dp(12);
         foot.addView(statusText, statusLp);
+
+        abortBatchPill = label("停止", 7, 0xFFFFFFFF, tfHan);
+        abortBatchPill.setGravity(android.view.Gravity.CENTER);
+        android.graphics.drawable.GradientDrawable abortBg =
+                new android.graphics.drawable.GradientDrawable();
+        abortBg.setCornerRadius(dp(3));
+        abortBg.setColor(0xFFC8741E);
+        abortBatchPill.setBackground(abortBg);
+        abortBatchPill.setPadding(dp(9), dp(2), dp(9), dp(2));
+        abortBatchPill.setVisibility(View.GONE);
+        abortBatchPill.setOnClickListener(v -> {
+            if (!batchExportRunning) return;
+            batchExportAbort = true;
+            statusText.setText("正在停止…（当前这张写完就停）");
+        });
+        LinearLayout.LayoutParams abortLp = new LinearLayout.LayoutParams(-2, -2);
+        abortLp.leftMargin = dp(8);
+        foot.addView(abortBatchPill, abortLp);
 
         android.widget.FrameLayout.LayoutParams footLp = new android.widget.FrameLayout.LayoutParams(
                 -1, dp(20), android.view.Gravity.BOTTOM);
@@ -2980,13 +3191,36 @@ public class MainActivity extends Activity {
             img.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if (frame.thumb != null) img.setImageBitmap(frame.thumb);
             box.addView(img, new android.widget.FrameLayout.LayoutParams(-1, -1));
-            box.setOnClickListener(v -> reopenFrame(index));
+            // **Not while a batch is exporting.** `batchExportRunning` already
+            // gates `startPrefetch`, `showImportMenu`, `showExportDialog` and
+            // the preview render inside `loadImage`, but not this -- and this
+            // is the one that closes the session the batch is in the middle of
+            // exporting. A field report (Mali-G925, 1.6.1w) shows the order:
+            // `frame:reopen 6 of 7` lands between `export:write` and
+            // `export:written`, three more imports start behind it, one of them
+            // comes back `import:source none`, and the process dies with
+            // SIGSEGV at 7.6 GB RSS. One toast is cheaper than that.
+            box.setOnClickListener(v -> {
+                if (batchExportRunning) {
+                    showInAppToast("批量导出中，等它跑完再换图");
+                    return;
+                }
+                reopenFrame(index);
+            });
             box.setOnLongClickListener(v -> {
+                // Deleting a frame mid-batch is the same race from the other
+                // side: the loop reads `frames.get(index)` after every await.
+                if (batchExportRunning) {
+                    showInAppToast("批量导出中，等它跑完再改动照片栏");
+                    return true;
+                }
                 showActionSheet(frame.name == null ? "这张照片" : frame.name,
                         "参数是每张照片各自的：复制过去只改这条栏里的设置，文件不动。",
-                        new String[]{"把这张的参数应用到其它照片…", "删除", "取消"}, which -> {
+                        new String[]{"把这张的参数应用到其它照片…", "删掉其中几张…",
+                                "删除这张", "取消"}, which -> {
                             if (which == 0) showApplyLookSheet(index);
-                            else if (which == 1) removeFrame(index);
+                            else if (which == 1) showBatchDeleteSheet();
+                            else if (which == 2) removeFrame(index);
                         });
                 return true;
             });
@@ -3138,6 +3372,7 @@ public class MainActivity extends Activity {
                                 + String.format(java.util.Locale.US, "%.2f", compare.zoomLevel()));
                     } catch (Throwable ignored) { }
                 }
+                endTwist();
                 return true;
             }
 
@@ -3156,6 +3391,7 @@ public class MainActivity extends Activity {
                 } catch (Throwable ignored) { }
                 statusText.setText("ZOOM " + String.format(java.util.Locale.US, "%.2f", canvasPinchStartZoom)
                         + " · 0%");
+                beginTwist(ev);
                 return true;
             }
 
@@ -3181,6 +3417,10 @@ public class MainActivity extends Activity {
             canvasPinchStartPanX = compare.panXLevel();
             canvasPinchStartPanY = compare.panYLevel();
             statusText.setText("ZOOM " + String.format(java.util.Locale.US, "%.2f", canvasPinchStartZoom));
+            // The same two fingers also carry an angle; on the rotate page it
+            // turns the picture (see `updateTwist`). Off that page it is a
+            // no-op, so pinch-to-zoom keeps exactly the code it had.
+            updateTwist(ev);
             return true;
         }
 
@@ -3332,6 +3572,15 @@ public class MainActivity extends Activity {
         if (index < filmTypes.size() && "positive".equals(filmTypes.get(index))) return base + " · 反转";
         if (index < filmIds.size() && isMonochromeStock(filmIds.get(index))) return base + " · 黑白";
         return base;
+    }
+
+    /** A hairline box with no fill. The grid's cells are dividers, not panels:
+     *  a grey block behind each one read as dirt on the paper. */
+    private android.graphics.drawable.GradientDrawable cellBorder() {
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setColor(android.graphics.Color.TRANSPARENT);
+        bg.setStroke(dp(1), UI_LINE);
+        return bg;
     }
 
     private android.graphics.drawable.GradientDrawable cardBorder(boolean active) {
@@ -4387,27 +4636,21 @@ public class MainActivity extends Activity {
     }
 
     private void buildTonePage(LinearLayout page) {
-        final LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        top.addView(label("", 9, UI_MUTED, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView reset = label("复位", 8, UI_BLUE, tfHan);
-        reset.setBackground(outlineBox(false));
-        reset.setGravity(android.view.Gravity.CENTER);
-        reset.setPadding(dp(10), 0, dp(10), 0);
-        reset.setOnClickListener(v -> resetViewPanel());
-        top.addView(reset, new LinearLayout.LayoutParams(-2, dp(28)));
-        page.addView(top, new LinearLayout.LayoutParams(-1, dp(32)));
-
+        // **Three controls, one row.** Two full-width switch rows plus a lone
+        // 「复位」 on a line of its own was the tallest thing on the shortest
+        // page; the same treatment as the print page is 46 dp instead of 128.
+        LinearLayout toneGrid = new LinearLayout(this);
+        toneGrid.setOrientation(LinearLayout.HORIZONTAL);
         // The histogram's own switch. It changes no pixels, so it must not go
         // through `applyParams` -- it shows or hides the plate on the canvas,
         // and the choice outlives the photograph.
         final Square histMark = new Square(this, UI_BLUE, uiToggleOff());
-        page.addView(toggleRow("直方图", histMark, () -> histogramOn, on -> {
+        toggleCell(toneGrid, "直方图", "显示", histMark, () -> histogramOn, on -> {
             histogramOn = on;
             getSharedPreferences("ui", MODE_PRIVATE).edit().putBoolean("histogram", on).apply();
             if (histogram != null) histogram.setVisibility(on ? View.VISIBLE : View.GONE);
-        }), new LinearLayout.LayoutParams(-1, -2));
+        });
+        choiceCell(toneGrid, "复位", "全部归零", tv -> resetViewPanel());
 
         // **How the canvas reads the decode, not what the engine gets.**
         // Off: the numbers exactly as LibRaw handed them, through sRGB only.
@@ -4417,12 +4660,13 @@ public class MainActivity extends Activity {
         // looked like a black rectangle -- but it also hides the picture's own
         // exposure, and it ran 2.54 EV above Lightroom on the reference DNG.
         final Square levelMark = new Square(this, UI_BLUE, uiToggleOff());
-        page.addView(toggleRow("原图自动提亮", levelMark, () -> rawAutoBright, on -> {
+        toggleCell(toneGrid, "原图提亮", "自动", levelMark, () -> rawAutoBright, on -> {
             rawAutoBright = on;
             getSharedPreferences("ui", MODE_PRIVATE).edit()
                     .putBoolean("raw_auto_bright", on).apply();
             refreshOriginalView();
-        }), new LinearLayout.LayoutParams(-1, -2));
+        });
+        page.addView(toneGrid, new LinearLayout.LayoutParams(-1, dp(46)));
 
         adjustRow(page, "相机曝光", -4f, 4f, () -> cameraEv, v -> cameraEv = v, false);
         adjustRow(page, "曝光", -3f, 3f, () -> viewExposure, v -> viewExposure = v, false);
@@ -5222,16 +5466,6 @@ public class MainActivity extends Activity {
         panel.addView(sectionHead("PRINT / 胶片冲印参数", this::resetOpticsPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
-        // **配光.** `spk_solve` is the enlarger's own analysis: it measures the
-        // frame and returns the exposure and the three dichroic filters that
-        // print it neutral. The import already runs it once (that is where the
-        // source view's EV comes from), but until now there was no way to ask
-        // again -- change the film, change the light, and the old numbers just
-        // stayed. This is also the only place the c/m/y *neutral* values are
-        // visible at all; the engine derives them from
-        // `neutral_print_filters.json` per stock and illuminant.
-        addChoice(panel, "配光（测光 + 三色滤镜）", "点击重新配光", tv -> resolvePrinting());
-
         // The readout: which slider this is, and what it is set to.
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
@@ -5259,7 +5493,7 @@ public class MainActivity extends Activity {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 if (knobs.isEmpty()) return;
                 final Knob k = knobs.get(activeKnob);
-                final float v = k.lo + (k.hi - k.lo) * progress / 1000f;
+                final float v = knobValue(k, progress);
                 k.set.accept(v);
                 knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
                 if (knobBar instanceof ScrubBar && ((ScrubBar) knobBar).isDragging()) {
@@ -5279,7 +5513,11 @@ public class MainActivity extends Activity {
                 }
             }
         });
-        panel.addView(knobBar, new LinearLayout.LayoutParams(-1, dp(44)));
+        // **32 dp, the same as every other slider in the app.** It was 44 here
+        // and 44 in `rangeRow`, against 32 in `adjustRow` -- and because the
+        // track's thickness came from the row height, those two drew a track
+        // four times thicker than the optics page.
+        panel.addView(knobBar, new LinearLayout.LayoutParams(-1, dp(32)));
 
         // The strip: one chip per adjustable, the selection under the thumb.
         HorizontalScrollView stripScroll = new HorizontalScrollView(this);
@@ -5298,46 +5536,18 @@ public class MainActivity extends Activity {
         // same field had two controls and the slider's position silently decided
         // the checkbox. It also read as one more thing to tune rather than the
         // one bit it is.
-        edrMark = new Square(this, UI_BLUE, uiToggleOff());
-        panel.addView(toggleRow("扩展动态范围 (EDR)", edrMark,
-                () -> edrOn > 0.5f,
-                on -> {
-                    edrOn = on ? 1f : 0f;
-                    if (uiReady && session != null) {
-                        showingOriginal = false;
-                        setOriginalVisual(false);
-                        renderImage();
-                    }
-                }), new LinearLayout.LayoutParams(-1, -2));
+
 
         // **A switch, not a 0..1 knob**, for the same reason as EDR above: the
         // field has two meaningful values and a slider would invent 98 others
         // that all render the same. On = the stock's own hues (the 1.6.7 look);
         // off = the green-window correction.
-        hueOwnMark = new Square(this, UI_BLUE, uiToggleOff());
-        panel.addView(toggleRow("保留胶片原色（不校色相）", hueOwnMark,
-                () -> hueFixUnsupported(filmStock) || hueCorrection < 0.5f,
-                on -> {
-                    if (hueFixUnsupported(filmStock)) {
-                        // Pinned on for this stock: say why instead of silently
-                        // flipping back, or the switch reads as broken.
-                        refreshHueOwnMark();
-                        showActionSheet("这支胶片不支持色相校正",
-                                "它的光谱反演标定还不准：实测绿色偏差 20 到 30 度，"
-                                + "强行校正会比保留原色偏得更多。所以这支胶片的色相校正是固定的。"
-                                + "换一支胶片就能改。",
-                                new String[]{"知道了"}, which -> { });
-                        return;
-                    }
-                    hueCorrection = on ? 0f : 1f;
-                    if (uiReady && session != null) {
-                        showingOriginal = false;
-                        setOriginalVisual(false);
-                        renderImage();
-                    }
-                }), new LinearLayout.LayoutParams(-1, -2));
 
-        knob("放大曝光 越右越暗", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure);
+
+        // **Log travel.** 0.25 / 1.0 / 4.0 are equal stops, and 1.0 is the
+        // neutral: on a linear bar it sat at 20 %, which is the "越右越暗" half
+        // only. With a ratio scale the default is the middle of the track.
+        knob("放大曝光 越右越暗", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure, false, true);
         knob("高光保护",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true);
         knob("暗部保护",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true);
         knob("颗粒",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount, true);
@@ -5350,10 +5560,7 @@ public class MainActivity extends Activity {
         knob("黄滤镜",     "Y",  -1.0f, 1.0f,   v -> yFilter = v,         () -> yFilter);
         knob("品红滤镜",   "M",  -1.0f, 1.0f,   v -> mFilter = v,         () -> mFilter);
         knob("滤镜强度",   "C",  1.0f,  60.0f,  v -> filterScale = v,     () -> filterScale);
-        panel.addView(label("光晕 1.0 = 胶片本身的量，往右才是加强：高光先挑出来再加光晕，那圈红光是真发光，"
-                + "不是把画面整体糊亮。\n散射半径 0 = 胶片本身的扩散（不到一个像素，看不出）；拉起来才有雾感。",
-                7.5f, UI_MUTED, tfHan),
-                new LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT));
+
         knob("预闪",       "⚡", 0.0f,  1.0f,   v -> preflash = v,        () -> preflash);
         knob("曲线柔度",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff, true);
         knob("提升上限",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift, true);
@@ -5379,8 +5586,52 @@ public class MainActivity extends Activity {
                                                                     () -> outputCctf ? 1f : 0f);
 
 
-        // Two of the optics are choices, not numbers.
-        addChoice(panel, "镜头滤镜", labelOf(FILTER_LABELS, FILTER_IDS, cameraFilter), tv ->
+        // **Six controls, two rows.** This page is the tallest one in the app;
+        // on a 640 dp screen six full-width rows at the bottom pushed the tab
+        // bar off it. Three to a row is the same six controls in 92 dp instead
+        // of 204 -- and the two switches read better beside each other than
+        // alone above twenty-two knobs.
+        LinearLayout gridTop = new LinearLayout(this);
+        gridTop.setOrientation(LinearLayout.HORIZONTAL);
+        choiceCell(gridTop, "配光", "重新配光", tv -> resolvePrinting());
+        edrMark = new Square(this, UI_BLUE, uiToggleOff());
+        toggleCell(gridTop, "动态范围", "EDR", edrMark,
+                () -> edrOn > 0.5f,
+                on -> {
+                    edrOn = on ? 1f : 0f;
+                    if (uiReady && session != null) {
+                        showingOriginal = false;
+                        setOriginalVisual(false);
+                        renderImage();
+                    }
+                });
+        hueOwnMark = new Square(this, UI_BLUE, uiToggleOff());
+        toggleCell(gridTop, "胶片色相", "保留原色", hueOwnMark,
+                () -> hueFixUnsupported(filmStock) || hueCorrection < 0.5f,
+                on -> {
+                    if (hueFixUnsupported(filmStock)) {
+                        // Pinned on for this stock: say why instead of silently
+                        // flipping back, or the switch reads as broken.
+                        refreshHueOwnMark();
+                        showActionSheet("这支胶片不支持色相校正",
+                                "它的光谱反演标定还不准：实测绿色偏差 20 到 30 度，"
+                                + "强行校正会比保留原色偏得更多。所以这支胶片的色相校正是固定的。"
+                                + "换一支胶片就能改。",
+                                new String[]{"知道了"}, which -> { });
+                        return;
+                    }
+                    hueCorrection = on ? 0f : 1f;
+                    if (uiReady && session != null) {
+                        showingOriginal = false;
+                        setOriginalVisual(false);
+                        renderImage();
+                    }
+                });
+        panel.addView(gridTop, new LinearLayout.LayoutParams(-1, dp(46)));
+
+        LinearLayout gridBottom = new LinearLayout(this);
+        gridBottom.setOrientation(LinearLayout.HORIZONTAL);
+        choiceCell(gridBottom, "镜头滤镜", labelOf(FILTER_LABELS, FILTER_IDS, cameraFilter), tv ->
                 showChoiceMapping("镜头滤镜（Wratten）", FILTER_LABELS, FILTER_IDS, cameraFilter, id -> {
                     cameraFilter = id;
                     tv.setText(labelOf(FILTER_LABELS, FILTER_IDS, id));
@@ -5390,7 +5641,7 @@ public class MainActivity extends Activity {
         // **What the canvas is drawn in.** Not a look parameter: it never
         // reaches a file, and two exports of the same frame in different
         // canvas spaces are the same bytes.
-        addChoice(panel, "预览色域", previewSpace, tv -> {
+        choiceCell(gridBottom, "预览色域", previewSpace, tv -> {
             final java.util.List<String> labels = java.util.Arrays.asList(SPACES);
             showChoiceSheet("预览色域（只影响屏幕；导出始终是 sRGB）", labels, previewSpace, picked -> {
                 final int index = labels.indexOf(picked);
@@ -5399,14 +5650,19 @@ public class MainActivity extends Activity {
                 if (uiReady && session != null) { applyParams(); renderImage(); }
             });
         });
-
-        addChoice(panel, "保护基准", labelOf(NORM_LABELS, NORM_IDS, sceneNorm), tv ->
+        choiceCell(gridBottom, "保护基准", labelOf(NORM_LABELS, NORM_IDS, sceneNorm), tv ->
                 showChoiceMapping("高光/暗部保护按什么算", NORM_LABELS, NORM_IDS, sceneNorm, id -> {
                     sceneNorm = id;
                     tv.setText(labelOf(NORM_LABELS, NORM_IDS, id));
                     applyParams();
                     if (uiReady && session != null) { showingOriginal = false; setOriginalVisual(false); renderImage(); }
                 }));
+        // **A gap, not two borders flush together.** Each cell carries its own
+        // 1 dp outline; stacked, the two rows met in a 2 dp line that read as
+        // heavier than every other rule on the page.
+        LinearLayout.LayoutParams gridBottomLp = new LinearLayout.LayoutParams(-1, dp(46));
+        gridBottomLp.topMargin = dp(6);
+        panel.addView(gridBottom, gridBottomLp);
 
         selectKnob(0);
         return panel;
@@ -5422,8 +5678,14 @@ public class MainActivity extends Activity {
     private void knob(String label, String glyph, float lo, float hi,
                       java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
                       boolean heavy) {
+        knob(label, glyph, lo, hi, set, get, heavy, false);
+    }
+
+    private void knob(String label, String glyph, float lo, float hi,
+                      java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
+                      boolean heavy, boolean logScale) {
         final int index = knobs.size();
-        knobs.add(new Knob(label, glyph, lo, hi, set, get, heavy));
+        knobs.add(new Knob(label, glyph, lo, hi, set, get, heavy, logScale));
 
         LinearLayout chip = new LinearLayout(this);
         chip.setOrientation(LinearLayout.VERTICAL);
@@ -5464,12 +5726,27 @@ public class MainActivity extends Activity {
     }
 
     /** Put the current value on the one slider, without changing which knob. */
+    /** Progress 0..1000 for a knob, honouring its scale. */
+    private static int knobProgress(Knob k, float v) {
+        if (k.logScale && k.lo > 0f && k.hi > k.lo) {
+            final double t = Math.log(Math.max(k.lo, Math.min(k.hi, v)) / (double) k.lo)
+                    / Math.log((double) k.hi / k.lo);
+            return (int) Math.round(Math.max(0.0, Math.min(1.0, t)) * 1000.0);
+        }
+        return Math.round((v - k.lo) / (k.hi - k.lo) * 1000f);
+    }
+
+    private static float knobValue(Knob k, int progress) {
+        final double t = Math.max(0, Math.min(1000, progress)) / 1000.0;
+        if (k.logScale && k.lo > 0f) return (float) (k.lo * Math.pow((double) k.hi / k.lo, t));
+        return (float) (k.lo + (k.hi - k.lo) * t);
+    }
+
     private void refreshKnob() {
         if (knobs.isEmpty() || knobBar == null) return;
         final Knob k = knobs.get(activeKnob);
         final float v = k.get.get();
-        final int p = Math.round((v - k.lo) / (k.hi - k.lo) * 1000f);
-        knobBar.setProgress(Math.max(0, Math.min(1000, p)));
+        knobBar.setProgress(Math.max(0, Math.min(1000, knobProgress(k, v))));
         knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
         knobTitle.setText(k.label);
         if (knobHintView != null) knobHintView.setText(knobHint(k.label));
@@ -5506,6 +5783,66 @@ public class MainActivity extends Activity {
         parent.addView(row, new LinearLayout.LayoutParams(-1, dp(34)));
         return tv;
     }
+
+    /** One cell of the six-control grid: a name and its value, a third of the
+     *  width. Six of these used to be six full-width rows. */
+    private TextView choiceCell(LinearLayout row, String title, String value,
+                                java.util.function.Consumer<TextView> onTap) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        cell.setPadding(dp(9), dp(4), dp(6), dp(4));
+        cell.setBackground(cellBorder());
+        cell.addView(label(title, 8f, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
+        final TextView tv = label(value, 9f, UI_INK, tfHan);
+        tv.setSingleLine(true);
+        tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams tvLp = new LinearLayout.LayoutParams(-1, -2);
+        tvLp.topMargin = dp(1);
+        cell.addView(tv, tvLp);
+        cell.setOnClickListener(v -> onTap.accept(tv));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+        lp.rightMargin = dp(6);
+        row.addView(cell, lp);
+        return tv;
+    }
+
+    /** The same cell for a two-state switch: its name, then the word and the square. */
+    private void toggleCell(LinearLayout row, String title, String valueText, Square mark,
+                            java.util.function.BooleanSupplier isOn,
+                            java.util.function.Consumer<Boolean> onChange) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        cell.setPadding(dp(9), dp(4), dp(6), dp(4));
+        cell.setBackground(cellBorder());
+        cell.addView(label(title, 8f, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout line = new LinearLayout(this);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView tv = label(valueText, 9f, UI_INK, tfHan);
+        tv.setSingleLine(true);
+        tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        line.addView(tv, new LinearLayout.LayoutParams(0, -2, 1f));
+        mark.setLit(isOn.getAsBoolean());
+        line.addView(mark, new LinearLayout.LayoutParams(dp(14), dp(14)));
+        LinearLayout.LayoutParams lineLp = new LinearLayout.LayoutParams(-1, -2);
+        lineLp.topMargin = dp(1);
+        cell.addView(line, lineLp);
+        // **The whole cell is the target**, same as `toggleRow`: a 14 dp square
+        // with a 46 dp cell around it is what a thumb expects.
+        cell.setOnClickListener(v -> {
+            final boolean next = !isOn.getAsBoolean();
+            Probe.log("toggle", title + " " + isOn.getAsBoolean() + " -> " + next);
+            mark.setLit(next);
+            if (rendering) statusText.setText("渲染中…（这是胶片层参数，约 1–2 秒）");
+            onChange.accept(next);
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+        lp.rightMargin = dp(6);
+        row.addView(cell, lp);
+    }
+
 
     /** A picker whose rows show labels but whose callback delivers ids. */
     private void showChoiceMapping(String title, String[] labels, String[] ids, String currentId,
@@ -5637,7 +5974,7 @@ public class MainActivity extends Activity {
     private static String knobHint(String label) {
         if (label == null) return "";
         switch (label) {
-            case "放大机曝光": return "放大机的曝光量。数值越小，印出来越亮";
+            case "放大曝光 越右越暗": return "放大机的曝光量。数值越小，印出来越亮";
             case "高光保护": return "把高光折进相纸的肩部。拉得越高，压得越狠";
             case "暗部保护": return "把暗部从趾部提起来。拉得越高，暗部越亮";
             case "颗粒": return "银盐颗粒的强度。黑白片按各胶片自己的实测换算";
@@ -5748,6 +6085,7 @@ public class MainActivity extends Activity {
         if (cropScroll != null) cropScrollX = cropScroll.getScrollX();
         composeBody.removeAllViews();
         if (page == 0) buildCropPage(); else buildRotatePage();
+        syncRotateGrid();
         if (cropOverlay != null) {
             // **Only while 构图 → 裁切 is the page in front.** The page is
             // built during `onCreate`, long before `setTab` runs, so keying on
@@ -6018,31 +6356,35 @@ public class MainActivity extends Activity {
     }
 
     private void buildRotatePage() {
-        final TextView readout = label(String.format(java.util.Locale.US, "%.1f°", geometryRotation),
-                16, UI_INK, tfBody);
-        readout.setGravity(android.view.Gravity.CENTER);
-        composeBody.addView(readout, new LinearLayout.LayoutParams(-1, dp(32)));
-
-        final ScrubBar bar = new ScrubBar(this);
-        bar.setMax(900);
-        bar.setProgress(Math.round((geometryRotation + 45f) * 10f));
-        bar.setPadding(dp(5), dp(11), dp(5), dp(11));
-        bar.setResetTarget(450, () -> {
-            geometryRotation = 0f;
-            bar.setProgress(450);
-            readout.setText("0.0°");
-            commitCompose();
+        // **The gesture is on the picture; the scale is the readout.** This
+        // page used to make the finger turn a dial while the picture sat still,
+        // which is the wrong way round: 修偏 is done by watching the horizon.
+        final RotateScale arc = new RotateScale(this);
+        arc.setAngle(geometryRotation);
+        rotateArc = arc;
+        android.widget.FrameLayout arcBox = new android.widget.FrameLayout(this);
+        arcBox.addView(arc, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        final TextView gridChip = label("", 8f, UI_BLUE, tfHan);
+        final Runnable paintChip = () -> gridChip.setText(rotateGridOn ? "参考线 · 开" : "参考线 · 关");
+        paintChip.run();
+        gridChip.setPadding(dp(8), dp(4), dp(8), dp(4));
+        gridChip.setOnClickListener(v -> {
+            rotateGridOn = !rotateGridOn;
+            getSharedPreferences("ui", MODE_PRIVATE).edit()
+                    .putBoolean("rotate_grid", rotateGridOn).apply();
+            paintChip.run();
+            syncRotateGrid();
         });
-        bar.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(android.widget.SeekBar sb, int value, boolean fromUser) {
-                geometryRotation = (value - 450) / 10f;
-                readout.setText(String.format(java.util.Locale.US, "%.1f°", geometryRotation));
-                if (bar.isDragging()) requestLivePreview();
-            }
-            @Override public void onStartTrackingTouch(android.widget.SeekBar sb) { }
-            @Override public void onStopTrackingTouch(android.widget.SeekBar sb) { commitCompose(); }
-        });
-        composeBody.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
+        android.widget.FrameLayout.LayoutParams chipLp = new android.widget.FrameLayout.LayoutParams(
+                -2, -2, android.view.Gravity.TOP | android.view.Gravity.END);
+        chipLp.topMargin = 0;
+        chipLp.rightMargin = dp(6);
+        arcBox.addView(gridChip, chipLp);
+        composeBody.addView(arcBox, new LinearLayout.LayoutParams(-1, dp(70)));
+        final TextView tip = label("拖弧尺或画面转动 · 双击画面归零 · 松手吸附水平",
+                7.5f, UI_MUTED, tfHan);
+        tip.setGravity(android.view.Gravity.CENTER);
+        composeBody.addView(tip, new LinearLayout.LayoutParams(-1, dp(14)));
 
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -6064,10 +6406,242 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(0, -2, 1f));
         composeBody.addView(row, new LinearLayout.LayoutParams(-1, -2));
 
-        final TextView foot = label("角度 ±45°；双击滑杆上的圆点归零。翻转和 90° 是整幅换向，画面不变形。",
-                8f, UI_MUTED, tfHan);
-        foot.setPadding(0, dp(4), 0, 0);
-        composeBody.addView(foot, new LinearLayout.LayoutParams(-1, dp(30)));
+        // No footnote under the buttons: the tip above the scale already says
+        // what the gesture does, and this page is height-sensitive. (The old
+        // one here still said "转表盘" three pages after the dial was removed.)
+    }
+
+    /** The grid belongs to exactly one square inch of this app. */
+    private void syncRotateGrid() {
+        if (compare == null) return;
+        final boolean rotatePage = rotatePageLive();
+        compare.setRotateMode(rotatePage);
+        compare.setGrid(rotateGridOn && rotatePage ? 1 : 0);
+    }
+
+    private static float clampRotation(float deg) {
+        return Math.max(-45f, Math.min(45f, deg));
+    }
+
+    /** The one square inch that owns the rotate gesture. */
+    private boolean rotatePageLive() {
+        return activeTabIndex == 4 && composeSubPage == 1;
+    }
+
+    /** Live: the picture turns under the finger, nothing renders. */
+    private void previewRotate(float total) {
+        final float want = clampRotation(rotationBeforeDrag + total);
+        if (rotateArc != null) rotateArc.setAngle(want);
+        if (compare != null) compare.setPreviewRotation(want - rotationBeforeDrag);
+    }
+
+    /** Release: level snaps, the pipeline hears about it once. */
+    private void commitRotate(float total) {
+        float want = clampRotation(rotationBeforeDrag + total);
+        try {
+            DebugSink.text("rotate", "commit want=" + want + " before=" + rotationBeforeDrag
+                    + " total=" + total);
+        } catch (Throwable ignored) { }
+        // Level is a place, not a number: 0.6 degrees is about two pixels of
+        // travel at the frame's corner.
+        if (Math.abs(want) < 0.6f) want = 0f;
+        geometryRotation = want;
+        rotationPending = true;
+        geometrySeq++;
+        if (rotateArc != null) rotateArc.setAngle(want);
+        if (compare != null) compare.setPreviewRotation(want - rotationBeforeDrag);
+        commitCompose();
+    }
+
+    // **Turning with two fingers, after Cropper.js v2's `ACTION_TRANSFORM`.**
+    // One finger already rotates on this page, but once the picture is zoomed
+    // in, that finger is also the only way to look around -- so the pair of
+    // fingers gets to level the frame without letting go of the zoom. The angle
+    // between the two pointers is the whole measurement; no minimum span and no
+    // second detector, because the span is already being tracked for the zoom
+    // and two fingers are never at the centre of the picture.
+    //
+    // The dead zone is not cosmetic: a pinch wobbles by a degree or two no
+    // matter how carefully it is done, and a photograph that quietly rotates
+    // 2 degrees every time the user zooms in is worse than one that cannot be
+    // turned with two fingers at all.
+    private static final float TWIST_DEAD_ZONE_DEG = 2.5f;
+    private float twistLast = Float.NaN;
+    private float twistTotal = 0f;
+    private boolean twistActive = false;
+
+    private static float angleOfPair(android.view.MotionEvent e) {
+        return (float) Math.toDegrees(Math.atan2(
+                e.getX(1) - e.getX(0), e.getY(1) - e.getY(0)));
+    }
+
+    private void beginTwist(android.view.MotionEvent e) {
+        twistTotal = 0f;
+        twistActive = false;
+        twistLast = rotatePageLive() ? angleOfPair(e) : Float.NaN;
+    }
+
+    private void updateTwist(android.view.MotionEvent e) {
+        if (!rotatePageLive()) { twistLast = Float.NaN; return; }
+        final float cur = angleOfPair(e);
+        if (Float.isNaN(twistLast)) { twistLast = cur; return; }
+        float d = cur - twistLast;
+        while (d > 180f) d -= 360f;
+        while (d < -180f) d += 360f;
+        twistLast = cur;
+        twistTotal += d;
+        if (Math.abs(twistTotal) <= TWIST_DEAD_ZONE_DEG) return;
+        if (!twistActive) {
+            twistActive = true;
+            rotationBeforeDrag = geometryRotation;
+        }
+        previewRotate(twistTotal - Math.signum(twistTotal) * TWIST_DEAD_ZONE_DEG);
+    }
+
+    private void endTwist() {
+        final boolean active = twistActive;
+        final float total = twistTotal;
+        twistLast = Float.NaN;
+        twistTotal = 0f;
+        twistActive = false;
+        if (!active) return;
+        commitRotate(total - Math.signum(total) * TWIST_DEAD_ZONE_DEG);
+    }
+
+    /**
+     * **The scale under the picture, after the editor this is modelled on.**
+     *
+     * <p>A short arc whose centre is the picture's own centre, so a degree of
+     * finger travel on the canvas and a tick on this scale are the same degree.
+     * The readings sit in a gap in the middle: the number *is* the pointer.
+     */
+    /**
+     * **The rotation scale, after the editor in the reference recording.**
+     *
+     * <p>A shallow arc of dots under the picture: one dot per degree, a longer
+     * tick every five, and the whole ruler sliding under a fixed pointer as the
+     * angle moves -- so the mark under the pointer is the angle you are on, and
+     * the number above it is that angle written out. Dragging anywhere on the
+     * scale turns the picture, which is the part a bare seekbar cannot do:
+     * there is no thumb to aim at, the gesture starts where the eye already is.
+     *
+     * <p>The reading carries two decimals because the scale is fine enough to
+     * resolve a hundredth: at 400 dp wide the ruler spans 44 degrees, so one
+     * pixel is a fortieth of a degree. Level is a place, and the commit still
+     * snaps to it (see `commitRotate`).
+     */
+    private final class RotateScale extends View {
+        /** Degrees of value the arc spans across its own width. */
+        private static final float SPAN_DEG = 44f;
+
+        private final android.graphics.Paint ink =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint labelPaint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private float angle = 0f;
+        private float downX = 0f;
+        private boolean dragging = false;
+
+        RotateScale(android.content.Context c) {
+            super(c);
+            ink.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            labelPaint.setTextAlign(android.graphics.Paint.Align.CENTER);
+            labelPaint.setTypeface(tfBody);
+        }
+
+        void setAngle(float deg) {
+            if (Math.abs(angle - deg) < 0.005f) return;
+            angle = deg;
+            invalidate();
+        }
+
+        /** One pixel is a fortieth of a degree at the usual width. */
+        private float pxPerDeg() {
+            return Math.max(1f, getWidth() / SPAN_DEG);
+        }
+
+        @Override public boolean onTouchEvent(android.view.MotionEvent e) {
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    downX = e.getX();
+                    rotationBeforeDrag = geometryRotation;
+                    dragging = true;
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                    return true;
+                case android.view.MotionEvent.ACTION_MOVE:
+                    if (!dragging) return true;
+                    // **Relative to where the finger landed**, not to the last
+                    // event: a scrubber that integrates its own deltas drifts
+                    // against the refresh rate, and this one is calibrated in
+                    // pixels.
+                    previewRotate((e.getX() - downX) / pxPerDeg());
+                    return true;
+                case android.view.MotionEvent.ACTION_UP:
+                    if (dragging) {
+                        dragging = false;
+                        commitRotate((e.getX() - downX) / pxPerDeg());
+                    }
+                    return true;
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    dragging = false;
+                    return true;
+                default:
+                    return super.onTouchEvent(e);
+            }
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas canvas) {
+            final float w = getWidth(), h = getHeight();
+            if (w <= 0f || h <= 0f) return;
+            final float cx = w / 2f;
+            final float baseY = h - dp(10);
+            final float halfW = w / 2f - dp(3);
+            final double halfRad = Math.toRadians(SPAN_DEG / 2.0);
+            final float r = (float) (halfW / Math.sin(halfRad));
+            final float cy = baseY - r;
+
+            // Ticks live on the value, not on the screen: tick `k` is the mark
+            // for `k` degrees, so it slides as `angle` moves and the ones every
+            // five stay the ones every five.
+            // **The ticks that are in view are the ones near the value, not the
+            // ones near zero.** Iterating -22..22 emptied the scale the moment
+            // the angle passed the width of the arc: at 45 degrees every tick
+            // worth drawing was in the 20s and 30s, outside the loop.
+            final int from = (int) Math.ceil(angle - SPAN_DEG / 2f) - 1;
+            final int to = (int) Math.floor(angle + SPAN_DEG / 2f) + 1;
+            for (int k = from; k <= to; ++k) {
+                final float rel = k - angle;
+                if (Math.abs(rel) > SPAN_DEG / 2f) continue;
+                final double phi = Math.toRadians(rel);
+                final float x = cx + (float) (r * Math.sin(phi));
+                final float y = cy + (float) (r * Math.cos(phi));
+                if (k % 5 == 0) {
+                    ink.setColor(UI_INK);
+                    ink.setAlpha(190);
+                    ink.setStrokeWidth(dp(1.6f));
+                    final float len = dp(7);
+                    canvas.drawLine(x, y,
+                            x + (float) (len * Math.sin(phi)),
+                            y + (float) (len * Math.cos(phi)), ink);
+                } else {
+                    ink.setColor(UI_INK);
+                    ink.setAlpha(120);
+                    canvas.drawCircle(x, y, dp(1.1f), ink);
+                }
+            }
+
+            // The pointer: fixed at the middle, longer than any tick, pointing
+            // away from the centre the way the ruler does.
+            ink.setColor(UI_INK);
+            ink.setAlpha(235);
+            ink.setStrokeWidth(dp(1.8f));
+            canvas.drawLine(cx, baseY, cx, baseY + dp(7), ink);
+
+            labelPaint.setColor(UI_INK);
+            labelPaint.setTextSize(dp(13));
+            canvas.drawText(String.format(java.util.Locale.US, "%.2f°", angle),
+                    cx, baseY - dp(20), labelPaint);
+        }
     }
 
     private View circleAction(String glyph, String caption, Runnable tap) {
@@ -6084,9 +6658,9 @@ public class MainActivity extends Activity {
         ring.setStroke(dp(1), UI_LINE);
         circle.setBackground(ring);
         circle.setOnClickListener(v -> tap.run());
-        box.addView(circle, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        box.addView(circle, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        final TextView name = label(caption, 8, UI_MUTED, tfHan);
+        final TextView name = label(caption, 7.5f, UI_MUTED, tfHan);
         name.setGravity(android.view.Gravity.CENTER);
         name.setOnClickListener(v -> tap.run());
         box.addView(name, new LinearLayout.LayoutParams(-1, -2));
@@ -6106,6 +6680,18 @@ public class MainActivity extends Activity {
         // the edit -- so the very next render was refused with E-1305 on a
         // gate the app itself had offered.
         refreshEdgeFormats();
+        // Captured here, on the thread that owns the edit, and read by
+        // `sendGeometry` from the render thread. See `geoSnapRot`.
+        geoSnapRot = geometryRotation;
+        geoSnapTurns = geometryTurns;
+        geoSnapFlipH = geometryFlipH;
+        geoSnapFlipV = geometryFlipV;
+        geoSnapW = Math.max(0.01f, Math.min(1f, geometryCropW));
+        geoSnapH = Math.max(0.01f, Math.min(1f, geometryCropH));
+        geoSnapX = Math.max(0f, Math.min(1f - geoSnapW, geometryCropX));
+        geoSnapY = Math.max(0f, Math.min(1f - geoSnapH, geometryCropY));
+        geoSnapValid = true;
+        pendingGeometry = true;
         applyParams();
         if (uiReady && session != null) {
             showingOriginal = false;
@@ -6756,10 +7342,12 @@ public class MainActivity extends Activity {
         // and the picker one row below was greyed out and untappable. The only
         // way through was to crop in 构图 first. Now the entries stay live and
         // choosing a gate crops the picture and turns the rebate on.
+        LinearLayout gateRow = new LinearLayout(this);
+        gateRow.setOrientation(LinearLayout.HORIZONTAL);
         {
             final int at = edgeIds.indexOf(overscanFormat);
             final String current = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
-            addChoice(edgePage, "片门格式", current, tv -> {
+            choiceCell(gateRow, "片门格式", current, tv -> {
                 edgeValue = tv;
                 showEdgePicker();
             });
@@ -6769,10 +7357,11 @@ public class MainActivity extends Activity {
         // -- so "turn the rebate" can only mean "turn the picture". That is one
         // quarter turn, and `commitCompose` then re-picks the gates for the new
         // shape. The rebate follows; the canvas shows both.
-        addChoice(edgePage, "片边方向", "点一次，画面与片边同转 90°", tv -> {
+        choiceCell(gateRow, "片边方向", "旋转 90°", tv -> {
             turnBy(1);
             showInAppToast("已转 90° · 片边方向跟着画面");
         });
+        edgePage.addView(gateRow, new LinearLayout.LayoutParams(-1, dp(46)));
 
         edgeTextMark = new Square(this, UI_BLUE, uiToggleOff());
         edgeInner.addView(toggleRow("片边文字（厂标 / 张数）", edgeTextMark, () -> edgeTextOn, on -> {
@@ -6788,42 +7377,51 @@ public class MainActivity extends Activity {
         edgeFNumBar = rangeRow(edgeInner, "光圈值", "相机记录的 f 值。决定片门边缘的虚化。0 = 未知（按 f/5.6）",
                 0.0f, 64.0f, edgeFNumber, v -> edgeFNumber = v);
 
-        addChoice(edgeInner, "片边模式", labelOf(MODE_LABELS, MODE_IDS, edgeMode), tv ->
+        LinearLayout edgeShapeRow = new LinearLayout(this);
+        edgeShapeRow.setOrientation(LinearLayout.HORIZONTAL);
+        choiceCell(edgeShapeRow, "片边模式", labelOf(MODE_LABELS, MODE_IDS, edgeMode), tv ->
                 showChoiceMapping("片边模式", MODE_LABELS, MODE_IDS, edgeMode, id -> {
                     edgeMode = id;
                     tv.setText(labelOf(MODE_LABELS, MODE_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(edgeInner, "片门形状", labelOf(GATE_LABELS, GATE_IDS, edgeGate), tv ->
+        choiceCell(edgeShapeRow, "片门形状", labelOf(GATE_LABELS, GATE_IDS, edgeGate), tv ->
                 showChoiceMapping("片门形状", GATE_LABELS, GATE_IDS, edgeGate, id -> {
                     edgeGate = id;
                     tv.setText(labelOf(GATE_LABELS, GATE_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(edgeInner, "齿孔", labelOf(HOLES_LABELS, HOLES_IDS, edgeHoles), tv ->
+        choiceCell(edgeShapeRow, "齿孔", labelOf(HOLES_LABELS, HOLES_IDS, edgeHoles), tv ->
                 showChoiceMapping("齿孔里看到什么", HOLES_LABELS, HOLES_IDS, edgeHoles, id -> {
                     edgeHoles = id;
                     tv.setText(labelOf(HOLES_LABELS, HOLES_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(edgeInner, "片夹", labelOf(CARRIER_LABELS, CARRIER_IDS, edgeCarrier), tv ->
+        edgeInner.addView(edgeShapeRow, new LinearLayout.LayoutParams(-1, dp(46)));
+
+        LinearLayout edgeSeedRow = new LinearLayout(this);
+        edgeSeedRow.setOrientation(LinearLayout.HORIZONTAL);
+        choiceCell(edgeSeedRow, "片夹", labelOf(CARRIER_LABELS, CARRIER_IDS, edgeCarrier), tv ->
                 showChoiceMapping("胶片两侧露出什么", CARRIER_LABELS, CARRIER_IDS, edgeCarrier, id -> {
                     edgeCarrier = id;
                     tv.setText(labelOf(CARRIER_LABELS, CARRIER_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(edgeInner, "片边种子", String.valueOf(cameraSeed), tv ->
+        choiceCell(edgeSeedRow, "片边种子", String.valueOf(cameraSeed), tv ->
                 askText("片边随机种子（0 – 2147483647）", String.valueOf(cameraSeed), true, v -> {
                     try { cameraSeed = Math.max(0, Integer.parseInt(v)); } catch (Exception ignored) { return; }
                     tv.setText(String.valueOf(cameraSeed));
                     redraw.accept(null);
                 }));
-        addChoice(edgeInner, "帧种子", String.valueOf(frameSeed), tv ->
+        choiceCell(edgeSeedRow, "帧种子", String.valueOf(frameSeed), tv ->
                 askText("帧随机种子（0 – 2147483647）", String.valueOf(frameSeed), true, v -> {
                     try { frameSeed = Math.max(0, Integer.parseInt(v)); } catch (Exception ignored) { return; }
                     tv.setText(String.valueOf(frameSeed));
                     redraw.accept(null);
                 }));
+        LinearLayout.LayoutParams edgeSeedLp = new LinearLayout.LayoutParams(-1, dp(46));
+        edgeSeedLp.topMargin = dp(6);
+        edgeInner.addView(edgeSeedRow, edgeSeedLp);
         this.edgeInner = edgeInner;
         // **240, not 340.** 片门格式 and 片边方向 moved out of the scroll and
         // into the page, so the block keeps its old total height instead of
@@ -6844,15 +7442,6 @@ public class MainActivity extends Activity {
         datePage.addView(dateRow, new LinearLayout.LayoutParams(-1, dp(52)));
         dateInner = new LinearLayout(this);
         dateInner.setOrientation(LinearLayout.VERTICAL);
-        // The one field the app used to decide for the user: it read the date
-        // out of EXIF and gave no way to write a different one.
-        addChoice(dateInner, "日期文字", dateText == null || dateText.isEmpty() ? imprintDate() : dateText,
-                tv -> askText("印在画面上的日期（可以自己写）",
-                        dateText == null || dateText.isEmpty() ? imprintDate() : dateText, v -> {
-                            dateText = v.isEmpty() ? null : v;
-                            tv.setText(dateText == null ? imprintDate() : dateText);
-                            redraw.accept(null);
-                        }));
         // 0..200 mm: 30 was the schema's old cap and it stopped the date a
         // third of the way along a 6x12 / 6x17 rebate.
         dateInsetXBar = rangeRow(dateInner, "左右内边距", "字到片门左右边的距离，毫米（可直接在画布上拖）",
@@ -6865,36 +7454,55 @@ public class MainActivity extends Activity {
                 0.4f, 8.0f, dateSize, v -> dateSize = v);
         dateEvBar = rangeRow(dateInner, "日期亮度", "红光在 18% 灰之上的曝光，单位挡",
                 -2.0f, 8.0f, dateEv, v -> dateEv = v);
-        addChoice(dateInner, "日期位置", labelOf(PLACE_LABELS, PLACE_IDS, datePlacement), tv ->
+        LinearLayout dateGrid1 = new LinearLayout(this);
+        dateGrid1.setOrientation(LinearLayout.HORIZONTAL);
+        // The one field the app used to decide for the user: it read the date
+        // out of EXIF and gave no way to write a different one.
+        choiceCell(dateGrid1, "日期文字", dateText == null || dateText.isEmpty() ? imprintDate() : dateText,
+                tv -> askText("印在画面上的日期（可以自己写）",
+                        dateText == null || dateText.isEmpty() ? imprintDate() : dateText, v -> {
+                            dateText = v.isEmpty() ? null : v;
+                            tv.setText(dateText == null ? imprintDate() : dateText);
+                            redraw.accept(null);
+                        }));
+        choiceCell(dateGrid1, "日期位置", labelOf(PLACE_LABELS, PLACE_IDS, datePlacement), tv ->
                 showChoiceMapping("日期打在哪里", PLACE_LABELS, PLACE_IDS, datePlacement, id -> {
                     datePlacement = id;
                     tv.setText(labelOf(PLACE_LABELS, PLACE_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(dateInner, "日期角位", labelOf(CORNER_LABELS, CORNER_IDS, dateCorner), tv ->
+        choiceCell(dateGrid1, "日期角位", labelOf(CORNER_LABELS, CORNER_IDS, dateCorner), tv ->
                 showChoiceMapping("画面内的哪个角", CORNER_LABELS, CORNER_IDS, dateCorner, id -> {
                     dateCorner = id;
                     tv.setText(labelOf(CORNER_LABELS, CORNER_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(dateInner, "日期样式", labelOf(STYLE_LABELS, STYLE_IDS, dateStyle), tv ->
+        dateInner.addView(dateGrid1, new LinearLayout.LayoutParams(-1, dp(46)));
+
+        LinearLayout dateGrid2 = new LinearLayout(this);
+        dateGrid2.setOrientation(LinearLayout.HORIZONTAL);
+        choiceCell(dateGrid2, "日期样式", labelOf(STYLE_LABELS, STYLE_IDS, dateStyle), tv ->
                 showChoiceMapping("日期用哪种字", STYLE_LABELS, STYLE_IDS, dateStyle, id -> {
                     dateStyle = id;
                     tv.setText(labelOf(STYLE_LABELS, STYLE_IDS, id));
                     redraw.accept(null);
                 }));
-        addChoice(dateInner, "拍摄数据", dataText.isEmpty() ? "（空）" : dataText, tv ->
+        choiceCell(dateGrid2, "拍摄数据", dataText.isEmpty() ? "（空）" : dataText, tv ->
                 askText("拍摄数据（和日期一起印在片边）", dataText, v -> {
                     dataText = v;
                     tv.setText(v.isEmpty() ? "（空）" : v);
                     redraw.accept(null);
                 }));
-        addChoice(dateInner, "第二帧日期", dateTextB.isEmpty() ? "（空）" : dateTextB, tv ->
+        choiceCell(dateGrid2, "第二帧日期", dateTextB.isEmpty() ? "（空）" : dateTextB, tv ->
                 askText("半格对的第二帧日期（用不到就留空）", dateTextB, v -> {
                     dateTextB = v;
                     tv.setText(v.isEmpty() ? "（空）" : v);
                     redraw.accept(null);
                 }));
+        LinearLayout.LayoutParams dateGrid2Lp = new LinearLayout.LayoutParams(-1, dp(46));
+        dateGrid2Lp.topMargin = dp(6);
+        dateInner.addView(dateGrid2, dateGrid2Lp);
+
         TextView dateTip = label(
                 "日期位置：画面内时可选中角位，也可以直接在画布上拖；片边模式的位置由片边条决定，用上面两个内边距微调",
                 7.5f, UI_MUTED, tfHan);
@@ -7469,15 +8077,10 @@ public class MainActivity extends Activity {
             showInAppToast("预设格式不认识");
             return;
         }
-        applyLook(l);
-        saveLookIntoFrames();
-        if (session != null) applyParams();
-        if (uiReady && session != null) {
-            showingOriginal = false;
-            setOriginalVisual(false);
-            renderImage();
-        }
-        showInAppToast("已应用预设「" + p.optString("name", "") + "」");
+        // **Nothing is applied before the question is answered.** The gate a
+        // preset carries may need a crop this photograph does not want, and
+        // `applyForeignLook` is what asks.
+        applyForeignLook(l, "已应用预设「" + p.optString("name", "") + "」");
     }
 
     private void sharePreset(org.json.JSONObject p) {
@@ -7550,15 +8153,7 @@ public class MainActivity extends Activity {
                 showInAppToast("这段 JSON 不是参数");
                 return;
             }
-            applyLook(l);
-            saveLookIntoFrames();
-            if (session != null) applyParams();
-            if (uiReady && session != null) {
-                showingOriginal = false;
-                setOriginalVisual(false);
-                renderImage();
-            }
-            showInAppToast("已导入并应用");
+            applyForeignLook(l, "已导入并应用");
         } catch (Throwable t) {
             showInAppToast("导入失败：" + (t.getMessage() == null ? "格式不对" : t.getMessage()));
         }
@@ -7573,6 +8168,39 @@ public class MainActivity extends Activity {
      * it when it is opened, which is what makes this instant on twenty RAW
      * files. The files themselves are never touched.
      */
+    /**
+     * Drop several chips at once.
+     *
+     * <p>Deletion walks the list from the back: `removeFrame` reindexes in
+     * place, so removing 1 before 3 would silently leave 3 pointing at what
+     * used to be 4. Every chip is still its own tap; this is the road for the
+     * ordinary case of "I imported twelve RAW and want eight of them gone".
+     */
+    private void showBatchDeleteSheet() {
+        if (batchExportRunning) {
+            showInAppToast("批量导出中，等它跑完再改动照片栏");
+            return;
+        }
+        if (frames.size() < 2) {
+            showInAppToast("只有这一张照片");
+            return;
+        }
+        final String[] labels = new String[frames.size()];
+        for (int i = 0; i < frames.size(); ++i) {
+            final Frame f = frames.get(i);
+            labels[i] = (f.name == null || f.name.isEmpty() ? "照片 " + (i + 1) : f.name);
+        }
+        showMultiChoiceSheet("删掉哪些照片",
+                "只从这条栏里移除，文件本身不动；这些照片的调色记录会一起删掉。",
+                labels, picked -> {
+                    final java.util.ArrayList<Integer> indices =
+                            new java.util.ArrayList<>(picked);
+                    java.util.Collections.sort(indices, (a, b) -> b - a);
+                    for (int i = 0; i < indices.size(); ++i) removeFrame(indices.get(i));
+                    showInAppToast("已移除 " + indices.size() + " 张照片");
+                });
+    }
+
     private void showApplyLookSheet(final int sourceIndex) {
         if (sourceIndex < 0 || sourceIndex >= frames.size()) return;
         final java.util.ArrayList<Integer> targets = new java.util.ArrayList<>();
@@ -7605,6 +8233,14 @@ public class MainActivity extends Activity {
                     for (int k : picked) {
                         final int index = targets.get(k);
                         frames.get(index).look = copyLook(src);
+                        // **A copied Look is a picture that has been printed.**
+                        // `Frame.original` says "this chip sits on 原图", and the
+                        // copy path left it alone -- so a target that had never
+                        // picked a film opened on the original, drew no film at
+                        // all, and the whole operation looked like it had done
+                        // nothing ("应用全部调色似乎不起作用"). Keeping the flag
+                        // is only right when the source itself has no film.
+                        frames.get(index).original = (src.filmStock == null);
                         ++n;
                     }
                     saveSessionState();
@@ -8422,7 +9058,121 @@ public class MainActivity extends Activity {
     }
 
     /** Only the gates whose shape this frame is: the engine's own 5 % rule. */
-    private void refreshEdgeFormats() {
+    /** The gate's own long/short, or 0 when the id is not one of ours. */
+    private static double gateRatio(String id) {
+        final int i = gateIndex(id);
+        return i < 0 ? 0.0 : EDGE_RATIOS[i];
+    }
+
+    private static String gateLabel(String id) {
+        final int i = gateIndex(id);
+        return i < 0 ? "片门" : EDGE_LABELS[i];
+    }
+
+    /** "16:9" for the shapes people name, two decimals for the rest. */
+    private static String ratioText(double a) {
+        if (Math.abs(a - 16.0 / 9.0) < 0.02) return "16:9";
+        if (Math.abs(a - 3.0 / 2.0) < 0.02) return "3:2";
+        if (Math.abs(a - 4.0 / 3.0) < 0.02) return "4:3";
+        if (Math.abs(a - 5.0 / 4.0) < 0.02) return "5:4";
+        if (Math.abs(a - 1.0) < 0.02) return "1:1";
+        if (Math.abs(a - 21.0 / 9.0) < 0.02) return "21:9";
+        if (Math.abs(a - 9.0 / 16.0) < 0.02) return "9:16";
+        if (Math.abs(a - 2.0 / 3.0) < 0.02) return "2:3";
+        if (Math.abs(a - 3.0 / 4.0) < 0.02) return "3:4";
+        if (Math.abs(a - 1.0 / 2.0) < 0.02) return "1:2";
+        if (Math.abs(a - 1.0 / 3.0) < 0.02) return "1:3";
+        return String.format(java.util.Locale.US, "%.2f:1", a);
+    }
+
+    /**
+     * A look written on another photograph, applied to this one.
+     *
+     * <p>It carries that frame's crop and the gate it was cut for. When the
+     * gate cannot hold the shape this photograph lands on, the engine refuses
+     * the render outright -- so the choice has to be made before anything is
+     * applied, and it belongs to the user: cropping to the gate restores his
+     * rebate and throws picture away, not cropping keeps every pixel and drops
+     * the rebate. Neither is a default worth guessing, which is why this asks.
+     */
+    private void applyForeignLook(final Look l, final String done) {
+        if (l == null) return;
+        final double gate = l.overscanOn ? gateRatio(l.overscanFormat) : 0.0;
+        final double have = Math.max(1e-4, (double) originalAspect());
+        final double cropW = l.geometryCropW > 0.01f ? l.geometryCropW : 1.0;
+        final double cropH = l.geometryCropH > 0.01f ? l.geometryCropH : 1.0;
+        final double raw = have * cropW / cropH;
+        final double lands = Math.max(raw, 1.0 / raw);
+        if (gate <= 0 || Math.abs(lands / gate - 1.0) <= 0.045) {
+            applyLook(l);
+            finishForeignLook(l, done, false);
+            return;
+        }
+
+        final String name = gateLabel(l.overscanFormat);
+        final int w = importedWidth > 0 ? importedWidth : sourceWidth;
+        final int h = importedHeight > 0 ? importedHeight : sourceHeight;
+        if (w <= 0 || h <= 0) {
+            // No photograph yet: there is no shape to crop, and the preset can
+            // still set the film and the sliders.
+            applyLook(l);
+            finishForeignLook(l, done, false);
+            return;
+        }
+        // **The gate keeps the picture's own orientation.** A 2:3 portrait on a
+        // 6x8 gate is that gate turned on its side, not a landscape strip cut
+        // out of the middle -- so a portrait frame targets the reciprocal.
+        final double want = have < 1.0 ? 1.0 / gate : gate;
+        final boolean cutWide = want < have;
+        final int cw = cutWide ? (int) Math.round(h * want) : w;
+        final int ch = cutWide ? h : (int) Math.round(w / want);
+        final int loss = (int) Math.round(100.0 * (1.0 - (cutWide ? (double) cw / w : (double) ch / h)));
+        showActionSheet("预设用的是 " + name + " 片边",
+                "这张照片是 " + ratioText(have) + "，" + name + " 的片门是 " + ratioText(want) + "。\n\n"
+                + "裁成片门能还原他的片边，但要" + (cutWide ? "从左右" : "从上下") + "裁掉 " + loss
+                + "%（" + w + "×" + h + " → " + cw + "×" + ch + "）。\n"
+                + "不裁就只套颜色和参数，片边关闭。",
+                new String[]{"裁成 " + name, "只套参数（片边关闭）", "取消"},
+                which -> {
+                    if (which == 0) {
+                        applyLook(l);
+                        cropToRatio((float) want);
+                        finishForeignLook(l, done, false);
+                    } else if (which == 1) {
+                        l.overscanOn = false;
+                        applyLook(l);
+                        finishForeignLook(l, done, true);
+                    } else {
+                        showInAppToast("没有套用");
+                    }
+                });
+    }
+
+    private void finishForeignLook(Look look, String done, boolean rebateClosed) {
+        final boolean dropped = refreshEdgeFormats(true);
+        saveLookIntoFrames();
+        if (session != null) applyParams();
+        if (uiReady && session != null) {
+            showingOriginal = false;
+            setOriginalVisual(false);
+            renderImage();
+        }
+        showInAppToast(dropped || rebateClosed ? done + " · 片边已关闭" : done);
+    }
+
+    private boolean refreshEdgeFormats() {
+        return refreshEdgeFormats(false);
+    }
+
+    /**
+     * @param quiet true when the caller will explain the outcome itself: the
+     *              preset path closes a rebate on the user's behalf and then
+     *              says so in one sentence, and two toasts in a row only show
+     *              the second one.
+     * @return true when a rebate that was on had to be switched off
+     */
+    private boolean refreshEdgeFormats(boolean quiet) {
+        boolean rebateClosed = false;
         edgeLabels.clear();
         edgeIds.clear();
         // **The cropped frame, not the source.** The engine checks the shape of
@@ -8453,11 +9203,12 @@ public class MainActivity extends Activity {
             overscanFormat = "135";
             if (overscanOn) {
                 overscanOn = false;
+                rebateClosed = true;
                 if (overscanMark != null) overscanMark.setLit(false);
                 // The page's controls dim with the switch; without this the
                 // rows stay lit while the feature they govern is off.
                 refreshEdgeGroups();
-                showInAppToast("这张照片的比例与任何片门都不符，片边已关闭");
+                if (!quiet) showInAppToast("这张照片的比例与任何片门都不符，片边已关闭");
             }
         }
         if (edgeValue != null) {
@@ -8468,6 +9219,7 @@ public class MainActivity extends Activity {
             DebugSink.text("overscan", "aspect=" + aspect + " gates=" + edgeIds
                     + " chosen=" + overscanFormat);
         } catch (Throwable ignored) { }
+        return rebateClosed;
     }
 
     private void onEdgeChanged() {
@@ -8990,22 +9742,25 @@ public class MainActivity extends Activity {
                 }
             }
         });
-        // **32 dp, not 10.** A 10 dp-tall SeekBar is a 10 dp-tall touch target:
-        // the thumb is 9 dp across, so most of a finger lands outside the view
-        // and the drag never starts. The track still draws 2 px -- that is the
-        // drawable's inset, not the view's height.
-        // 44 dp, the smallest a touch target should be. The track still draws
-        // 2 px; the height is the finger's, and ScrubBar maps the whole width
-        // to the value so the thumb does not have to be caught.
-        row.addView(bar, new LinearLayout.LayoutParams(-1, dp(44)));
+        // **32 dp, and the same 32 as everywhere else.** It was 44 here, which
+        // made this row's track four times thicker than the optics page's:
+        // the thickness was derived from the height. `ScrubBar` maps the whole
+        // width to the value, so the thumb never has to be caught precisely.
+        row.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
         parent.addView(row, new LinearLayout.LayoutParams(-1, 0, 1f));
         return bar;
     }
 
-    /** 2 px track, square 9 px thumb: input[type=range] in the page. */
+    /** 3 dp track, square 9 dp thumb: input[type=range] in the page. */
     private void styleRange(SeekBar bar) {
-        final int thickness = dp(2);
-        final int inset = (dp(10) - thickness) / 2;
+        // **One track for every slider in the app, whatever the row's height.**
+        //
+        // The thickness used to come out of a fixed 10 dp inset, so the same
+        // code drew a 3 dp track on a 32 dp row and a 15 dp one on a 44 dp row
+        // -- two sliders that looked like they belonged to different apps.
+        // `setLayerHeight` states the thickness outright and centres it, so the
+        // track no longer depends on how tall the view was given.
+        final int thickness = dp(3);
         android.graphics.drawable.ShapeDrawable back = new android.graphics.drawable.ShapeDrawable(
                 new android.graphics.drawable.shapes.RectShape());
         back.getPaint().setColor(UI_LINE);
@@ -9018,10 +9773,10 @@ public class MainActivity extends Activity {
                 new android.graphics.drawable.Drawable[]{back, clip});
         layers.setId(0, android.R.id.background);
         layers.setId(1, android.R.id.progress);
-        // The insets are what make the track 2 px: a ShapeDrawable alone would
-        // paint its whole bounds.
-        layers.setLayerInset(0, 0, inset, 0, inset);
-        layers.setLayerInset(1, 0, inset, 0, inset);
+        layers.setLayerHeight(0, thickness);
+        layers.setLayerGravity(0, android.view.Gravity.CENTER_VERTICAL);
+        layers.setLayerHeight(1, thickness);
+        layers.setLayerGravity(1, android.view.Gravity.CENTER_VERTICAL);
         bar.setProgressDrawable(layers);
 
         android.graphics.drawable.ShapeDrawable thumb = new android.graphics.drawable.ShapeDrawable(
@@ -9049,6 +9804,7 @@ public class MainActivity extends Activity {
         if (cropOverlay != null) {
             cropOverlay.setVisibility(active == 4 && composeSubPage == 0 ? View.VISIBLE : View.GONE);
         }
+        syncRotateGrid();
         for (int i = 0; i < panels.length; ++i) {
             panels[i].setVisibility(i == active ? View.VISIBLE : View.GONE);
             tabBars[i].setVisibility(i == active ? View.VISIBLE : View.INVISIBLE);
@@ -9473,6 +10229,8 @@ public class MainActivity extends Activity {
         private final android.graphics.Paint paint =
                 new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
         private final android.graphics.RectF dst = new android.graphics.RectF();
+        /** Scratch for the turned picture's own rectangle; `dst` stays the frame. */
+        private final android.graphics.RectF frameRect = new android.graphics.RectF();
         private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
         private final float slop;
         private final float density;
@@ -9491,6 +10249,91 @@ public class MainActivity extends Activity {
          *  canvas could not pan without dragging the line instead. Now the
          *  pill in the corner turns it on. */
         private boolean splitMode = false;
+        /** 0 off, 1 thirds + centre cross. Set by 构图 → 旋转 only. */
+        private int gridMode = 0;
+
+        /**
+         * **Rotation is a drag on the picture, not a slider.**
+         *
+         * <p>The dial was better than a seekbar and still the wrong instrument:
+         * levelling a horizon is done by looking at the horizon. So while the
+         * rotate page is in front, one finger turns the picture under itself,
+         * exactly as it does in the editor this is modelled on. The transform
+         * is a `Canvas.rotate` on the view, not a render -- a real re-resample
+         * costs a second on a normal frame and fails outright on a 128 MiB
+         * device -- and the committed angle is applied once, on release.
+         */
+        private boolean rotateMode = false;
+        /** How far the composition stands back while the rotate page is open. */
+        private static final float ROTATE_SHRINK = 0.86f;
+        private float previewRotation = 0f;
+        private float rotLast = Float.NaN;
+        private float rotTotal = 0f;
+        private RotateSink rotateSink;
+
+        interface RotateSink {
+            /** A finger went down: remember the committed angle to fall back to. */
+            void onRotateStart();
+            /** Live, this drag's total in degrees. Do not render from here. */
+            void onRotateDelta(float totalDeg);
+            /** Finger up: commit. */
+            void onRotateCommit(float totalDeg);
+            /** Double tap on the picture. */
+            void onRotateReset();
+        }
+
+        void setRotateSink(RotateSink sink) { rotateSink = sink; }
+
+        void setRotateMode(boolean on) {
+            if (rotateMode == on) return;
+            rotateMode = on;
+            rotLast = Float.NaN;
+            if (!on) {
+                previewRotation = 0f;
+                rotTotal = 0f;
+            }
+            invalidate();
+        }
+
+        /** Cleared once the rendered frame already carries the rotation. */
+        void setPreviewRotation(float deg) {
+            if (Math.abs(previewRotation - deg) < 0.001f) return;
+            previewRotation = deg;
+            invalidate();
+        }
+
+        /** Screen angle of a point about the picture's centre. */
+        private float angleAboutPicture(float x, float y) {
+            final float cx = dst.centerX(), cy = dst.centerY();
+            return (float) Math.toDegrees(Math.atan2(x - cx, cy - y));
+        }
+
+        /**
+         * **A grab near the middle turns the picture slowly, not wildly.**
+         *
+         * <p>`atan2` about the centre is the right *direction* and the wrong
+         * *gain*: the angle swept by a finger is `arc / r`, so the same ten
+         * pixels that mean one degree at the edge of the frame mean forty near
+         * the middle. Every editor that lets you turn the picture by hand
+         * either damps this or makes you grab the outside -- Cropper.js v2 gets
+         * away with the raw ratio because it measures the angle *between two
+         * fingers*, and a pair of fingers is never at r = 0.
+         *
+         * <p>So the swept angle is scaled by `r / rMin` below `rMin`, which is
+         * exactly "treat the finger as if it were on a circle of radius rMin":
+         * past that radius nothing changes at all, and inside it the picture
+         * still moves, just at the same rate a hand on the rim would get. The
+         * floor keeps a drag that starts dead centre from freezing.
+         */
+        private float rotationGain(float x, float y) {
+            if (dst.width() <= 0f || dst.height() <= 0f) return 1f;
+            final float dx = x - dst.centerX(), dy = y - dst.centerY();
+            final float r = (float) Math.hypot(dx, dy);
+            final float rMin = Math.max(density * 40f,
+                    Math.min(dst.width(), dst.height()) * 0.18f);
+            if (r >= rMin) return 1f;
+            return Math.max(0.15f, r / rMin);
+        }
 
         // **Pinch, by hand.** `ScaleGestureDetector` refuses to start until the
         // fingers are `getScaledMinimumScalingSpan()` apart -- about 27 mm on
@@ -9541,6 +10384,7 @@ public class MainActivity extends Activity {
             pinchStartPanX = panX;
             pinchStartPanY = panY;
             pinching = true;
+            rotLast = Float.NaN;
             handler.removeCallbacks(press);
             holding = false;
             dragging = false;
@@ -9616,6 +10460,7 @@ public class MainActivity extends Activity {
             final Bitmap base = after != null ? after : before;
             if (base == null) return;
             drawFit(canvas, base);
+            drawGrid(canvas);
             if (before == null || after == null) return;
             if (holding) {
                 drawFit(canvas, before);
@@ -9627,19 +10472,137 @@ public class MainActivity extends Activity {
                 canvas.restore();
                 drawDivider(canvas, x);
             }
+            if (rotateMode) drawCropFrame(canvas);
         }
+
+        /**
+         * **The crop frame, drawn over the picture that overflows it.**
+         *
+         * <p>Two passes, like the grid: a dark halo then a white hairline, so
+         * the frame survives a white dress and a black suit without a shadow
+         * layer. The corner brackets are the part that reads at a glance --
+         * they say "this rectangle, not the picture's own edge".
+         */
+        private void drawCropFrame(android.graphics.Canvas canvas) {
+            if (dst.width() <= 0f || dst.height() <= 0f) return;
+            final float r = density * 3f;
+            final android.graphics.Paint p = new android.graphics.Paint(
+                    android.graphics.Paint.ANTI_ALIAS_FLAG);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeCap(android.graphics.Paint.Cap.SQUARE);
+            for (int pass = 0; pass < 2; ++pass) {
+                p.setColor(pass == 0 ? 0x4D000000 : 0xE6FFFFFF);
+                p.setStrokeWidth(pass == 0 ? density * 3.4f : density * 1.4f);
+                canvas.drawRoundRect(dst, r, r, p);
+            }
+            // Corner brackets: a quarter-frame's worth at each corner, drawn
+            // over the hairline so they read as handles rather than a border.
+            final float arm = Math.min(dpC(26f), Math.min(dst.width(), dst.height()) * 0.18f);
+            p.setColor(0xFFFFFFFF);
+            p.setStrokeWidth(density * 3f);
+            final float l = dst.left, t = dst.top, rr = dst.right, b = dst.bottom;
+            canvas.drawLine(l, t + r, l + arm, t + r, p);          // ↖ horizontal
+            canvas.drawLine(l + r, t, l + r, t + arm, p);          // ↖ vertical
+            canvas.drawLine(rr - arm, t + r, rr, t + r, p);        // ↗
+            canvas.drawLine(rr - r, t, rr - r, t + arm, p);
+            canvas.drawLine(l, b - r, l + arm, b - r, p);          // ↙
+            canvas.drawLine(l + r, b - arm, l + r, b, p);
+            canvas.drawLine(rr - arm, b - r, rr, b - r, p);        // ↘
+            canvas.drawLine(rr - r, b - arm, rr - r, b, p);
+        }
+
+        /** dp inside the view, where the outer `dp()` is not in scope. */
+        private float dpC(float v) { return v * density; }
 
         /** The rectangle the picture occupies on screen, for overlays. */
         android.graphics.RectF imageRect() { return new android.graphics.RectF(dst); }
 
+        /** **A grid you can level a horizon against.** Drawn inside the picture
+         *  rectangle, so it follows zoom and pan for free. */
+        void setGrid(int mode) {
+            if (gridMode == mode) return;
+            gridMode = mode;
+            invalidate();
+        }
+
+        private void drawGrid(android.graphics.Canvas canvas) {
+            if (gridMode == 0 || dst.width() <= 0f || dst.height() <= 0f) return;
+            final float l = dst.left, t = dst.top, r = dst.right, b = dst.bottom;
+            final float hair = Math.max(1f, density);
+            // Two passes: a dark halo first, then a light hairline. On a white
+            // sky a pure-white line disappears; on a black shadow a pure-black
+            // one does. The pair reads on both.
+            for (int pass = 0; pass < 2; ++pass) {
+                final android.graphics.Paint p = new android.graphics.Paint(
+                        android.graphics.Paint.ANTI_ALIAS_FLAG);
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setColor(pass == 0 ? 0x38000000 : 0x88FFFFFF);
+                p.setStrokeWidth(pass == 0 ? hair * 3f : hair);
+                for (int i = 1; i <= 2; ++i) {
+                    final float x = l + (r - l) * i / 3f;
+                    final float y = t + (b - t) * i / 3f;
+                    canvas.drawLine(x, t, x, b, p);
+                    canvas.drawLine(l, y, r, y, p);
+                }
+                // Centre cross, a touch stronger than the thirds.
+                p.setColor(pass == 0 ? 0x44000000 : 0xA6FFFFFF);
+                final float cx = (l + r) / 2f, cy = (t + b) / 2f;
+                canvas.drawLine(cx, t, cx, b, p);
+                canvas.drawLine(l, cy, r, cy, p);
+            }
+        }
+
         private void drawFit(android.graphics.Canvas canvas, Bitmap bmp) {
             final float vw = getWidth(), vh = getHeight();
             if (vw <= 0 || vh <= 0 || bmp.getWidth() == 0) return;
-            final float scale = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight()) * zoom;
+            // **The rotate page stands back a little.** A turned picture is
+            // bigger than the frame it has to cover, and the whole point of the
+            // frame is to show how much of the picture is being thrown away:
+            // that only reads if the picture's own edges are on screen. So the
+            // composition shrinks here, and returns to full size on the next
+            // page -- which is also what the editor in the reference does.
+            final float scale = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight()) * zoom
+                    * (rotateMode ? ROTATE_SHRINK : 1f);
             final float w = bmp.getWidth() * scale, h = bmp.getHeight() * scale;
             final float left = (vw - w) / 2f + panX, top = (vh - h) / 2f + panY;
             dst.set(left, top, left + w, top + h);
-            canvas.drawBitmap(bmp, null, dst, paint);
+            if (previewRotation == 0f) {
+                canvas.drawBitmap(bmp, null, dst, paint);
+                return;
+            }
+            // **The picture grows as it turns, and is clipped to the frame.**
+            // Rotating a rectangle inside its own rectangle leaves four empty
+            // triangles; every editor answers by pushing the frame in until
+            // the picture covers it. The engine does the same arithmetic on
+            // the same numbers (`resolve_geometry_frame`, the `cover` term),
+            // which is what makes the last frame of the drag and the first
+            // frame of the render the same picture.
+            final float grow = scale * coverScale(bmp.getWidth(), bmp.getHeight(), previewRotation);
+            final float gw = bmp.getWidth() * grow, gh = bmp.getHeight() * grow;
+            final float cx = dst.centerX(), cy = dst.centerY();
+            frameRect.set(cx - gw / 2f, cy - gh / 2f, cx + gw / 2f, cy + gh / 2f);
+            // **No clip.** The overflow *is* the information: the corners of a
+            // turned picture are what the crop frame is cutting away, and
+            // hiding them makes the frame look like a decoration instead of a
+            // decision. The view's own bounds are the only limit.
+            final int save = canvas.save();
+            canvas.rotate(previewRotation, cx, cy);
+            canvas.drawBitmap(bmp, null, frameRect, paint);
+            canvas.restoreToCount(save);
+        }
+
+        /**
+         * **How much the picture has to grow so a turned frame is still full.**
+         *
+         * <p>The bbox of the turned rectangle over the rectangle itself, taken
+         * on the axis that needs more: 1.65x at 45 degrees on a 3:4 frame, and
+         * exactly 1 at rest, where the whole path is skipped.
+         */
+        private float coverScale(float w, float h, float deg) {
+            if (w <= 0f || h <= 0f) return 1f;
+            final double a = Math.toRadians(deg);
+            final double c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+            return (float) Math.max(c + s * (h / w), c + s * (w / h));
         }
 
         /** Keep the picture from being dragged off its own frame. */
@@ -9714,6 +10677,68 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 return true;
+            }
+
+            // **One finger turns the picture while the rotate page is open.**
+            // Two fingers still zoom: `beginPinch` ran above and set
+            // `pinching`, which this branch never sees.
+            if (rotateMode && e.getPointerCount() == 1) {
+                switch (action) {
+                    case android.view.MotionEvent.ACTION_DOWN: {
+                        final long now = android.os.SystemClock.uptimeMillis();
+                        if (now - lastTapMs < 320L) {
+                            rotLast = Float.NaN;
+                            previewRotation = 0f;
+                            if (rotateSink != null) rotateSink.onRotateReset();
+                            lastTapMs = 0L;
+                            invalidate();
+                            return true;
+                        }
+                        lastTapMs = now;
+                        rotTotal = 0f;
+                        rotLast = angleAboutPicture(e.getX(), e.getY());
+                        if (rotateSink != null) rotateSink.onRotateStart();
+                        return true;
+                    }
+                    case android.view.MotionEvent.ACTION_MOVE: {
+                        if (Float.isNaN(rotLast)) return true;
+                        final float cur = angleAboutPicture(e.getX(), e.getY());
+                        float d = cur - rotLast;
+                        while (d > 180f) d -= 360f;
+                        while (d < -180f) d += 360f;
+                        rotLast = cur;
+                        // Damped: see `rotationGain`. The accumulator still
+                        // integrates the finger's own sweep, so a drag that
+                        // wanders in and out of the middle has no seam.
+                        rotTotal += d * rotationGain(e.getX(), e.getY());
+                        if (rotateSink != null) {
+                            // The host owns the limit and the preview angle: the
+                            // committed angle may already be 10°, so ±45 has to
+                            // be applied against *that*, not against this drag.
+                            rotateSink.onRotateDelta(rotTotal);
+                        } else {
+                            previewRotation = rotTotal;
+                            invalidate();
+                        }
+                        return true;
+                    }
+                    case android.view.MotionEvent.ACTION_UP:
+                    case android.view.MotionEvent.ACTION_CANCEL: {
+                        // **A released drag is not half a double tap.** This
+                        // flag was only ever set on DOWN and cleared inside the
+                        // pinch branch, so letting go and touching the picture
+                        // again within 320 ms -- exactly what someone does when
+                        // the first try looks wrong -- counted as a double tap
+                        // and silently zeroed the angle.
+                        lastTapMs = 0L;
+                        if (Float.isNaN(rotLast)) return true;
+                        rotLast = Float.NaN;
+                        if (rotateSink != null) rotateSink.onRotateCommit(rotTotal);
+                        return true;
+                    }
+                    default:
+                        break;
+                }
             }
 
             switch (action) {
@@ -10028,6 +11053,7 @@ public class MainActivity extends Activity {
             try {
                 final String json = engine.deviceProfile();
                 probe = DeviceProbe.parse(json);
+                rememberDevice();
                 try { DebugSink.text("device-profile", "re-read " + probe.describe() + "\n" + json); }
                 catch (Throwable ignored) { }
             } catch (Throwable t) {
@@ -10061,6 +11087,20 @@ public class MainActivity extends Activity {
         catch (Throwable ignored) { }
     }
 
+    private int debugBandCap() {
+        try {
+            return getSharedPreferences(DEBUG_PREFS, MODE_PRIVATE).getInt(DEBUG_BAND_CAP, 0);
+        } catch (Throwable ignored) { return 0; }
+    }
+
+    private void setDebugBandCap(int elements) {
+        try {
+            getSharedPreferences(DEBUG_PREFS, MODE_PRIVATE).edit().putInt(DEBUG_BAND_CAP, elements).apply();
+        } catch (Throwable ignored) { }
+        try { DebugSink.text("debug-cap", "band element cap = " + elements + " (0 = engine default 2^21)"); }
+        catch (Throwable ignored) { }
+    }
+
     private void setDebugPixelCapMp(int mp) {
         try {
             getSharedPreferences(DEBUG_PREFS, MODE_PRIVATE).edit().putInt(DEBUG_CAP_MP, mp).apply();
@@ -10081,13 +11121,18 @@ public class MainActivity extends Activity {
     private void showPixelCapSheet() {
         final int[] caps = {0, 20, 30, 40, 50};
         final int[] sims = {0, 128, 256};
+        final int[] bands = {0, 16777216, 100000000};
         final int currentCap = debugPixelCapMp();
         final int currentSim = debugStorageLimitMib();
+        final int currentBand = debugBandCap();
         final java.util.List<String> labels = new java.util.ArrayList<>();
         for (int v : caps)
             labels.add((v == currentCap ? "· " : "") + (v == 0 ? "像素上限：按设备自动" : "像素上限：" + v + " MP"));
         for (int v : sims)
             labels.add((v == currentSim ? "· " : "") + (v == 0 ? "模拟驱动绑定：关闭" : "模拟驱动绑定：" + v + " MiB"));
+        for (int v : bands)
+            labels.add((v == currentBand ? "· " : "") + (v == 0 ? "分带上限：引擎默认（2M 元素）"
+                    : (v >= 100000000 ? "分带上限：关闭（一条带 = 整幅）" : "分带上限：" + (v / 1000000) + "M 元素")));
         final long memoryCap = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
         final String note = "像素上限只改「按绑定范围算」的那一道；内存上限（这台机器约 "
                 + String.format(java.util.Locale.US, "%.0f", memoryCap / 1e6)
@@ -10095,7 +11140,8 @@ public class MainActivity extends Activity {
                 + "改完要重启应用才生效。两者一起开 = 假装自己是 128 MiB 的机型，但允许导入更大的帧。";
         showActionSheet("调试：像素上限 / 驱动绑定", note, labels.toArray(new String[0]), which -> {
             if (which < caps.length) setDebugPixelCapMp(caps[which]);
-            else setDebugStorageLimitMib(sims[which - caps.length]);
+            else if (which < caps.length + sims.length) setDebugStorageLimitMib(sims[which - caps.length]);
+            else setDebugBandCap(bands[which - caps.length - sims.length]);
             showAbout();
         });
     }
@@ -10105,11 +11151,13 @@ public class MainActivity extends Activity {
         final String version = UpdateCheck.versionName(this) + "（" + UpdateCheck.versionCode(this) + "）";
         final int debugMp = debugPixelCapMp();
         final int debugSim = debugStorageLimitMib();
-        final String debugLine = (debugMp == 0 && debugSim == 0 && appliedSimMib == 0) ? ""
+        final int debugBand = debugBandCap();
+        final String debugLine = (debugMp == 0 && debugSim == 0 && appliedSimMib == 0 && debugBand == 0) ? ""
                 : "\n调试：像素上限 " + (debugMp > 0 ? debugMp + " MP" : "按设备")
                   + "，实际生效 " + String.format(java.util.Locale.US, "%.1f", maxImportPixels(false) / 1e6) + " MP"
                   + (debugSim > 0 ? "；模拟绑定 " + debugSim + " MiB" : "")
-                  + (debugSim != appliedSimMib ? "（重启后生效）" : "");
+                  + (debugSim != appliedSimMib ? "（重启后生效）" : "")
+                  + (debugBand > 0 ? "；分带上限 " + (debugBand >= 100000000 ? "关闭" : (debugBand / 1000000) + "M") : "");
         final String details = probe.describe() + debugLine
                 + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
                 + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android";
@@ -10162,8 +11210,12 @@ public class MainActivity extends Activity {
                 // pause, so nothing the user did is lost by asking for it.
                 getSharedPreferences("ui", MODE_PRIVATE).edit()
                         .putBoolean("dark", !dark).apply();
+                // **Never `null` here.** `showSheetBody` calls
+                // `onPick.accept(index)` on every row, so a null listener turned
+                // each tap on 「好」 into a NullPointerException -- a hundred
+                // sessions in a week.
                 showActionSheet("界面已切换", "退出应用再打开，新的界面就会生效。",
-                        new String[]{"好"}, null);
+                        new String[]{"好"}, done -> { });
             } else if (which == 5) {
                 showFeedbackGroup(false);
             } else if (which == 6) {
@@ -10509,10 +11561,19 @@ public class MainActivity extends Activity {
         // say so in one sentence instead of letting a SecurityException be
         // classified as [E-9000] 未归类.
         if (!canReadUri(uri)) {
+            // **A revoked grant is permanent, so the chip goes with it.**
+            // Keeping it meant this dialog on every launch -- sixty-six of them
+            // in a week, the largest single error in the database -- and the
+            // only way out was 「关闭」, which changed nothing. Removed once,
+            // here, and the strip is honest afterwards.
+            final int dead = currentFrame;
             showErrorDialog("照片已不可访问",
                     "这张照片的读取权限已经失效——系统收回了文件选择器给的临时授权。\n\n"
-                    + "请点「导入」重新选择这张照片。新版本导入时会把照片复制到应用自己的目录，"
-                    + "之后再切到别的软件回来就不会丢。");
+                    + "已经从照片栏里移除。点「导入」重新选择这张照片；"
+                    + "新版本会把文件复制到应用自己的目录，之后切到别的软件回来也不会丢。");
+            if (dead >= 0 && dead < frames.size() && frames.get(dead).uri.equals(uri)) {
+                removeFrame(dead);
+            }
             return;
         }
         CrashTrail.mark(this, "import:canread");
@@ -10763,9 +11824,22 @@ public class MainActivity extends Activity {
             
             final int pw = Math.max(1, Math.round(sourceWidth * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
             final int ph = Math.max(1, Math.round(sourceHeight * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
-            beforeBitmap = Bitmap.createScaledBitmap(sourceBitmap, pw, ph, true);
+            // **`createScaledBitmap` hands back the source itself when the
+            // target size already matches**, and a bitmap straight out of
+            // `BitmapFactory` is immutable, so that is the branch every picture
+            // whose long edge is at most 1024 takes. The recycle below then left
+            // `compare` holding a dead bitmap: the next draw threw
+            // "Canvas: trying to use a recycled bitmap", and because the same
+            // picture is re-imported by `restoreSessionState` the app died on
+            // every launch until its data was cleared.
+            Bitmap preview = Bitmap.createScaledBitmap(sourceBitmap, pw, ph, true);
+            if (preview == sourceBitmap) {
+                preview = sourceBitmap.copy(Bitmap.Config.ARGB_8888, false);
+                if (preview == null) preview = sourceBitmap;
+            }
+            beforeBitmap = preview;
             compare.setBefore(beforeBitmap);
-            sourceBitmap.recycle();
+            if (sourceBitmap != beforeBitmap) sourceBitmap.recycle();
             sourceBitmap = null;
             statusText.setText("Local preview");
             setStage(1, getFileName(uri));
@@ -10870,6 +11944,13 @@ public class MainActivity extends Activity {
             // moved the peak at all; the pool trim and its keep budget did not
             // (1144 MiB at best, 1.7%).
             SpektraLabEngine.setEnv("SPK_BAND_ROWS", "512");
+            // **The band ceiling, for the seam question only.** A frame wide
+            // enough to need 37 bands shows 37 equally spaced lines on one GPU
+            // family and none on another; raising this to the device's dispatch
+            // wall turns 37 seams into 5. If the lines thin out in proportion,
+            // the band boundary is the cause and no picture content is.
+            SpektraLabEngine.setEnv("SPK_BAND_CAP",
+                    debugBandCap() > 0 ? String.valueOf(debugBandCap()) : "0");
             // **Where a suspended session goes.** `tmpfile()` has no writable
             // home in an Android app process, so without this every suspend is
             // refused and the preview's source -- a whole frame's plane -- stays
@@ -10903,6 +11984,7 @@ public class MainActivity extends Activity {
             final String profileJson = engine.deviceProfile();
             CrashTrail.markNow(this, "engine:profile-out " + (profileJson == null ? 0 : profileJson.length()));
             probe = DeviceProbe.parse(profileJson);
+            rememberDevice();
             CrashTrail.markNow(this, "engine:probe " + (probe != null && probe.valid));
             try { DebugSink.text("device-profile", probe.describe() + "\n" + engine.deviceProfile()); }
             catch (Throwable ignored) { }
@@ -11329,7 +12411,18 @@ public class MainActivity extends Activity {
                     // batch metered black, rendered black, and ignored every
                     // metering mode. Measuring first makes the `solve` below a
                     // cache hit (`meter_key` does not change in between).
-                    try { session.solve("exposure"); } catch (Throwable ignored) { }
+                    // **Under the same lock `close()` takes.** These two solves
+                    // ran outside `renderMutex`, so a close from another path
+                    // could release the session between the null check and the
+                    // call -- which is exactly the dangling handle that killed
+                    // the process in the meter (SL-261110-F858). The session
+                    // field is also re-read inside the lock, so a swap that
+                    // lands in between simply skips the solve.
+                    try {
+                        synchronized (renderMutex) {
+                            if (session != null) session.solve("exposure");
+                        }
+                    } catch (Throwable ignored) { }
                     // **The raw itself**, which is the "before" side of every
                     // comparison and the only honest thing to show on import:
                     // the decoded frame in working space, packed with no
@@ -11370,7 +12463,9 @@ public class MainActivity extends Activity {
                     // this build does it once on open.
                     String solvedJson = null;
                     try {
-                        solvedJson = session.solve("both");
+                        synchronized (renderMutex) {
+                            solvedJson = session == null ? null : session.solve("both");
+                        }
                         DebugSink.text("solve", solvedJson == null ? "(null)" : solvedJson);
                         CrashTrail.markNow(this, "import:print " + (solvedJson == null ? "none" : "ok"));
                     } catch (Throwable se) {
@@ -12059,6 +13154,63 @@ public class MainActivity extends Activity {
      * `stock_cost`); a render is two orders of magnitude more. So there is no
      * bookkeeping left to get wrong: whoever draws, says what to draw.
      */
+    /**
+     * Push the geometry group on its own, right before a render.
+     *
+     * <p>Cheap (one stock rebuild, tens of milliseconds against a render that
+     * costs a second) and unconditional, because the alternative -- trusting
+     * the delta ledger to notice -- is what produced "一松手，重新渲染完，照片
+     * 变回原来位置了": the canvas turned, the file did not. Always logs the
+     * exact JSON, so the next report can say what left the app rather than
+     * what should have.
+     */
+    private void sendGeometry() {
+        if (session == null || filmStock == null) return;
+        // **The snapshot, not the live fields.** See `geoSnapRot`: reading the
+        // live ones here is what let a UI-thread write land between the commit
+        // and this line and silently turn the picture back upright.
+        final float rot = geoSnapValid ? geoSnapRot : geometryRotation;
+        final int turns = geoSnapValid ? geoSnapTurns : geometryTurns;
+        final boolean fh = geoSnapValid ? geoSnapFlipH : geometryFlipH;
+        final boolean fv = geoSnapValid ? geoSnapFlipV : geometryFlipV;
+        final float cropW = geoSnapValid ? geoSnapW : Math.max(0.01f, Math.min(1f, geometryCropW));
+        final float cropH = geoSnapValid ? geoSnapH : Math.max(0.01f, Math.min(1f, geometryCropH));
+        final float cropX = geoSnapValid ? geoSnapX : Math.max(0f, Math.min(1f - cropW, geometryCropX));
+        final float cropY = geoSnapValid ? geoSnapY : Math.max(0f, Math.min(1f - cropH, geometryCropY));
+        final String d = "{\"film_stock\":" + q(filmStock)
+                + ",\"geometry_rotation_deg\":" + f("%.3f", -rot)
+                + ",\"geometry_quarter_turns\":" + turns
+                + ",\"geometry_flip_h\":" + b(fh)
+                + ",\"geometry_flip_v\":" + b(fv)
+                + ",\"geometry_crop_x\":" + f("%.6f", cropX)
+                + ",\"geometry_crop_y\":" + f("%.6f", cropY)
+                + ",\"geometry_crop_w\":" + f("%.6f", cropW)
+                + ",\"geometry_crop_h\":" + f("%.6f", cropH) + "}";
+        try {
+            session.setParams(d);
+            // The ledger no longer describes the session: the next full delta
+            // has to restate everything, or the fields this call did not name
+            // would be remembered as sent.
+            deltaSession = null;
+            deltaSent.clear();
+            DebugSink.text("geo", "sent " + d);
+            // **What the engine actually holds**, not what was sent. If these
+            // two ever disagree the bug is inside `spk_set_params`; if they
+            // agree and the canvas is still wrong, the bug is in the render.
+            try {
+                final String gp = session.getParams();
+                final int at = gp.indexOf("\"geometry_rotation_deg\"");
+                DebugSink.text("geo-check", at >= 0
+                        ? gp.substring(at, Math.min(gp.length(), at + 44)) : "absent");
+            } catch (Throwable ignored) { }
+        } catch (Throwable t) {
+            // Put it back: a geometry edit that did not reach the engine must
+            // be retried by the next render, not forgotten.
+            pendingGeometry = true;
+            try { DebugSink.textNow("geo", "FAILED " + t + " :: " + d); } catch (Throwable ignored) { }
+        }
+    }
+
     private void applyParams(String stock, int longEdge) {
         applyParams(stock, printStock == null ? "kodak_portra_endura" : printStock, longEdge);
     }
@@ -12339,7 +13491,14 @@ public class MainActivity extends Activity {
         // +5.41). The default (meter off) keeps `balanced` so the value is
         // identical to what the reference sends.
         kv.put("auto_exposure_method", q(meter.isEmpty() ? "balanced" : meter));
-        kv.put("scan_film", b(isPositiveStock(stock)));
+        // **Whether this stock is a slide, decided once.** Two switches below
+        // are refused by the engine when it is: "black/white correction on a
+        // directly scanned positive film is not implemented by the native
+        // engine" -- seven sessions in a week, because the two sliders are on
+        // the same page as everything else and nothing stops them being dragged
+        // while a reversal film is loaded.
+        final boolean scannedPositive = isPositiveStock(stock);
+        kv.put("scan_film", b(scannedPositive));
         kv.put("output_color_space", q(space == null ? "sRGB" : space));
         kv.put("preview_long_edge", Integer.toString(longEdge));
         kv.put("print_exposure", f("%.2f", printExposure));
@@ -12355,7 +13514,7 @@ public class MainActivity extends Activity {
         kv.put("grain_active", b(grainOn > 0.5f));
         kv.put("dir_couplers_active", b(true));
         kv.put("dir_couplers_amount", f("%.3f", couplersOn));
-        kv.put("scanner_white_correction", b(scannerWhite > 0.5f));
+        kv.put("scanner_white_correction", b(scannerWhite > 0.5f && !scannedPositive));
         // The five that used to have no sender. Ranges are the schema's:
         // scanner.lens_blur 0..20, halation.headroom_ev 0..8,
         // film_render.density_curve_gamma 0.2..4.
@@ -12366,7 +13525,7 @@ public class MainActivity extends Activity {
         kv.put("digital_intermediate", b(digitalIntermediate));
         kv.put("output_cctf_encoding", b(outputCctf));
         kv.put("hue_correction", f("%.3f", wireHueCorrection(stock)));
-        kv.put("scanner_black_correction", b(scannerBlack > 0.5f));
+        kv.put("scanner_black_correction", b(scannerBlack > 0.5f && !scannedPositive));
         // **Ilford Multigrade has no calibrated EDR tone map.** Sending
         // `extended_dynamic_range` with that paper makes `spk_open` fail
         // outright -- "print profile 'ilford_multigrade_iv_rc' has no
@@ -12399,7 +13558,16 @@ public class MainActivity extends Activity {
         kv.put("geometry_crop_y", f("%.6f", geometryCropY));
         kv.put("geometry_crop_w", f("%.6f", cropW));
         kv.put("geometry_crop_h", f("%.6f", cropH));
-        kv.put("geometry_rotation_deg", f("%.3f", geometryRotation));
+        // **The engine turns the other way round.** `geometry_rotation_deg`
+        // is counter-clockwise positive (measured: rendering +15 and undoing
+        // it with PIL's +15 matches to 11.7/255, while -15 misses by 42.7),
+        // and Android's `Canvas.rotate` is clockwise positive. The app keeps
+        // the screen convention everywhere -- the gesture, the scale, the
+        // reading, `Look` -- and flips the sign once, here and in
+        // `sendGeometry`, at the boundary. Without it the picture turns one
+        // way under the finger and comes back the other way when the render
+        // lands, which is exactly "一松手，重新渲染完，照片变回原来位置了".
+        kv.put("geometry_rotation_deg", f("%.3f", -geometryRotation));
         kv.put("geometry_quarter_turns", Integer.toString(geometryTurns));
         kv.put("geometry_flip_h", b(geometryFlipH));
         kv.put("geometry_flip_v", b(geometryFlipV));
@@ -12444,7 +13612,8 @@ public class MainActivity extends Activity {
         try {
             DebugSink.text("params", "draw film=" + stock + " print=" + paper
                     + " render=" + rendering + " long=" + longEdge
-                    + " keys=" + delta.split(",").length + " [" + keyNames(delta) + "]");
+                    + " keys=" + delta.split(",").length + " [" + keyNames(delta) + "]"
+                    + " geo=" + kv.get("geometry_rotation_deg"));
         } catch (Throwable ignored) { }
         // **A JSON that does not parse is a build error, not a user error.**
         try {
@@ -12888,6 +14057,10 @@ public class MainActivity extends Activity {
         // "删掉全部缩略图后导入按钮有时候会消失" report.
         final int renderedFrame = currentFrame;
         final int renderedEpoch = renderEpoch;
+        // **Which geometry this render is allowed to speak for.** A render the
+        // commit did not wait for carries the angle from before it, and letting
+        // it take the preview turn off is exactly the frame that jumps back.
+        final int renderedGeometrySeq = geometrySeq;
         rendering = true;
         progressBar.setVisibility(View.VISIBLE);
         busyLabel.setVisibility(View.VISIBLE);
@@ -12898,13 +14071,56 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 synchronized (renderMutex) {
-                if (session == null) throw new RuntimeException("session closed before render");
+                if (session == null) {
+                    // **A frame change can land between the check the UI thread
+                    // made and this lock.** Throwing here turned that race into
+                    // a dialog on top of a batch export that had already
+                    // finished ("加片边批量导出后弹错 / 会话状态异常"). The frame
+                    // is genuinely gone, so there is nothing to draw: hand the
+                    // UI back the state this method claimed, and let the next
+                    // import render. A rebate export makes every render 2-3 s
+                    // slower, which is exactly why that window got wide enough
+                    // to hit in the field and not on the bench.
+                    CrashTrail.mark(this, "render:session-gone");
+                    runOnUiThread(() -> {
+                        rendering = false;
+                        if (progressBar != null) progressBar.setVisibility(View.GONE);
+                        if (busyLabel != null) busyLabel.setVisibility(View.GONE);
+                    });
+                    return;
+                }
                 // The queue stops here, but a card it started before still
                 // finishes and can put a stock back onto this session. Take the
                 // film the user picked, under the same lock the render runs
                 // under, so the picture and the edge text cannot disagree.
                 CrashTrail.markNow(MainActivity.this, "render:lock");
+                // **Geometry first, and not through the delta ledger.** A crop
+                // or a rotation is the one edit the canvas cannot show while it
+                // is being made: the preview turns the *view* and the picture
+                // itself stays where it was until the render comes back. So it
+                // is the one edit that must not depend on `deltaSent` deciding
+                // the value looks unchanged -- and it is sent with the stock,
+                // which is what forces the rebuild a SHOOT-layer field needs.
+                // **Geometry goes last, not first.** It used to be sent before
+                // the full delta, on the theory that the delta would restate
+                // the same value. A device report (`SL-261111-A06E`) shows a
+                // render that came back with the *cover zoom* of a 12 degree
+                // turn and no turn at all: the tree had the angle, the picture
+                // did not. Whatever the full delta does to that field, the
+                // geometry is now written after it, so the last word before
+                // `renderBegin` is this one.
+                final boolean geoOwed = pendingGeometry;
+                pendingGeometry = false;
                 applyParams(renderedStock, longEdge);
+                if (geoOwed) {
+                    sendGeometry();
+                    try {
+                        final String gp = session.getParams();
+                        final int at = gp.indexOf("\"geometry_rotation_deg\"");
+                        DebugSink.text("geo-check", "after delta " + (at >= 0
+                                ? gp.substring(at, Math.min(gp.length(), at + 30)) : "absent"));
+                    } catch (Throwable ignored) { }
+                }
                 Probe.log("render", "apply film=" + renderedStock + " long=" + longEdge
                         + " src=" + sourceWidth + "x" + sourceHeight);
                 CrashTrail.markNow(MainActivity.this, "render:params");
@@ -12934,6 +14150,28 @@ public class MainActivity extends Activity {
                 }
                 bmp.setPixels(pixels, 0, w, 0, 0, w, h);
                 CrashTrail.markNow(MainActivity.this, "render:setPixels");
+                // **The canvas, not just the export.** The reports say the ruler
+                // is already visible while editing, and `log_edge_profile` only
+                // ever ran on an export -- three rounds of "send me the export"
+                // is three rounds of making the user do the measuring. This is
+                // the same read-only scan on the frame that is about to be
+                // shown; it costs ~2 ms on a 2048 tier and is skipped on the
+                // 800 px live path, where it would run ten times a second.
+                if (longEdge >= 1024) {
+                    try {
+                        final String edgeLine = SpektraLabEngine.edgeReport();
+                        final String verdict = edgeVerdictOfLine(edgeLine);
+                        if (verdict != null) {
+                            DebugSink.textNow("edge-canvas", verdict);
+                        } else if (edgeLine != null && edgeCanvasSends < 4) {
+                            // Below the threshold, but say what it measured:
+                            // knowing that preview reads 40 and full reads 8 on
+                            // the same picture is the whole answer.
+                            ++edgeCanvasSends;
+                            DebugSink.textNow("edge-weak", edgeLine);
+                        }
+                    } catch (Throwable ignored) { }
+                }
                 session.renderEnd();
                 CrashTrail.markNow(MainActivity.this, "render:end");
                 // What the meter did to *this* frame. A render that looks dark
@@ -12993,6 +14231,10 @@ public class MainActivity extends Activity {
                     }
                     showingOriginal = false;
                     compare.setAfter(bmp);
+                    if (rotationPending && renderedGeometrySeq >= geometrySeq) {
+                        rotationPending = false;
+                        compare.setPreviewRotation(0f);
+                    }
                     setStage(1, null);
                     // Give the pool back if this render left it far larger than
                     // the frame -- ten shoot-layer edits in a row is what parks
@@ -13036,6 +14278,17 @@ public class MainActivity extends Activity {
                 try { session.renderEnd(); } catch (Throwable ignored) {}
                 final String msg = describe(e);
                 runOnUiThread(() -> {
+                    // **A rotation that failed must not stay half applied.** The
+                    // numbers were committed before the render and the canvas
+                    // still shows the view-space turn; leaving both is a picture
+                    // that looks turned and exports straight. Put the angle back
+                    // and take the preview rotation off in the same frame.
+                    if (rotationPending) {
+                        rotationPending = false;
+                        geometryRotation = rotationBeforeDrag;
+                        if (compare != null) compare.setPreviewRotation(0f);
+                        if (rotateArc != null) rotateArc.setAngle(geometryRotation);
+                    }
                     // **A failed render is not an edit.** `scheduleUndo` runs
                     // before the render does, so a failure would still push the
                     // state that caused it -- and undo then replayed the error
@@ -13377,6 +14630,7 @@ public class MainActivity extends Activity {
         final int home = currentFrame;
         batchExportRunning = true;
         batchExportAbort = false;
+        if (abortBatchPill != null) abortBatchPill.setVisibility(View.VISIBLE);
         // **Stop the shelf that is already running.** `startPrefetch` refuses
         // to start a new one while a batch is going, but the queue the last
         // import kicked off keeps painting twenty-five cards -- and the trail
@@ -13479,6 +14733,7 @@ public class MainActivity extends Activity {
                 final int fok = ok, ffail = failed;
                 runOnUiThread(() -> {
                     batchExportRunning = false;
+                    if (abortBatchPill != null) abortBatchPill.setVisibility(View.GONE);
                     if (exportProgressBar != null) exportProgressBar.setVisibility(View.GONE);
                     final String msg = "批量导出完成：" + fok + " 张成功"
                             + (ffail > 0 ? "，" + ffail + " 张失败（多半是没选胶片或打不开）" : "");
@@ -13771,23 +15026,97 @@ public class MainActivity extends Activity {
                 while (off < b.length && (n = in.read(b, off, b.length - off)) > 0) off += n;
             }
             for (String line : new String(b, "UTF-8").split("\n")) {
-                if (!line.startsWith("edge ")) continue;
-                final java.util.regex.Matcher m = java.util.regex.Pattern
-                        .compile(" ([LRTB])=(\\d+)@(-?\\d+) p(\\d+)").matcher(line);
-                while (m.find()) {
-                    // `p1` means four hot lines one row apart, which is a hard
-                    // edge, not a ruler. Eight is the smallest spacing that a
-                    // person would call "bars".
-                    if (Integer.parseInt(m.group(4)) >= 8) {
-                        return m.group(1) + " every " + m.group(4) + " px · " + line;
-                    }
-                }
+                final String v = edgeVerdictOfLine(line);
+                if (v != null) return v;
             }
         } catch (Throwable ignored) { }
         return null;
     }
 
+    /** One `edge ...` line, judged. Null means "nothing a person would call a defect".
+     *
+     *  Three separate measurements live in that line, and they catch three
+     *  different things:
+     *
+     *  - **`Lrow`** — the left band, row by row, second difference. This is the
+     *    one that matters for "a ruler down the left edge": the report is a run
+     *    of *short horizontal dashes*, a pixel tall and a dozen wide, one every
+     *    ~6 % of the height. Averaging a whole column cannot see them (18 px of
+     *    1500, one row of 2000 → 0.7/255), which is why four days of `edge`
+     *    lines all read `p0`. Measured on the six samples the user sent:
+     *    peak 125-235, 47-127 hot rows. On fourteen of our own exports: median
+     *    peak 14.3, at most 9 hot rows. `100` and `40` sit in the gap.
+     *  - **`Vmax`** — the steepest step between adjacent column means, anywhere
+     *    in the frame. For a true 1 px vertical seam. Clean renders measure
+     *    0.7-1.3; a 30 % line injected into the same file measures 33-36.
+     *  - **`pN`** — evenly spaced hot lines on one edge, the old ruler test.
+     *    `p1` is four hot lines one row apart, which is a hard edge, not a ruler.
+     */
+    /** How many `edge-canvas` lines this process has sent. Four is enough to
+     *  see every tier once; more would be noise in a table that already reads
+     *  one row per export. */
+    private int edgeCanvasSends = 0;
+
+    private static String edgeVerdictOfLine(String line) {
+        if (line == null || !line.startsWith("edge ")) return null;
+        // **`Y=` is the part that names the defect.** A ruler is not just
+        // "rough on the left": its bars sit at a fixed pitch. `SL-261110-460E`
+        // and the six samples the user sent both repeat at ~6 % of the height
+        // (117 rows in 2000, 114 in 1920), two rows per bar. Passing the first
+        // eight starts up means the pitch arrives with the report instead of
+        // costing another round trip.
+        // **Two tiers, not one.** A clean Adreno render reads 3-12 with no hot
+        // rows; the Mali report reads 111 with 63. The gap is wide, but waiting
+        // for 100 means the only reports that arrive are the ones that already
+        // reproduce -- and a tier that sits at 30-90 tells us just as much
+        // about which axis is wrong. `edge-canvas` throttles itself, so the
+        // lower tier cannot flood.
+        final java.util.regex.Matcher r = java.util.regex.Pattern
+                .compile("Lrow=(\\d+)@(-?\\d+) n(\\d+) g(\\d+) Y=(\\S+)").matcher(line);
+        if (r.find() && Integer.parseInt(r.group(1)) >= 30 && Integer.parseInt(r.group(3)) >= 10) {
+            return "左侧短杠 peak=" + r.group(1) + " y=" + r.group(2)
+                    + " 行数=" + r.group(3) + " 间距=" + r.group(4)
+                    + " 组=" + r.group(5) + " · " + line;
+        }
+        // The same measurement on a band eight times wider (w/8, capped at 256).
+        // "Left side" on a 3400-wide frame is not the first 53 columns, and a
+        // defect at x=150 is invisible to `Lrow`. On the six samples this band
+        // reads 23-139 with 12-33 hot rows; on a clean Adreno render it reads
+        // 1-6 with none, so the gap is wide enough to name it on its own.
+        final java.util.regex.Matcher w = java.util.regex.Pattern
+                .compile("Wrow=(\\d+)@(-?\\d+) n(\\d+)").matcher(line);
+        if (w.find() && Integer.parseInt(w.group(1)) >= 20 && Integer.parseInt(w.group(3)) >= 10) {
+            return "左侧宽带 peak=" + w.group(1) + " y=" + w.group(2)
+                    + " 行数=" + w.group(3) + " · " + line;
+        }
+        // **Eight, not five.** `Vmax` used to be reported in 16-bit units while
+        // this threshold was chosen on 8-bit numbers, so every clean export
+        // cleared it: `SL-261110-460E` is six "vertical line x=1524" reports at
+        // Δ=4.4/255 on a picture with no line in it. Both sides are 8-bit now,
+        // and a 30 % one-pixel seam measures 33-36, so 8 still has four times
+        // the headroom it needs.
+        final java.util.regex.Matcher v = java.util.regex.Pattern
+                .compile("Vmax=(\\d+)@(\\d+)").matcher(line);
+        if (v.find() && Integer.parseInt(v.group(1)) >= 8) {
+            return "竖线 x=" + v.group(2) + " Δ=" + v.group(1) + " · " + line;
+        }
+        final java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile(" ([LRTB])=(\\d+)@(-?\\d+) p(\\d+)").matcher(line);
+        while (m.find()) {
+            if (Integer.parseInt(m.group(4)) >= 8) {
+                return m.group(1) + " every " + m.group(4) + " px · " + line;
+            }
+        }
+        return null;
+    }
+
+    /** The file just written does not match the canvas; the worker decides. */
+    private volatile boolean exportCorruptNow = false;
+    /** One automatic retry per user-initiated export. */
+    private volatile boolean exportRetried = false;
+
     private void exportImage(String format, String tier) {
+        exportRetried = false;
         exportImage(format, tier, null);
     }
 
@@ -13958,6 +15287,7 @@ public class MainActivity extends Activity {
                         // rather than a failure.
                         final SpektraLabEngine.Session keep = session;
                         boolean keepSuspended = false;
+                        boolean keepClosed = false;
                         // **A batch closes this session a moment later anyway.**
                         // Suspending writes a frame's worth of planes to the
                         // cache directory and resuming allocates them again --
@@ -14177,6 +15507,50 @@ public class MainActivity extends Activity {
                         // to `session` let a concurrent UI call write the next
                         // preview's parameters into the export's frame.
                         final SpektraLabEngine.Session exportSession = fresh != null ? fresh : keep;
+                        // **Two working sets do not fit on the phones that fail.**
+                        //
+                        // `suspend` snapshots the preview's planes to the cache
+                        // directory and drops the device copies -- but it can
+                        // fail, and when it does this code used to carry on and
+                        // open the export session anyway: one whole frame
+                        // resident plus another being allocated. Measured on a
+                        // 26 MP export (Adreno 650): `preview suspended=false`,
+                        // then VkResult -2.
+                        //
+                        // So: if the suspend did not happen, or the room it left
+                        // is still not enough for the export's own working set,
+                        // close the preview outright. The frame comes back in the
+                        // `finally` below -- a few seconds of re-import traded for
+                        // an export that exists.
+                        // **A batch closes this session itself, a frame later.** Closing
+                        // it here too would also post a re-import after every
+                        // frame, straight into the batch loop's next reopen.
+                        if (fresh != null && keep != null && !batchExportRunning) {
+                            final boolean wasSuspended = keepSuspended;
+                            // 5.1 planes of 12 B/px plus the encoder's tables,
+                            // measured on the host at 20.9 MP (`mem_export`).
+                            final long needBytes = (long) sourceWidth * sourceHeight * 12L * 51L / 10L
+                                    + (160L << 20);
+                            // **More than half of what is left is more than the
+                            // two of them can share.** `avail` is MemAvailable,
+                            // so it already excludes the preview's own arena;
+                            // this asks whether one export working set still
+                            // fits in what remains after it.
+                            final long avail = availableMemoryBytes();
+                            final boolean tight = avail > 0 && needBytes > avail * 55L / 100L;
+                            if (!wasSuspended || tight) {
+                                try { keep.close(); } catch (Throwable ignored) { }
+                                if (session == keep) session = null;
+                                keepSuspended = false;
+                                keepClosed = true;
+                                try {
+                                    DebugSink.text("export", "preview closed for the export"
+                                            + " suspended=" + wasSuspended
+                                            + " need=" + (needBytes >> 20)
+                                            + " avail=" + (avail >> 20) + " MiB");
+                                } catch (Throwable ignored) { }
+                            }
+                        }
                         if (exportSession == null) {
                             // The frame's session went away between `export:lock`
                             // and here. Saying so is the honest end of this
@@ -14236,8 +15610,42 @@ public class MainActivity extends Activity {
                             // on and its own whole-frame measurement is exactly
                             // what the canvas would have got.
                             try {
-                                if (pinEv) exportSession.pinAutoExposureEv(lastAppliedEv);
-                                else exportSession.clearPinAutoExposureEv();
+                                if (pinEv) {
+                                    exportSession.pinAutoExposureEv(lastAppliedEv);
+                                } else if (exportAutoExposure) {
+                                    // **A batch walks the strip without rendering**,
+                                    // so the canvas' measured EV belongs to the
+                                    // frame before this one and cannot be pinned
+                                    // here. Letting the fresh session meter on its
+                                    // own was the other half of "导出只有片边、内容
+                                    // 一片白": the same meter that occasionally
+                                    // clamps on a full-size decode. Measure once,
+                                    // explicitly, and pin that answer -- then
+                                    // clamp the pathological tail, because a meter
+                                    // that cannot see the frame returns the end of
+                                    // its range and paints the whole negative
+                                    // white.
+                                    double ev = Double.NaN;
+                                    try {
+                                        final org.json.JSONObject solved =
+                                                new org.json.JSONObject(exportSession.solve("both"));
+                                        final org.json.JSONObject by =
+                                                solved.optJSONObject("exposure_ev_by_method");
+                                        final String m = exportMeter.isEmpty() ? "balanced" : exportMeter;
+                                        if (by != null && by.has(m)) ev = by.optDouble(m, Double.NaN);
+                                    } catch (Throwable ignored2) { ev = Double.NaN; }
+                                    final boolean sane = !Double.isNaN(ev) && Math.abs(ev) <= 8.0;
+                                    if (!sane) ev = lastAppliedEvValid ? lastAppliedEv : 0.0;
+                                    exportSession.pinAutoExposureEv(ev);
+                                    try {
+                                        DebugSink.text("export-meter", "method=" + exportMeter
+                                                + " solved=" + f("%.4f", ev)
+                                                + (sane ? "" : " (clamped)")
+                                                + " sameFrame=" + lastAppliedEvValid);
+                                    } catch (Throwable ignored) { }
+                                } else {
+                                    exportSession.clearPinAutoExposureEv();
+                                }
                             } catch (Throwable ignored) { }
                             // **Which object got the parameters.** The owner's
                             // files come out at print_exposure 1.0 while this app
@@ -14331,6 +15739,18 @@ public class MainActivity extends Activity {
                             if (keepSuspended && keep != null) {
                                 try { keep.resume(); } catch (Throwable ignored) { }
                             }
+                            final boolean closedForExport = keepClosed;
+                            if (closedForExport) {
+                                // The preview session was closed to make room for
+                                // the export, so the canvas has nothing behind it.
+                                // Re-open the same frame the way a chip does.
+                                runOnUiThread(() -> {
+                                    if (!uiReady) return;
+                                    if (currentFrame < 0 || currentFrame >= frames.size()) return;
+                                    CrashTrail.mark(MainActivity.this, "export:reopen after close");
+                                    reopenFrameForced(currentFrame);
+                                });
+                            }
                         }
                         // **Hand the pool back before anything else runs.** A
                         // 51 MP full render leaves its whole working set
@@ -14382,12 +15802,42 @@ public class MainActivity extends Activity {
                 // stretched along one axis does not. Cheap enough for every
                 // export, and the only evidence a "garbled, once, never again"
                 // report can leave behind.
+                exportCorruptNow = false;
                 {
-                    final String verdict = inspectExportedFile(tmp.getAbsolutePath());
+                    // The canvas is only *this* frame's while a batch is not
+                    // walking the strip behind our back.
+                    final double ncc = batchExportRunning ? -1
+                            : exportMatchesCanvas(tmp.getAbsolutePath(), lastRenderedBitmap);
+                    if (ncc >= 0 && ncc < 0.55) {
+                        exportCorruptNow = true;
+                        try {
+                            DebugSink.textNow("export-corrupt",
+                                    String.format(java.util.Locale.US,
+                                        "canvas NCC %.3f at %dx%d tier=%s overscan=%s — file kept? no, retrying",
+                                        ncc, w, h, tier, overscanOn) + "\n" + reportHead());
+                        } catch (Throwable ignored) { }
+                    } else if (ncc >= 0) {
+                        try { DebugSink.text("export-selfcheck", String.format(
+                                java.util.Locale.US, "canvas NCC %.3f", ncc)); }
+                        catch (Throwable ignored) { }
+                    }
+                }
+                {
+                    final String verdict = exportCorruptNow ? null : inspectExportedFile(tmp.getAbsolutePath());
                     if (verdict != null) {
                         try { DebugSink.textNow("export-selfcheck", verdict); } catch (Throwable ignored) { }
+                        // **Say it out loud.** This measurement has existed since
+                        // the "garbled, once, never again" report, but it only
+                        // ever reached the status bar -- and the field reports
+                        // that followed all say the same thing: the user found
+                        // out from the gallery. The 26.7 MP export behind
+                        // SL-261110-F51B was 616 KB (0.023 B/px against a
+                        // normal 0.5-1) and the app called it a success.
+                        // The file stays -- the render cost minutes -- but it
+                        // is named as suspect and the user is told to try again.
                         runOnUiThread(() -> {
                             if (statusText != null) statusText.setText("导出结构异常：" + verdict);
+                            showInAppToast("这张导出结构异常（可能花屏），请再导一次");
                         });
                     }
                 }
@@ -14399,8 +15849,12 @@ public class MainActivity extends Activity {
                 {
                     final String ruler = edgeRulerVerdict(tmp.getAbsolutePath() + ".prog");
                     if (ruler != null) {
+                        // **Synchronous.** This runs on the export worker, not
+                        // the UI thread, and the whole point is that the report
+                        // survives the user switching away mid-export -- the
+                        // queued path is exactly what lost the last three.
                         try {
-                            DebugSink.send("edge-ruler", ruler + "\n" + reportHead());
+                            DebugSink.textNow("edge-ruler", ruler + "\n" + reportHead());
                         } catch (Throwable ignored) { }
                         runOnUiThread(() -> {
                             if (statusText != null) statusText.setText("边缘检测：" + ruler);
@@ -14444,7 +15898,10 @@ public class MainActivity extends Activity {
                     final String tiffHint = tiff
                             ? "（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）"
                             : dng ? "（DNG：线性 16 位，给电脑上的 Lightroom / ACR；手机版打不开，已知问题，不必反馈）" : "";
-                    showInAppToast("已保存 " + fw + "x" + fh + canvasNote + " · " + sizeLabel + tiffHint);
+                    if (!exportCorruptNow)
+                        showInAppToast("已保存 " + fw + "x" + fh + canvasNote + " · " + sizeLabel + tiffHint);
+                    else
+                        showInAppToast("导出内容异常，正在自动重导一次…");
                     statusText.setText("已导出 " + fw + "x" + fh + canvasNote + " · " + sizeLabel
                         + "（" + secs + " 秒，其中渲染 " + (fRender / 1000.0) + " 秒）" + tiffHint);
                     exportProgressBar.setVisibility(View.GONE);
@@ -14467,6 +15924,21 @@ public class MainActivity extends Activity {
                 if (code == 1001 || code == 1009) offerSmallerImport();
             } finally {
                 if (tmp.exists()) tmp.delete();
+                // **An export that came back as noise is not an export.**
+                // The render cost fifteen seconds; a silent bad file costs the
+                // user a trip to the gallery and a bug report. Retry once, on
+                // the UI thread, and let the second attempt report.
+                if (exportCorruptNow && !exportRetried && !batchExportRunning) {
+                    exportRetried = true;
+                    runOnUiThread(() -> {
+                        if (statusText != null) statusText.setText("导出内容异常，自动重导一次…");
+                        exportImage(format, tier, onDone);
+                    });
+                    return;
+                }
+                if (exportCorruptNow) {
+                    runOnUiThread(() -> showInAppToast("这张导出结构异常（花屏），请再导一次"));
+                }
                 if (onDone != null) runOnUiThread(onDone);
             }
         }).start();
