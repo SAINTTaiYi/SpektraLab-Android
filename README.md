@@ -1,134 +1,167 @@
 # SpektraLab for Android
 
-把 [SpektraLab](https://github.com/JamesQiu2005/SpektraLab) 的胶片/相纸模拟引擎搬到 Android 的移植。
-打开一张 RAW，选好胶片和相纸，几秒内得到一张按物理过程建模的照片——81 个波长穿过染料层，
-颗粒、光晕、成色剂耦合按画幅的微米尺度计算，不是 LUT。
+把 [SpektraLab](https://github.com/JamesQiu2005/SpektraLab) 的胶片／相纸模拟引擎搬到 Android 的移植。
+打开一张 RAW，选胶片和相纸，得到一张按物理过程算出来的照片：81 个波长（380–780 nm，5 nm 步长）
+穿过三层染料，颗粒按像素微米尺度播种，光晕、成色剂耦合、放大机染料的相互抑制各自建模。
+**不是套 LUT。**
 
-> 这是社区移植，不是上游官方版本。引擎来自上游 `assist/vulkan-engine-1.3.4`（commit `445e314`）。
+> 社区移植，不是上游官方版本。这份 C++ 引擎来自 SpektraLab 的 `assist/vulkan-engine-1.3.4`
+> （commit `445e314`），而它是 [spektrafilm](https://github.com/andreavolpato/spektrafilm)
+> 那个引擎的 C++/Metal 原生移植。来历见文末「致谢与许可」。
 
-**下载** — [spektralab.workshop.skin](https://spektralab.workshop.skin/) ·
-直链 [`/download`](https://spektralab.workshop.skin/download) ·
-[GitHub Releases](https://github.com/SAINTTaiYi/SpektraLab-Android/releases)
+**下载** · [官网](https://spektralab.workshop.skin/) · [直链](https://spektralab.workshop.skin/download) · [Releases](https://github.com/SAINTTaiYi/SpektraLab-Android/releases)
 
-## 现在能做什么
+**当前版本** `1.6.2m (385)` · arm64-v8a · minSdk 24 · 约 15.9 MB · GPL-3.0-or-later
 
-| 项目 | 状态 |
+## 能做什么
+
+| | |
 |---|---|
-| RAW 解码（LibRaw，原生） | ✅ Panasonic GH5 `.RW2` 实测 |
-| 胶片 / 相纸 | ✅ **25 款胶片 + 9 款相纸**，运行时从资源目录读取 |
-| 预览（live 档） | ✅ 2048 长边，约 1 秒 |
-| 导出 | ✅ 三档：长边 2048 / 3400 / 全尺寸；受限设备会标注上限 |
-| 全尺寸耗时 | ✅ 渲染 8.2 s / 总 8.4 s（SM8735 + Adreno 825，16.5 MP） |
-| 颗粒 / 光晕 / 眩光 强度 | ✅ 三条滑杆（`grain_amount` / `halation_amount` / `glare_amount`） |
-| 画幅（物理尺度） | ✅ 135 / 半格 / XPan / 645 / 6×6 / 6×7 / 6×9 / 6×12 / 6×17 |
-| 换一张 | ✅ 直接替换当前照片，不需要重启 |
-| 配光（Process） | ✅ 导入时自动 `spk_solve(both)` |
-| 导出写盘 | ✅ 原生 libjpeg，不经 Bitmap |
+| 胶片／相纸 | 25 款胶片、9 款相纸，运行时从资源目录读取；黑白片自动配 Ilford，电影卷自动配 2383 |
+| RAW 解码 | 原生 LibRaw。CR2／NEF／ARW／RW2／RAF／DNG 等；尼康 HE／HE★ 明确报 `E-1108` 并说明怎么改相机设置，不用内嵌 JPEG 糊弄 |
+| 画幅 | 135 全画幅／半格／XPan、645、6×6、6×7、6×8、6×9、6×12、6×17，各自带真实片门尺寸 |
+| 片边 | 齿孔、片夹、雾、漏光、张数、厂标、DX 条码；模式 strip／filed；画幅与片门绑定 |
+| 日期水印 | LCD／点阵／数据背三种样式，可在画布上直接拖动定位 |
+| 实时预览 | 拖参数约 **70 ms** 一帧（重印层 16 ms），松手再算全尺寸 |
+| 导出 | JPEG／TIFF（16 位 + sRGB ICC）／DNG（线性 16 位，给电脑上的 Lightroom／ACR）；三档尺寸 |
+| 构图 | 按片边比例一键裁切、±45° 任意角度旋转、四个方向的 90° 与翻转 |
+| 批量 | 批量导入、批量导出（可中途停止）、批量删除 |
+| 预设 | 保存、分享成一段文本、从剪贴板导入；也能把当前参数一键套用到其它照片 |
+| 测光 | 7 种方式可选；「配光」按钮重新测光并显示三色滤镜结果 |
+| 撤销 | 最多 400 步 |
 
-## 1.2.3 里改的
+## 这一版（1.6.2m）修了什么
 
-- **修好了超过 1677 万像素时画面顶部未渲染**。一次 dispatch 超过 65 535 个 workgroup 时，
-  旧实现把组折成 2D 行，这块驱动会整块丢弃。现在按 65 535 组切块，shader 用 4 字节
-  push constant 加基址；同一帧 1 / 65 / 472 块切法输出逐字节相同，20.3 MP 帧顶部
-  200 行 std=1225、无空白行。
-- **导入拆成两个入口**。点击「导入」进相册；长按「导入」可选「文件（RAW）」与
-  「按原始尺寸导入」。之前为了显示 `.ARW` 把选择器改成 `*/*`，Android 于是只给文件管理器。
-- **导出 JPEG 改 4:4:4**。libjpeg 默认 4:2:0 把色度分辨率砍到 1/4，颗粒与染料云正好在那里。
-  实测同一张图 85,840 → 137,940 字节。导出完成会同时报尺寸与体积。
-- **为分块铺路**：`Arg` 增加绑定窗口 `(offset, range)`，`dispatch()` 按窗口绑定；
-  默认整块，行为不变（渲染哈希复验 `0b3c0685f4c262d7`）。设计见 `docs/tiling.md`。
+- **片边文字**：全尺寸导出有，预览和竖幅照片也有。之前预览尺寸下笔画只剩 1–2 px、
+  断成点被当成「刻度尺」，此前的处理是干脆不画；现在改成把笔画加粗 1 px 留着字。
+- **导出花屏**：整幅变成噪声那种。现在导出完会拿成品和画布做灰度相关（正常 ≈0.97），
+  不合格就不报「已保存」，并自动重导一次。
+- **旋转松手跳回原位**：提交时快照几何，渲染线程不再读到被清零的字段。
+- 竖幅片边空白、套用预设带着上一张的片门、批量导出后报错、批量导出途中点缩略图崩溃、
+  小尺寸照片导入后无限闪退、切换界面必崩、Mali-G76／Adreno 630 完全无法渲染。
 
-## 1.2.2 里新增的
+完整清单见 [Releases](https://github.com/SAINTTaiYi/SpektraLab-Android/releases)。
 
-- **设备探针**。启动时读 `maxStorageBufferRange`、显存与调度上限，换算成这台机器能吃的
-  最大像素数，导入时据此定尺寸，并在状态栏写明有没有缩过。
-- **分档导出**，并保留全尺寸。受限设备上全尺寸那行会标注「本机上限约 X MP，可能导出失败」；
-  长按「导入」可以强制按原始尺寸导入。
-- **错误码**。每个失败都带 `E-xxxx`（1001 缓冲超限、1101–1106 RAW 各阶段、1201–1202 渲染、
-  1301–1303 请求、2001–2002 更新），截图即可反馈。
-- **修复：选不到 RAW**。文件选择器原为 `image/*`，索尼 `.ARW` 等被存储层标成
-  `application/octet-stream`，于是整个被过滤掉。
-- **修复：竖拍照片偶发被旋转**。读 EXIF 时二次打开流会失败（一次性流），现在有
-  `openFileDescriptor` 兜底。
-- **更新通道**。启动 3 秒后静默检查 `update.workshop.skin`，6 小时节流，同一版本只提醒一次；
-  标题长按可手动检查。
+## 在手机上真正难的三件事
 
-## 移植过程中修掉的三个硬问题
+**1. 驱动只肯一次绑 128 MiB。**
+遥测里 34.5% 的设备（几乎全是 Adreno 7xx）`maxStorageBufferRange` 只有 128 MiB，
+而一张 20 MP 的中间平面就是 240 MB。做法是给每个 kernel 的绑定加窗口
+（`dispatch_window(kernel, args, n, origin, read_bias)`），按行带发射，push constant 带基址。
+分带与整块**逐字节相同**：63／64／65／100 宽 × 1／8／32 行全程验证，77 MP 片边画布
+（9134×8435）在这类机型上也能跑完，峰值 1335 MiB。
+顺带把导入预算从 8.95 MP 放开到约 32 MP（此后由可用内存决定，不再由绑定上限决定）。
 
-这三个是让「能在 Android 上出图」变成「能出对的图」的关键，全部在 `patches/engine-android.patch` 里：
+**2. 一次 dispatch 不能超过 65 535 个 workgroup。**
+超了这块驱动会静默丢块——不是报错，是顶部若干行呈现未初始化显存。
+`kDispatchElementWall = maxComputeWorkGroupCount[0] × 256`：Adreno 825 是 16,776,960 元素，
+Mali-G925 报 1.1e12（一次就够，分带反而每带留一条缝）。所以片边四处手写分带全部改成
+「装得下就不切」。
 
-1. **导出成片横向错乱** —— `spk_result.row_stride_px` 的单位是**像素**，每个像素占 4 个 uint16；
-   消费端写成 `rgba16 + y * stride` 会让每行只前进 1/4 行。正确写法 `rgba16 + y * stride * 4`。
-2. **全尺寸 `VK_ERROR_DEVICE_LOST`** —— IIR 高斯原来一次 dispatch 跑完整个平面，热降频下单次要 600 ms 以上，
-   撞上 Adreno 的看门狗。改成**每通道 × 每 512 行**一发：单次 616 ms → 34 ms，
-   输出与原实现**逐字节相同**（8 MP 输出哈希 `81ecd543d8b34a87`）。
-3. **大图打包丢块** —— `spk_to_rgba16` 一次要发 6 万多个 workgroup，
-   超过驱动上限的块会静默丢失（表现为未初始化显存）。改成按 512 行分带发射。
+**3. 显存要自己管。**
+池子是帧内复用的，`Gpu::alloc` 返回带引用计数的平面；导出结束后显式 `spk_trim_pool()`
+把整幅中间产物还回去，否则下一次导出前系统会把桌面换出。
+58 MP 片边画布（9102×6336）实测 **28.8 秒**、峰值 **1335 MiB**；20.9 MP 带片边导出
+（5973×3222）渲染 10.1 秒。
 
-## 已知问题
+## 已知限制
 
-- **像素数 > 16,776,960（= 65,535 workgroups × 256 threads）时仍有风险**：管线中还有 kernel 会踩同一个坑，
-  表现为图像顶部约 200 行是未初始化显存。当前用导入时 `maxLongEdge = 4700` 规避。
-  通用修法（给 `spk_global_index()` 加 push constant 基址、`dispatch()` 自动切块）尚未实现。
-- 对比度蒙版（`contrast_mask`）上游 Vulkan 后端未移植，`capabilities.backend.unsupported_features` 里显式拒绝。
-- 片边（Film Edge）、日期后背、半格拼接、几何裁剪、批量导出等**引擎已实现但 UI 尚未接入**。
+- **任意角度旋转在 `maxStorageBufferRange = 128 MiB` 的机型上会失败**（`E-1001`）。
+  一个输出行要读源图的一条斜线，必然绑整张源。裁切、90° 与翻转不受影响。
+- **对比度蒙版**（`contrast_mask_*`）上游 Vulkan 后端未移植，接口里显式拒绝，不静默忽略。
+- **导出的 DNG 手机版 Lightroom 打不开**（Adobe 已知问题），定位是给电脑上的 Lr／ACR 用；
+  手机端请导出 TIFF 后点「分享」发给 Lightroom。
+- **Ilford 黑白纸不支持 EDR**（没有标定曲线），开关保留但对该纸不生效。
+- **7 支胶片的色相校正被锁定**（Vision3 四支、CineStill 800T、Verita 200D、Pro 400H）：
+  它们的绿区偏移在实测里方向与其它胶片相反，强行校正会更偏；可以关掉校正用原始色彩。
+- 仓库不含约 30 MB 的二进制资源（光谱表、LUT、profile），见下面「构建」。
 
 ## 构建
 
-前置：Termux（aarch64）、Android SDK 36 / NDK 28、上游引擎源码。
+前置：Termux（aarch64）、Android SDK 36 / NDK 28、上游引擎源码、约 15 GB 空闲。
 
 ```bash
-# 1) 上游引擎 + 本项目补丁
+# 1) 上游引擎 + 本项目的 Android 补丁
 git clone https://github.com/JamesQiu2005/SpektraLab
 cd SpektraLab && git checkout 445e314
 git apply /path/to/patches/engine-android.patch
 
-# 2) 资源：把 engine/resources/ 下的 profiles/、vulkan/、*.bin、*.json
-#    拷到本工程的 app/src/main/assets/resources/
-#    （仓库不含约 30 MB 的二进制资源；APK 里额外的 6 个 profile 来自
-#      SpektraLab 应用包，未随本仓库分发，请自行准备）
+# 2) 资源：把 engine/resources/ 下的 profiles/、vulkan/、DI/、*.bin、*.json
+#    拷到 app/src/main/assets/resources/
 
-# 3) 编译引擎对象与 JNI（脚本里的路径按你的环境改）
-bash app/build/build-engine.sh
-bash app/build/build-native.sh
-cp app/build/native/libspektrafilm_engine.so app/build/apk/lib/arm64-v8a/
-
-# 4) Java + 打包
-javac -source 17 -target 17 -d app/build/classes -cp $ANDROID_HOME/platforms/android-36/android.jar @app/build/sources.txt
-d8 --release --min-api 24 --lib $ANDROID_HOME/platforms/android-36/android.jar \
-   --output app/build/dex $(find app/build/classes -name '*.class')
-bash build-apk.sh
+# 3) 五步构建，顺序不能省
+bash app/build/build-engine.sh     # 引擎 TU（改过头文件会自动全量重编）
+bash app/build/build-native.sh     # 两个 JNI → .so
+bash app/build/build-libs.sh       # staging 依赖库 + SONAME 等长改名
+bash app/build/build-dex.sh        # javac → d8
+bash build-apk.sh                  # aapt2 + 签名 + 依赖闭包检查
 ```
+
+`build-libs.sh` 会把 `libjpeg.so.8` / `libz.so.1` 改名成 `libjpeg_8.so` / `libz_1.so`
+并就地改写 `.dynstr`：AOSP 的安装器只解压 `lib/` 下以 `.so` 结尾的条目，带版本号的名字
+会被静默跳过，然后在 `dlopen` 时报缺库。`check-libs.py` 会遍历每个 `.so` 的 `DT_NEEDED`
+阻止这种包被打出来。
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `app/src/main/java/` | Activity、引擎 Java 门面、调试上报 |
-| `app/src/main/cpp/` | JNI：会话、渲染、导出（原生 libjpeg）、RAW 打开 |
-| `app/build/` | 引擎对象、JNI、资源目录的构建脚本 |
-| `patches/engine-android.patch` | 对上游引擎的 6 个文件改动 |
-| `build-apk.sh` | aapt + d8 + apksigner 打包 |
+| `app/src/main/java/app/spektralab/` | Activity（UI 全部手写，无 AppCompat）、引擎 Java 门面、调试上报 |
+| `app/src/main/cpp/` | JNI：会话、渲染、导出（libjpeg 直写 + ICC／EXIF）、RAW 打开 |
+| `app/build/` | 引擎对象、JNI、依赖库、dex 的构建脚本 |
+| `patches/engine-android.patch` | 对上游引擎的改动 |
+| `docs/` | 分块渲染设计（`tiling.md`）等 |
+| `build-apk.sh` | aapt2 + apksigner 打包 |
 
 ## 致谢与许可
 
-- 引擎、胶片过程模型与上游实现：[JamesQiu2005/SpektraLab](https://github.com/JamesQiu2005/SpektraLab) — GPL-3.0-or-later
-- 胶片模型、28 款实测配置与放大 LUT：[Andrea Volpato 的 spektrafilm](https://github.com/andreavolpato/spektrafilm) — CC BY-SA 4.0
-- 本仓库：Android 移植（Vulkan 后端适配、JNI、UI、上述三处修复）
+这个引擎不是从零写的，它有明确的三段来历：
 
-代码以 **GPL-3.0-or-later** 分发（见 `LICENSE`）；胶片与相纸配置以 **CC BY-SA 4.0** 分发（见 `LICENSE-SPEKTRAFILM.txt`）。
+**1. 物理模型与数据 — [spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato**
+胶片过程模型、28 款实测彩色 profile、放大 LUT，原实现是 Python + Metal。
+以 **CC BY-SA 4.0** 分发（见 `LICENSE-SPEKTRAFILM.txt`）。
+
+**2. 原生移植 — [SpektraLab](https://github.com/JamesQiu2005/SpektraLab)**
+把上面那个引擎重写成 C++ / Metal，并加上 macOS 应用；另有 4 款黑白 profile 由 Hanze Qiu 实测。
+以 **GPL-3.0-or-later** 分发。本仓库的上游即其 `assist/vulkan-engine-1.3.4`（commit `445e314`）。
+
+**3. Android / Vulkan 移植 — 本仓库**
+Vulkan 后端、JNI、UI、分带渲染与显存管理、色相校正标定。同样以 **GPL-3.0-or-later** 分发。
+
+引擎里的 `src/film`、`src/print`、`src/scan` 与 `resources/`（光谱表、profile、LUT）
+保持上游原样；本仓库的改动集中在执行层——`src/gpu`、`src/pipeline` 的调度部分、
+`src/shaders` 的索引与分带、`src/io` 的编码——共 64 个文件 / +8379 −731 行
+（对比 `445e314` 可复验）。
+
+代码以 **GPL-3.0-or-later** 分发（见 `LICENSE`）；胶片与相纸配置以 **CC BY-SA 4.0** 分发
+（见 `LICENSE-SPEKTRAFILM.txt`）。
 
 ---
 
 ### English
 
-An unofficial Android port of the SpektraLab film/paper simulation engine (Vulkan backend).
-RAW in, physically modelled film + paper out, all on the phone.
+An unofficial Android port of the SpektraLab film and paper simulation engine (Vulkan compute).
+RAW in, physically modelled film + paper out, entirely on the phone: 81 wavelengths through
+three dye layers, grain seeded per pixel at micrometre scale, halation, coupler coupling and
+dye-layer inhibition each modelled — not a LUT.
 
-Fixed here: the `row_stride_px` unit bug that made exports come out striped; the IIR Gaussian
-launched per channel and per 512-line block so a throttled Adreno never hits its watchdog
-(byte-identical output); and banded `spk_to_rgba16` packing, because dispatches past
-65,535 workgroups silently lose blocks on this driver.
+**Provenance, in three steps.** The model, its 28 measured colour profiles and the print LUTs
+are [spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato (CC BY-SA 4.0).
+SpektraLab is a native C++/Metal port of that engine (GPL-3.0-or-later), and this repository
+forks that port. The film, print and scan models and the resource tables are untouched here;
+the work in this repository is the execution layer — `src/gpu`, the scheduling half of
+`src/pipeline`, shader indexing and banding, and `src/io` — 64 files, +8379/−731 against
+`445e314`.
 
-Known limit: frames above 16,776,960 pixels still hit that block-loss path in other kernels,
-so the import caps the long edge at 4700 px for now.
+25 films, 9 papers, real film gates from 135 half-frame to 6×17, rebate with sprockets, fog,
+leaks and DX codes, draggable date back, 70 ms live preview, 400-step undo, batch import and
+export, presets you can share as text.
+
+What the Android port had to solve: a 77 MP rebate canvas on drivers that refuse to bind more
+than 128 MiB (banded dispatches with windowed bindings, byte-identical to the whole-plane
+path); the 65,535-workgroup wall, past which this driver silently drops blocks; and an explicit
+pool trim after every export so the launcher is not evicted.
+
+Known limits: arbitrary-angle rotation needs a whole-source binding and is refused on 128 MiB
+devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
+Lightroom — use TIFF + share from the phone.
