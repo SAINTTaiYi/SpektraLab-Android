@@ -78,6 +78,9 @@ Mali-G925 报 1.1e12（一次就够，分带反而每带留一条缝）。所以
 
 ## 构建
 
+Windows x64 可使用 [Windows 调试构建指南](docs/windows-build.md)：从源码编译 Java/UI，
+复用发布版原生库和资源。For Windows x64, see the [debug build guide](docs/windows-build.md).
+
 前置：Termux（aarch64）、Android SDK 36 / NDK 28、上游引擎源码、约 15 GB 空闲。
 
 ```bash
