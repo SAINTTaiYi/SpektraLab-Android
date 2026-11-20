@@ -13,6 +13,8 @@
 
 **当前版本** `1.6.2m (385)` · arm64-v8a · minSdk 24 · 约 15.9 MB · GPL-3.0-or-later
 
+在左上角的设置菜单中选择「语言」，可切换 English 或简体中文。
+
 ## 能做什么
 
 | | |
@@ -165,3 +167,6 @@ pool trim after every export so the launcher is not evicted.
 Known limits: arbitrary-angle rotation needs a whole-source binding and is refused on 128 MiB
 devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
 Lightroom — use TIFF + share from the phone.
+
+**App language:** Open the settings menu in the upper left and select **Language**
+to switch between English and Simplified Chinese. See [how to add a language](docs/localization.md).

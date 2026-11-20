@@ -81,7 +81,7 @@ public class SpektraLabEngine implements AutoCloseable {
         } catch (Throwable e) {
             tried.append("loadLibrary=").append(brief(e));
         }
-        nativeLoadError = "引擎库没有加载成功（libspektrafilm_engine.so）。" + tried;
+        nativeLoadError = "Could not load the native engine (libspektrafilm_engine.so): " + tried;
         throw new RuntimeException(nativeLoadError);
     }
 
