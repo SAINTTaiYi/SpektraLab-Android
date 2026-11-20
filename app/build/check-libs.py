@@ -12,6 +12,7 @@ library that cannot load, and the app dies with E-9000 on the first import.
 This runs after staging, so the mistake is a build failure instead of a
 release. Exit code 1 means the APK would not have loaded.
 """
+import os
 import pathlib
 import subprocess
 import sys
@@ -25,8 +26,8 @@ PLATFORM = {
 
 
 def needed(path):
-    out = subprocess.run(["readelf", "-d", str(path)],
-                         capture_output=True, text=True).stdout
+    out = subprocess.run([os.environ.get("READELF", "readelf"), "-d", str(path)],
+                         capture_output=True, text=True, check=True).stdout
     return [line.split("[")[1].split("]")[0]
             for line in out.splitlines() if "(NEEDED)" in line]
 
