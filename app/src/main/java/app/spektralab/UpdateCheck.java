@@ -1,5 +1,7 @@
 package app.spektralab;
 
+import static app.spektralab.AppLanguage.tr;
+
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
@@ -72,9 +74,9 @@ final class UpdateCheck {
 
             if (body == null) {
                 if (manual) {
-                    final String detail = lastError == null ? "所有更新地址都不可用" : lastError;
+                    final String detail = lastError == null ? tr("update.no_update_server_responded") : lastError;
                     post(activity, () -> toast(activity,
-                    "[E-2001] 检查更新失败（网络不可用或公告地址被拦截）\n" + detail));
+                        "[E-2001] " + SpkError.explain(2001) + "\n" + detail));
                 }
                 return;
             }
@@ -84,7 +86,7 @@ final class UpdateCheck {
                 a = Announcement.parse(body);
             } catch (Throwable t) {
                 if (manual) post(activity, () -> toast(activity,
-                        "[E-2002] 更新公告格式错误：" + t.getMessage()));
+                        "[E-2002] " + SpkError.explain(2002) + "\n" + t.getMessage()));
                 return;
             }
             if (a == null) return;
@@ -92,7 +94,7 @@ final class UpdateCheck {
             final int current = versionCode(activity);
             if (a.versionCode <= current) {
                 if (manual) post(activity, () -> toast(activity,
-                        "已是最新版本 " + versionName(activity) + "（" + current + "）"));
+                        tr("update.you_re_up_to_date") + versionName(activity) + " (" + current + ")"));
                 return;
             }
             if (!manual && prefs.getInt(KEY_SEEN_CODE, 0) == a.versionCode) return;
@@ -115,42 +117,44 @@ final class UpdateCheck {
             // separately so it stays on screen while the changelog scrolls; a
             // server-side copy of the same line is dropped here instead of
             // being printed twice.
-            if (note != null && note.startsWith("下载地址")) continue;
+            if (note.trim().isEmpty() || note.contains("spektralab.workshop.skin/download")) continue;
             message.append("· ").append(note).append('\n');
         }
         if (message.length() > 0) message.append('\n');
-        message.append("点「去更新」打开下载页（开源免费）");
+        message.append(tr("update.tap_download_to_open_the"));
 
         if (!(activity instanceof MainActivity)) return;
-        final String[] actions = {"去更新", "复制链接", "稍后"};
-        ((MainActivity) activity).showActionSheet("发现新版本 " + a.versionName,
+        final String[] actions = {tr("update.download"), tr("update.copy_link"), tr("update.later")};
+        ((MainActivity) activity).showActionSheet(tr("update.update_available") + a.versionName,
                 message.toString().trim(), actions, which -> {
                     if (which == 0) {
                         prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
                         try {
                             activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(a.url)));
                         } catch (ActivityNotFoundException e) {
-                            toast(activity, "没有可用的浏览器：" + a.url);
+                            toast(activity, tr("update.no_browser_available") + a.url);
                         }
                     } else if (which == 1) {
                         android.content.ClipboardManager cm =
                                 (android.content.ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
                         cm.setPrimaryClip(android.content.ClipData.newPlainText("SpektraLab", a.url));
-                        toast(activity, "链接已复制");
+                        toast(activity, tr("update.link_copied"));
                         prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
                     } else {
                         prefs.edit().putInt(KEY_SEEN_CODE, a.versionCode).apply();
                     }
-                }, null, ADDRESS_LINE);
+                }, null, addressLine());
     }
 
     /**
      * The one line the reader must be able to act on, pinned above the list.
      *
      * <p>Short on purpose: the full `url` is a hundred-character GitHub asset
-     * link, and it is what 「复制链接」 copies. This is what a person types.
+     * link, and it is what Copy link copies. This is what a person types.
      */
-    private static final String ADDRESS_LINE = "下载地址  spektralab.workshop.skin/download";
+    private static String addressLine() {
+        return tr("update.download_2") + "spektralab.workshop.skin/download";
+    }
 
     private static String fetch(String endpoint) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(endpoint).openConnection();
@@ -175,7 +179,9 @@ final class UpdateCheck {
     }
 
     private static void post(Activity activity, Runnable r) {
-        new Handler(Looper.getMainLooper()).post(r);
+        new Handler(Looper.getMainLooper()).post(() -> {
+            if (!activity.isFinishing() && !activity.isDestroyed()) r.run();
+        });
     }
 
     static int versionCode(Context c) {
@@ -215,7 +221,13 @@ final class UpdateCheck {
             if (code <= 0) return null;
             String name = o.optString("latest_version_name", String.valueOf(code));
             String url = o.optString("url", "https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest");
-            JSONArray arr = o.optJSONArray("notes");
+            final AppLanguage.Language language = AppLanguage.current();
+            final String primary = language.locale.getLanguage();
+            JSONArray arr = o.optJSONArray("notes_" + language.tag.replace('-', '_'));
+            if (arr == null) arr = o.optJSONArray("notes_" + primary);
+            // The upstream feed's original, unqualified notes are Chinese.
+            if (arr == null && "zh".equals(primary)) arr = o.optJSONArray("notes");
+            if (arr == null) arr = o.optJSONArray("notes_en");
             String[] notes = new String[arr == null ? 0 : arr.length()];
             for (int i = 0; i < notes.length; ++i) notes[i] = arr.optString(i, "");
             return new Announcement(code, name, url, notes);

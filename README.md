@@ -13,6 +13,8 @@
 
 **当前版本** `1.6.2m (385)` · arm64-v8a · minSdk 24 · 约 15.9 MB · GPL-3.0-or-later
 
+在左上角的设置菜单中选择「语言」，可切换 English 或简体中文。
+
 ## 能做什么
 
 | | |
@@ -77,6 +79,10 @@ Mali-G925 报 1.1e12（一次就够，分带反而每带留一条缝）。所以
 - 仓库不含约 30 MB 的二进制资源（光谱表、LUT、profile），见下面「构建」。
 
 ## 构建
+
+Windows x64：见 [Windows 构建步骤](docs/windows-build.md)，可用发布版原生库构建 Java/UI。
+完整原生构建（包括下文的 Termux 路径）还需要与 JNI 匹配的引擎源码；公开补丁缺少
+`tiling.hpp` 等文件，详情见链接。
 
 前置：Termux（aarch64）、Android SDK 36 / NDK 28、上游引擎源码、约 15 GB 空闲。
 
@@ -165,3 +171,8 @@ pool trim after every export so the launcher is not evicted.
 Known limits: arbitrary-angle rotation needs a whole-source binding and is refused on 128 MiB
 devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
 Lightroom — use TIFF + share from the phone.
+
+**Building on Windows x64:** see [setup, build, and project layout](docs/windows-build.md).
+
+**App language:** Open the settings menu in the upper left and select **Language**
+to switch between English and Simplified Chinese. See [how to add a language](docs/localization.md).

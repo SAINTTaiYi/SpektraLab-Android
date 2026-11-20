@@ -1,5 +1,7 @@
 package app.spektralab;
 
+import static app.spektralab.AppLanguage.tr;
+
 import org.json.JSONObject;
 
 /**
@@ -244,23 +246,25 @@ public final class DeviceProbe {
 
     /** One line for the status bar. */
     public String describe() {
-        if (!valid) return "设备信息读取失败";
+        if (!valid) return tr("file.could_not_read_device_information");
         StringBuilder sb = new StringBuilder(device == null || device.isEmpty() ? "GPU" : device);
         if (maxStorageBufferRange > 0) {
             // "上限 X MP" used to be printed here from the binding range and
             // read as a hard ceiling. There is none: the renderer bands a frame
             // that does not fit one binding, and the import asks before it
             // shrinks anything.
-            sb.append(" · 单缓冲 ").append(Math.round(maxStorageBufferRange / 1048576.0)).append(" MiB（分块）");
+            sb.append(tr("device.buffer_limit"))
+                    .append(Math.round(maxStorageBufferRange / 1048576.0)).append(tr("device.mib_tiled"));
             if (canaryMeasured()) {
-                sb.append(" · 实测可到 ").append(Math.round(effectiveStorageRange() / 1048576.0)).append(" MiB");
+                sb.append(tr("device.measured_up_to"))
+                        .append(Math.round(effectiveStorageRange() / 1048576.0)).append(" MiB");
             } else if (canaryRan && canaryPassed) {
-                sb.append(" · 实测确认");
+                sb.append(tr("device.measured_limit_confirmed"));
             } else if (canaryRan) {
-                sb.append(" · 实测未能突破");
+                sb.append(tr("device.could_not_exceed_reported_limit"));
             }
         } else {
-            sb.append(" · 无单缓冲上限");
+            sb.append(tr("device.no_reported_buffer_limit"));
         }
         return sb.toString();
     }

@@ -1,5 +1,7 @@
 package app.spektralab;
 
+import static app.spektralab.AppLanguage.tr;
+
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
@@ -59,9 +61,18 @@ final class DeviceReport {
                 .putBoolean(KEY_ENABLED, on).apply();
     }
 
-    /** The last answer we got back, or "" -- shown in 关于 so this is not a mystery. */
+    /** Format the last answer in the current language, even after a switch. */
     static String lastAnswer(Context c) {
-        return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_SEEN, "");
+        final String result = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_SEEN, "");
+        final int sep = result.indexOf(" · ");
+        final String code = sep < 0 ? result : result.substring(0, sep);
+        if ("error".equals(code) || "Failed".equals(code) || "失败".equals(code)) {
+            return tr("report.failed") + (sep < 0 ? "" : result.substring(sep));
+        }
+        if (code.matches("[0-9]{3}")) {
+            return code + " · " + ("200".equals(code) ? tr("report.report_sent") : tr("report.report_not_sent"));
+        }
+        return result;
     }
 
     /**
@@ -110,11 +121,11 @@ final class DeviceReport {
                 }
                 final int status = conn.getResponseCode();
                 if (status == 200) p.edit().putLong(KEY_LAST, now).apply();
-                p.edit().putString(KEY_SEEN, status + " · " + (status == 200 ? "已上报" : "未上报")).apply();
+                p.edit().putString(KEY_SEEN, String.valueOf(status)).apply();
                 try { DebugSink.text("driver-report", status + "\n" + body); }
                 catch (Throwable ignored) { }
             } catch (Throwable t) {
-                p.edit().putString(KEY_SEEN, "失败 · " + t.getClass().getSimpleName()).apply();
+                p.edit().putString(KEY_SEEN, "error · " + t.getClass().getSimpleName()).apply();
                 try { DebugSink.text("driver-report", "failed: " + t + "\n" + body); }
                 catch (Throwable ignored) { }
             } finally {
