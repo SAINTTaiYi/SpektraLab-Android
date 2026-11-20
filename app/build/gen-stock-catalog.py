@@ -6,12 +6,12 @@ tree: the bundle carries a few profiles (B&W films, CineStill, Ilford paper)
 that the open-source engine resources do not.
 
 Run from the APK project root; it writes both the source asset and the staging
-copy that aapt packages. Pass a resources directory to generate only there.
+copy that aapt packages.
 """
 import glob
 import json
 import os
-import sys
+import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # app/
 PROJECT = os.path.dirname(ROOT)
@@ -29,15 +29,10 @@ FALLBACK_TARGET = {
     'kodak_vision3_50d': 'kodak_2383',
 }
 
-resources = sys.argv[1] if len(sys.argv) > 1 else None
-profiles = os.path.join(resources, 'profiles') if resources else (
-    STAGED if os.path.isdir(STAGED) else SRC)
-destinations = (os.path.join(resources, 'stock_catalog.json'),) if resources else (
-    OUT, OUT_STAGED)
+profiles = STAGED if os.path.isdir(STAGED) else SRC
 films, prints = [], []
 for path in sorted(glob.glob(os.path.join(profiles, '*.json'))):
-    with open(path, encoding='utf-8') as fh:
-        info = json.load(fh).get('info', {})
+    info = json.load(open(path)).get('info', {})
     rec = {
         'id': info.get('stock') or os.path.basename(path)[:-5],
         'name': info.get('name') or info.get('stock') or os.path.basename(path)[:-5],
@@ -58,10 +53,8 @@ films.sort(key=lambda r: (0 if r['use'] == 'still' else 1, r['name']))
 prints.sort(key=lambda r: (0 if r['use'] == 'still' else 1, r['name']))
 
 payload = {'schema_version': 1, 'films': films, 'prints': prints}
-if not films or not prints:
-    raise SystemExit(f'No films or papers found under {profiles}')
-for dest in destinations:
+for dest in (OUT, OUT_STAGED):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, 'w', encoding='utf-8') as fh:
+    with open(dest, 'w') as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=1)
-print('stocks: %d films, %d prints -> %s' % (len(films), len(prints), destinations[0]))
+print('stocks: %d films, %d prints -> %s' % (len(films), len(prints), OUT))
