@@ -31,7 +31,6 @@
         </intent>
     </queries>
     <application
-        android:usesCleartextTraffic="true"
         android:label="SpektraLab"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"

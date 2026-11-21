@@ -87,17 +87,19 @@ return $native
 
 $env:JAVA_HOME = (Get-ChildItem "$BuildHome\jdk-17*" -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
 $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+# version.json is the single source of truth for the release identity.
+$version = Get-Content -LiteralPath "$root\version.json" -Raw | ConvertFrom-Json
 if ($UseReleaseNative) {
-    $release = "$BuildHome\SpektraLab-1.6.2m-arm64-v8a.apk"
+    $release = Join-Path $BuildHome $version.releaseApk
     if (!(Test-Path $release)) {
-        $url = 'https://github.com/SAINTTaiYi/SpektraLab-Android/releases/download/v1.6.2m/SpektraLab-1.6.2m-arm64-v8a.apk'
+        $url = "https://github.com/SAINTTaiYi/SpektraLab-Android/releases/download/v$($version.versionName)/$($version.releaseApk)"
         curl.exe --fail --location --silent --show-error --retry 2 $url -o "$release.part"
         Move-Item "$release.part" $release -Force
     }
-    if ((Get-FileHash $release -Algorithm SHA256).Hash -ne 'ae999a770893f1d0f7e5d43ea9b89bddfd73915e66361341a41e1d7e71e78561') {
+    if ((Get-FileHash $release -Algorithm SHA256).Hash -ne $version.releaseSha256) {
         throw "Release APK checksum mismatch: $release"
     }
-    Write-Host 'Using v1.6.2m release native libraries and assets; C++ changes are not included.'
+    Write-Host "Using v$($version.versionName) release native libraries and assets; C++ changes are not included."
 } else {
     $native = Build-Native
 }

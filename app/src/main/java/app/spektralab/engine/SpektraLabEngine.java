@@ -350,10 +350,6 @@ public class SpektraLabEngine implements AutoCloseable {
             return nativeGetSessionDimensions(handle);
         }
 
-        public int[] getLastRenderInfo() {
-            return nativeGetLastRenderInfo();
-        }
-
         /** Renders `tier` and keeps the result alive. Returns {width, height}. */
         // The native render result is one buffer shared by every session, so a
         // second thread entering between renderBegin and copyArgbRange would
@@ -422,26 +418,6 @@ public class SpektraLabEngine implements AutoCloseable {
             synchronized (RENDER_LOCK) { nativeRenderEnd(); }
         }
 
-        public SimResult render(String tier, int outWidth, int outHeight) {
-            // If width/height are 0 (RAW session), we need to query the actual size
-            if (outWidth <= 0 || outHeight <= 0) {
-                // For RAW sessions, get params to find actual dimensions
-                String params = getParams();
-                // Parse width/height from params JSON
-                // This is a fallback; normally caller should provide dimensions
-                throw new IllegalArgumentException("outWidth/outHeight must be positive for RAW sessions; use getParams() to query dimensions first");
-            }
-            int bufSize = outWidth * outHeight * 4 * 2; // uint16 RGBA
-            ByteBuffer buffer = ByteBuffer.allocateDirect(bufSize);
-            double elapsedMs = nativeRenderToBuffer(handle, tier, buffer, outWidth, outHeight);
-            if (elapsedMs < 0) throw new RuntimeException("Render failed");
-            int[] info = nativeGetLastRenderInfo();
-            int actualW = info[0];
-            int actualH = info[1];
-            int rowStride = info[2];
-            return new SimResult(buffer, actualW, actualH, rowStride, elapsedMs);
-        }
-
         /** Solve the print exposure / enlarger filter pack ("Process"). */
         public String solve(String target) {
             return nativeSolve(handle, target);
@@ -481,26 +457,6 @@ public class SpektraLabEngine implements AutoCloseable {
 
         /** For call sites that must not touch a closed session. */
         public boolean isClosed() { return handle == 0; }
-    }
-
-    public static class SimResult {
-        public final ByteBuffer pixels; // little-endian uint16 RGBA
-        public final int width;
-        public final int height;
-        public final int rowStridePx;
-        public final double elapsedMs;
-
-        SimResult(ByteBuffer pixels, int width, int height, int rowStridePx, double elapsedMs) {
-            this.pixels = pixels;
-            this.width = width;
-            this.height = height;
-            this.rowStridePx = rowStridePx;
-            this.elapsedMs = elapsedMs;
-        }
-
-        SimResult(ByteBuffer pixels, int width, int height, double elapsedMs) {
-            this(pixels, width, height, width, elapsedMs);
-        }
     }
 
     // JNI methods
@@ -553,7 +509,6 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native int nativeErrorCode(String message);
     private static native int[] nativeRawSourceSize();
     private static native String nativeRawExifJson(long sessionHandle);
-    private static native long nativeMaxPlaneBytes(long engineHandle);
     private static native String nativeProbeCanary(long engineHandle, long needBytes);
 
     private static native int nativeInstallCrashHandler(String path);
@@ -652,9 +607,6 @@ public class SpektraLabEngine implements AutoCloseable {
 
     private static native String nativeStageSnapshot(long sessionHandle);
     private static native int[] nativeGetSessionDimensions(long sessionHandle);
-    private static native double nativeRenderToBuffer(long sessionHandle, String tier, ByteBuffer outBuffer, int outWidth, int outHeight);
-    private static native int nativeGetLastRowStride();
-    private static native int[] nativeGetLastRenderInfo();
     private static native int[] nativeRenderBegin(long sessionHandle, String tier, boolean reprint);
     private static native int[] nativeExportSource(long sessionHandle, String tier);
     private static native int nativeCopyArgbRange(int[] dst, int rowOffset, int rowCount);

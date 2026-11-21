@@ -1,6 +1,10 @@
 # Known issues
 
-## 1.4.0 — the bottom edge print is missing from a large full-size export
+> **Resolved.** The 1.4.0 issue below is kept as a bug-writeup; it was fixed in
+> 1.4.1 by clipping each edge-print group to the current band. Current build:
+> see `README.md`. No open issues are known at the time of writing.
+
+## 1.4.0 (resolved in 1.4.1) — the bottom edge print is missing from a large full-size export
 
 **What you see.** The preview is correct: the film edge above and below the
 picture both carry their print (the maker's name, the frame number, the bar

@@ -697,6 +697,8 @@
     "update.no_update_server_responded": "No update server responded.",
     "update.tap_download_to_open_the": "Tap Download to open the release page.",
     "update.update_available": "Update available: ",
-    "update.you_re_up_to_date": "You're up to date: "
+    "update.you_re_up_to_date": "You're up to date: ",
+    "settings.diagnostics_consent_note": " The switch below also controls the automatic error report; nothing is uploaded until you turn it on. Manual 'send recent activity' always asks first.",
+    "export.stopped": "Export stopped"
   }
 }

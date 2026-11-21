@@ -86,6 +86,8 @@ public class MainActivity extends Activity {
     private TextView sharePill = null;
     private Bitmap sourceBitmap;
     private Uri sourceUri;
+    /** An ACTION_VIEW URI that arrived before the canvas was ready. */
+    private Uri pendingIncomingUri = null;
     private Bitmap lastRenderedBitmap;
     private ByteBuffer sourcePixels;
     private int sourceWidth, sourceHeight;
@@ -427,7 +429,15 @@ public class MainActivity extends Activity {
         // onCreate: re-decoding a 50 MP RAW here would hold the first layout
         // for seconds and read as a hung launch. One empty frame first, then
         // the photograph arrives.
-        new android.os.Handler(android.os.Looper.getMainLooper()).post(this::restoreSessionState);
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            restoreSessionState();
+            pruneThumbFiles();
+            // The manifest advertises "open with" for image/* content and file
+            // URIs. Consume the launch intent only after the saved strip has
+            // come back, so an external photograph is not overwritten by the
+            // restore of the previous session.
+            handleIncomingIntent(getIntent());
+        });
 
         // Silent, and late enough not to compete with the first import. It only
         // speaks when there is a newer build than this one.
@@ -536,45 +546,8 @@ public class MainActivity extends Activity {
     private TextView formatFootLabel;
     /** True while the millimetre cards are locked because a rebate is on. */
     private boolean formatLocked = false;
-    /**
-     * One adjustable, as the panel shows it: a name, a glyph for the chip, and
-     * a getter/setter pair that is the single source of truth. The panel shows
-     * **one slider at a time** and a strip of chips to pick which -- thirteen
-     * stacked sliders is a wall, and a wall is not a darkroom's control panel.
-     */
-    private static final class Knob {
-        final String label, glyph;
-        final float lo, hi;
-        final java.util.function.Consumer<Float> set;
-        final java.util.function.Supplier<Float> get;
-        /**
-         * **A shoot-layer field, so a drag re-develops the film.**
-         *
-         * <p>The delta names only what moved, and the engine drops the cached
-         * negative for anything on the shoot layer -- grain, halation, the
-         * latitude pair, the couplers, the lens. Everything else reprints from
-         * that cache in about a thirtieth of a second. Without this the user
-         * has two sliders that behave differently and no way to know which is
-         * which; the readout row now says it.
-         */
-        final boolean heavy;
-        /**
-         * **Logarithmic travel, so the default lands in the middle.**
-         *
-         * <p>An enlarger's exposure is multiplicative: 0.25, 1.0 and 4.0 are
-         * equal steps, and a linear bar put the default -- 1.0 -- at 20 % of
-         * the way, which read as "this slider is broken, it only goes up".
-         * Only fields whose neutral value is geometric can use this; a field
-         * whose default is zero has no ratio to divide by.
-         */
-        final boolean logScale;
-        Knob(String label, String glyph, float lo, float hi,
-             java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
-             boolean heavy, boolean logScale) {
-            this.label = label; this.glyph = glyph; this.lo = lo; this.hi = hi;
-            this.set = set; this.get = get; this.heavy = heavy; this.logScale = logScale;
-        }
-    }
+    // The editable value, the frame in the strip and the panel's slider model
+    // are plain data holders now (Look.java, Frame.java, Knob.java).
     private final java.util.List<Knob> knobs = new java.util.ArrayList<>();
     private int activeKnob = 0;
     private TextView knobTitle, knobValue, knobHintView, knobCost;
@@ -831,106 +804,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private static final class Look {
-        String filmStock;
-        String printStock;
-        float printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm;
-        String meterMethod;
-        /** RFC-023's highlight room, in stops; 0 leaves the stage off. */
-        float highlightRoom;
-        /** RFC-023's shadow side: lift the toe instead of the shoulder. */
-        float shadowRoom;
-        /** RFC-025: stops added to the highlights *before* the halo is drawn. */
-        float halationBoost;
-        /** RFC-025: the in-emulsion scatter, a mix weight (0..1). */
-        float halationScatter;
-        /** How far that scatter spreads, 0..1 -> 1x..12x the film's radius. */
-        float scatterRadius;
-        /** Lens blur in micrometres, before the film sees anything. */
-        float lensBlur;
-        /** The view layer: tone and colour on the finished print. */
-        float viewTemperature, viewTint, viewExposure, viewContrast, viewBrightness;
-        float viewSaturation, viewHighlights, viewShadows, viewBlack, viewWhite, viewVignette;
-        /** Camera exposure compensation, in stops (engine side). */
-        float cameraEv;
-        float viewVibrance;
-        int wbPreset;
-        float wbKelvin, wbTint;
-        /** The LibRaw gains that produced this frame's preview. White balance
-         *  lives in the demosaic, not in `spk_set_params`, so a frame reopened
-         *  from the strip has to carry them or it comes back as-shot while the
-         *  sliders still say 4000 K. Null = as-shot. */
-        float[] wbMul;
-        /** Enlarger dichroic filters: -1 is 30 CC of the opposite colour. */
-        int geometryTurns = 0;
-        float geometryRotation = 0.0f;
-        float geometryCropW = 1.0f, geometryCropH = 1.0f;
-        float geometryCropX = 0.0f, geometryCropY = 0.0f;
-        int cropRatioIndex = -1;
-        boolean geometryFlipH, geometryFlipV;
-        float yFilter, mFilter;
-        /** CC value those two shifts are scaled to. */
-        float filterScale;
-        /** Pre-flash, as a fraction of the clear-base exposure (0..1). */
-        float preflash;
-        /** Rebate: base fog and light leaks. */
-        float edgeFog, edgeLeaks, frameNumber;
-        /** Switches: 1 is on. Kept as floats so one knob can drive them. */
-        float halationOn = 1f, grainOn = 1f, couplersOn = 1f, antihalationRemoved = 0f;
-        float scannerWhite = 0f, scannerBlack = 0f, edrOn = 0f;
-        float glareActive = 1f;
-        float scannerLensBlur = 0f, halationHeadroom = 4f, densityGamma = 1f;
-        boolean digitalIntermediate = false, outputCctf = true;
-        float hueCorrection = 1f;
-        /** RFC-023's remaining curve shape. */
-        float shadowRolloff = 2f, maxLift = 4f;
-        /** Choices: lens filter, the norm, and the rebate/date layout. */
-        String cameraFilter = "", sceneNorm = "power";
-        String edgeMode = "strip", edgeGate = "auto", edgeHoles = "white", edgeCarrier = "none";
-        String datePlacement = "frame", dateCorner = "br", dateStyle = "lcd";
-        /** mm from the gate's edge to the text, frame placement only. */
-        float dateInsetX = 3f, dateInsetY = 2.4f;
-        float edgeFNumber = 0f, dateSize = 1f, dateEv = 3.5f;
-        /** The manufacturer's edge print: its own switch, because it is the
-         *  one part of the rebate that has been landing inside the picture. */
-        boolean edgeTextOn = true;
-        /** Free text: the shooting data, and a pair's second frame's date. */
-        String dataText = "", dateTextB = "";
-        /** The rebate's own draws. */
-        int cameraSeed = 1, frameSeed = 1;
-        boolean overscanOn, dateOn;
-        String overscanFormat;
-        /** The four grading wheels, in 主/阴影/中间调/高光 order. */
-        final float[] cbHue = new float[4];
-        final float[] cbSat = new float[4];
-        final float[] cbLum = new float[4];
-        /**
-         * The five curve channels (rgb, luma, r, g, b), each a flat
-         * x,y,x,y,... list. A null entry means "never touched", which is what
-         * `defaultLook` leaves behind and `applyLook` turns back into the
-         * default two points.
-         */
-        final float[][] curves = new float[5][];
-    }
-    private static final class Frame {
-        final Uri uri;
-        final boolean raw;
-        final String name;
-        Bitmap thumb;
-        Look look = new Look();
-        /**
-         * Whether this frame was left on 原图.
-         *
-         * <p>The look and the view are two different things: a frame can carry
-         * a film *and* be sitting on the source. Reopening it re-ran the film
-         * because `look.filmStock` was all that was remembered -- "来回切换
-         * 缩略图，照片会自己变回上一次选择的胶片".
-         */
-        boolean original = true;
-        Frame(Uri uri, boolean raw, String name) {
-            this.uri = uri; this.raw = raw; this.name = name;
-        }
-    }
     /**
      * The strip survives the process.
      *
@@ -1187,6 +1060,18 @@ public class MainActivity extends Activity {
     private java.io.File thumbFile(Uri uri) {
         return new java.io.File(getCacheDir(),
                 "thumb_" + Integer.toHexString(uri.toString().hashCode()) + ".png");
+    }
+
+    /** Drop thumbnails whose frame was deleted or whose grant expired. */
+    private void pruneThumbFiles() {
+        final java.io.File[] files = getCacheDir().listFiles(
+                (dir, name) -> name.startsWith("thumb_") && name.endsWith(".png"));
+        if (files == null) return;
+        final java.util.Set<String> keep = new java.util.HashSet<>();
+        for (Frame f : frames) {
+            if (f.uri != null) keep.add("thumb_" + Integer.toHexString(f.uri.toString().hashCode()) + ".png");
+        }
+        for (java.io.File f : files) if (!keep.contains(f.getName())) f.delete();
     }
 
     private void persistThumb(Frame frame) {
@@ -2447,6 +2332,9 @@ public class MainActivity extends Activity {
     private String lastReportKey = "";
 
     private void reportFailure(String title, String body) {
+        // Automatic error uploads are diagnostics, not part of the app's job.
+        // The 关于 switch is the single consent for every automatic upload.
+        if (!DeviceReport.enabled(this)) return;
         final long now = System.currentTimeMillis();
         final String key = title + "|" + body;
         if (key.equals(lastReportKey) && now - lastReportAt < 60_000L) return;
@@ -11191,7 +11079,8 @@ public class MainActivity extends Activity {
                   + (debugBand > 0 ? tr("settings.band_limit") + (debugBand >= 100000000 ? tr("settings.off") : (debugBand / 1000000) + "M") : "");
         final String details = probe.describe() + debugLine
                 + tr("settings.engine_spektralab_spektrafilm_gpl_3")
-                + tr("settings.android_port_github_com_sainttaiyi");
+                + tr("settings.android_port_github_com_sainttaiyi")
+                + tr("settings.diagnostics_consent_note");
         // The report switch lives here rather than in a settings screen: it is
         // one line of one dialog, and it is the only thing this app sends that
         // the user did not ask for. The label carries the state, because the
@@ -11459,6 +11348,37 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingIntent(intent);
+    }
+
+    /**
+     * The app declares an ACTION_VIEW filter for image/* but used to ignore the
+     * intent entirely: opening a photograph from a file manager did nothing.
+     * `launchMode="singleTop"` means this also has to be handled for an app that
+     * is already in the foreground (onNewIntent above).
+     */
+    private void handleIncomingIntent(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
+        final Uri uri = intent.getData();
+        if (uri == null) return;
+        // Consume it: a rotation or a return from another app must not re-import
+        // the same photograph a second time.
+        setIntent(new Intent());
+        try {
+            getContentResolver().takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Throwable ignored) {
+            // importPicked makes its own private copy when the grant cannot persist.
+        }
+        runOnUiThread(() -> {
+            if (!uiReady) { pendingIncomingUri = uri; return; }
+            importPicked(uri);
+        });
+    }
+
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != 1) return;
@@ -11539,11 +11459,22 @@ public class MainActivity extends Activity {
      *  failure; the caller reports it rather than importing a URI that will
      *  not open next time. */
     private Uri privateCopy(Uri src) {
+        java.io.File dst = null;
         try {
             final String name = getFileName(src);
             final java.io.File dir = new java.io.File(getFilesDir(), "import");
             if (!dir.isDirectory() && !dir.mkdirs()) return null;
-            final java.io.File dst = new java.io.File(dir,
+            // Own copies survive restarts, so they need a bound. Keep the newest
+            // forty (a long batch import); the strip keeps its
+            // URIs and a lost copy only means one re-pick, not lost work.
+            final java.io.File[] old = dir.listFiles();
+            if (old != null && old.length > 40) {
+                java.util.Arrays.sort(old, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+                for (int i = 0; i < old.length - 40; ++i) {
+                    if (!old[i].equals(dir)) old[i].delete();
+                }
+            }
+            dst = new java.io.File(dir,
                     System.currentTimeMillis() + "_" + (name == null ? "photo" : name));
             try (InputStream in = getContentResolver().openInputStream(src);
                  java.io.FileOutputStream out = new java.io.FileOutputStream(dst)) {
@@ -11556,6 +11487,9 @@ public class MainActivity extends Activity {
                     + " (" + dst.length() + " bytes)"); } catch (Throwable ignored) { }
             return Uri.fromFile(dst);
         } catch (Throwable t) {
+            // A half-copied file is worse than no file: the next launch would
+            // hand a truncated RAW to the decoder and blame the photograph.
+            if (dst != null) dst.delete();
             try { DebugSink.text("import", "copy failed: " + t); } catch (Throwable ignored) { }
             return null;
         }
@@ -14250,18 +14184,17 @@ public class MainActivity extends Activity {
                 uploadVkLog();
 
                 final int fw = w, fh = h;
+                // Diagnostic only: the hash and the two sample pixels are what the
+                // "wrong picture" reports are compared against. The preview used to
+                // also be JPEG-compressed and handed to DebugSink.bytes(), which is
+                // a no-op -- pure work on the render thread for a byte array nobody
+                // reads. Keep the numbers, drop the encode (see issue #1 in the audit).
                 try {
                     long hsh = 1469598103934665603L;
                     for (int i = 0; i < pixels.length; i += 7) { hsh ^= pixels[i]; hsh *= 1099511628211L; }
-                    long t0 = System.currentTimeMillis();
-                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-                    bmp.compress(Bitmap.CompressFormat.JPEG, 85, bo);
                     DebugSink.text("preview", "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
                             + " copy=" + copied + " first=" + Integer.toHexString(pixels[0])
-                            + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2])
-                            + " jpegBytes=" + bo.size());
-                    DebugSink.bytes("preview", "p.jpg", bo.toByteArray(), "image/jpeg");
-                    DebugSink.text("preview-timing", "jpeg_ms=" + (System.currentTimeMillis() - t0));
+                            + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2]));
                 } catch (Throwable ignored) {}
                 runOnUiThread(() -> {
                     if (renderedEpoch != renderEpoch
@@ -15245,6 +15178,9 @@ public class MainActivity extends Activity {
                             + " avail=" + (availableMemoryBytes() >> 20) + "MiB");
                 } catch (Throwable ignored) { }
                 final long t0 = System.currentTimeMillis();
+                // The stop pill used to be checked only between frames: a batch of
+                // twenty pictures could not be stopped once one export started.
+                if (batchExportAbort) throw new IllegalStateException(tr("export.stopped"));
                 final java.util.concurrent.atomic.AtomicBoolean spinning =
                         new java.util.concurrent.atomic.AtomicBoolean(true);
                 final java.util.concurrent.atomic.AtomicLong lastMem =
@@ -15764,6 +15700,7 @@ public class MainActivity extends Activity {
                                 DebugSink.text("export-ident", "call hash=" + System.identityHashCode(exportSession)
                                         + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
                             } catch (Throwable ignored) { }
+                            if (batchExportAbort) throw new IllegalStateException(tr("export.stopped"));
                             CrashTrail.markNow(this, "export:write " + tier + " " + format);
                             Thread wtick = startTick("export", exportSession);
                             try {
@@ -15923,14 +15860,10 @@ public class MainActivity extends Activity {
                             + (info.length > 6 ? " pipelinePe=" + (info[5] / 1000.0)
                                     + " pipelineGain=" + (info[6] / 1000.0) : "")
                             + " bytes=" + len);
-                    if (len > 0 && len < 30L * 1024 * 1024) {
-                        byte[] buf = new byte[(int) len];
-                        try (java.io.InputStream in = new java.io.FileInputStream(tmp)) {
-                            int off = 0, n;
-                            while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
-                        }
-                        DebugSink.bytes("export", "out-" + tier + ext, buf, mime);
-                    }
+                    // The exported bytes used to be copied into a byte[] of up to
+                    // 30 MB and passed to DebugSink.bytes(), which discards them.
+                    // The file size above is the whole diagnostic; do not read it
+                    // back into the heap at the end of a minutes-long export.
                 } catch (Throwable ignored) {}
                 final long secs = Math.max(1, (System.currentTimeMillis() - t0) / 1000);
                 final long fRender = renderMs;
@@ -16098,6 +16031,11 @@ public class MainActivity extends Activity {
         // Coming back is the only place this clears; `startPrefetch` refuses to
         // open a queue while it is set.
         appPaused = false;
+        if (pendingIncomingUri != null && uiReady) {
+            final Uri pending = pendingIncomingUri;
+            pendingIncomingUri = null;
+            importPicked(pending);
+        }
     }
 
     @Override

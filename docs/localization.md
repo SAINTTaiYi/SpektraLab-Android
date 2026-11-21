@@ -38,6 +38,6 @@ For example, `fr.json` could start with:
 - Update announcements can supply `notes_pt_BR`, `notes_pt`, etc. If no
   matching notes exist, the app uses English notes when available.
 
-The APK build validates and packages the catalogs from this checkout. Run
+Both build paths validate and package the catalogs from this checkout. Run
 `python app/build/check-locales.py` to check message IDs and format arguments
 without building an APK.

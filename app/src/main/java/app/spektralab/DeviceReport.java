@@ -51,9 +51,14 @@ final class DeviceReport {
 
     private DeviceReport() {}
 
+    /**
+     * Consent for automatic diagnostics: the weekly capability row and the
+     * one-row error report sent when an error dialog is shown. Off by default:
+     * a user who never opened 关于 must not have anything uploaded.
+     */
     static boolean enabled(Context c) {
         final SharedPreferences p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        return p.getBoolean(KEY_ENABLED, true);
+        return p.getBoolean(KEY_ENABLED, false);
     }
 
     static void setEnabled(Context c, boolean on) {

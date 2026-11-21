@@ -26,6 +26,15 @@ NAME=$2
 APK=$3
 shift 3
 
+# version.json is the single source of truth. A release must be announced with
+# the identity it was built with; a typo here used to ship a mismatched update.json.
+EXPECTED_CODE=$(python3 -c 'import json; print(json.load(open("version.json", encoding="utf-8"))["versionCode"])')
+EXPECTED_NAME=$(python3 -c 'import json; print(json.load(open("version.json", encoding="utf-8"))["versionName"])')
+if [ "$CODE" != "$EXPECTED_CODE" ] || [ "$NAME" != "$EXPECTED_NAME" ]; then
+  echo "version.json says $EXPECTED_NAME ($EXPECTED_CODE), refusing to announce $NAME ($CODE)" >&2
+  exit 2
+fi
+
 SITE="https://spektralab.workshop.skin"
 UPD="https://update.workshop.skin"
 REPO="SAINTTaiYi/SpektraLab-Android"
@@ -33,6 +42,12 @@ REPO="SAINTTaiYi/SpektraLab-Android"
 NOTES=$(printf '%s\n' "$@" | python3 -c 'import json,sys
 print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()], ensure_ascii=False))')
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "--- DRY RUN: no git push, no uploads, no release"
+  printf 'code=%s name=%s apk=%s\nnotes=%s\n' "$CODE" "$NAME" "$APK" "$NOTES"
+  exit 0
+fi
 
 cat > update.json <<JSON
 {
@@ -68,7 +83,7 @@ if [ "$APK" != "-" ]; then
     SHA=$(sha256sum "$APK" | cut -d' ' -f1)
     FILE="SpektraLab-$NAME-arm64-v8a.apk"
     echo "--- uploading $FILE ($SIZE bytes)"
-    curl -s -X PUT "$UPD/admin/apk?name=$FILE&sha256=$SHA" \
+    curl -fsS -X PUT "$UPD/admin/apk?name=$FILE&sha256=$SHA" \
       -H "authorization: Bearer $CF_TOKEN" \
       -H "content-type: application/vnd.android.package-archive" \
       --data-binary "@$APK"
@@ -77,7 +92,7 @@ if [ "$APK" != "-" ]; then
 fi
 
 echo "--- announcement"
-curl -s -X PUT "$UPD/admin/latest" \
+curl -fsS -X PUT "$UPD/admin/latest" \
   -H "authorization: Bearer $CF_TOKEN" \
   -H "content-type: application/json" \
   --data-binary @update.json

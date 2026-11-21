@@ -1,0 +1,58 @@
+name: verify
+
+on:
+  push:
+    branches: [master, feat/**, backup/**]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  offline:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Android platform 36
+        run: sdkmanager "platforms;android-36"
+      - name: Locale catalogs and version metadata
+        run: |
+          python app/build/check-locales.py
+          python app/build/check-version.py
+      - name: Compile Java
+        shell: pwsh
+        run: |
+          $jar = "$env:ANDROID_HOME\platforms\android-36\android.jar"
+          $out = Join-Path $env:RUNNER_TEMP 'classes'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $sources = Get-ChildItem app\src\main\java -Recurse -Filter *.java | ForEach-Object { $_.FullName }
+          & javac --release 17 -encoding UTF-8 -nowarn -classpath $jar -d $out @sources
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Native header compile check
+        shell: pwsh
+        run: |
+          $clang = Get-ChildItem "$env:ANDROID_HOME\ndk" -Recurse -Filter clang++.exe |
+                   Where-Object FullName -like '*windows-x86_64*' | Select-Object -First 1
+          if ($clang) {
+            & $clang.FullName --target=aarch64-linux-android24 -std=c++20 `
+              -Iapp/src/main/cpp -c app/build/native-tests/view_adjust_test.cpp `
+              -o (Join-Path $env:RUNNER_TEMP 'view_adjust_test.o')
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
+  published-patch:
+    runs-on: ubuntu-latest
+    # The patch is known to be incomplete; keep this visible without blocking UI work.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upstream engine at 445e314
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/JamesQiu2005/SpektraLab.git upstream
+          git -C upstream fetch --depth 1 origin 445e314e28b9b455d2457471fadaffd28c07270b
+          git -C upstream checkout --detach FETCH_HEAD
+      - name: Check that the published patch can build the JNI
+        run: python3 app/build/check-patch.py upstream

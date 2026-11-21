@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <array>
 #include <jpeglib.h>
 #include <string>
 #include <mutex>
@@ -74,15 +75,6 @@ JNI(void, nativeSetEnv)(JNIEnv* env, jclass, jstring name, jstring value) {
     if (n && v) setenv(n, v, 1);
     if (n) env->ReleaseStringUTFChars(name, n);
     if (v) env->ReleaseStringUTFChars(value, v);
-}
-
-// The device's per-binding storage range, in bytes (0 = no limit). The app
-// asks before importing so it can cap the frame itself and say what it did,
-// instead of failing at render time inside a kernel.
-JNI(jlong, nativeMaxPlaneBytes)(JNIEnv*, jclass, jlong engineHandle) {
-    spk_engine* engine = reinterpret_cast<spk_engine*>(engineHandle);
-    if (!engine) return 0;
-    return jlong(spk_max_plane_bytes(engine));
 }
 
 // The device as JSON (binding range, heaps, workgroup limits). The app's probe
@@ -420,66 +412,6 @@ JNI(jstring, nativeGetParams)(JNIEnv* env, jclass, jlong sessionHandle) {
     return result;
 }
 
-// Render into a pre-allocated direct ByteBuffer (uint16 RGBA).
-// Returns elapsed_ms. Dimensions and row_stride are available via nativeGetLastRenderInfo.
-static thread_local uint32_t g_last_row_stride = 0;
-static thread_local uint32_t g_last_width = 0;
-static thread_local uint32_t g_last_height = 0;
-
-JNI(jintArray, nativeGetLastRenderInfo)(JNIEnv* env, jclass) {
-    jintArray result = env->NewIntArray(3);
-    if (!result) return nullptr;
-    jint values[3] = {(jint)g_last_width, (jint)g_last_height, (jint)g_last_row_stride};
-    env->SetIntArrayRegion(result, 0, 3, values);
-    return result;
-}
-JNI(jdouble, nativeRenderToBuffer)(JNIEnv* env, jclass, jlong sessionHandle,
-    jstring tier, jobject outBuffer, jint outWidth, jint outHeight) {
-    spk_session* session = reinterpret_cast<spk_session*>(sessionHandle);
-    if (!session) { throw_runtime(env, "session is null"); return -1; }
-    const char* tierStr = env->GetStringUTFChars(tier, nullptr);
-    if (!tierStr) { throw_runtime(env, "tier is null"); return -1; }
-    void* outData = env->GetDirectBufferAddress(outBuffer);
-    if (!outData) {
-        env->ReleaseStringUTFChars(tier, tierStr);
-        throw_runtime(env, "outBuffer must be direct"); return -1;
-    }
-    jlong capacity = env->GetDirectBufferCapacity(outBuffer);
-    // Engine returns row_stride_px which may be > width; we copy row by row.
-    // Our output buffer uses tightly packed width*4 channels.
-    jlong needed = jlong(outWidth) * outHeight * 4 * sizeof(uint16_t);
-    if (capacity < needed) {
-        char msg[128]; snprintf(msg, sizeof(msg), "output buffer too small: %lld < %lld",
-            (long long)capacity, (long long)needed);
-        env->ReleaseStringUTFChars(tier, tierStr);
-        throw_runtime(env, msg); return -1;
-    }
-
-    spk_result result{};
-    spk_status st = spk_render(session, tierStr, &result);
-    env->ReleaseStringUTFChars(tier, tierStr);
-    if (st != SPK_OK) { throw_status(env, st); return -1; }
-
-    // Store actual output dimensions from the engine
-    g_last_width = result.width;
-    g_last_height = result.height;
-    g_last_row_stride = result.row_stride_px;
-
-    const uint16_t* src = result.rgba16;
-    uint16_t* dst = static_cast<uint16_t*>(outData);
-    // Copy actual engine dimensions, not requested dimensions
-    uint32_t w = result.width;
-    uint32_t h = result.height;
-    for (uint32_t y = 0; y < h; ++y) {
-        std::memcpy(dst + size_t(y) * w * 4,
-                    src + size_t(y) * result.row_stride_px * 4,
-                    size_t(w) * 4 * sizeof(uint16_t));
-    }
-    double elapsed = result.elapsed_ms;
-    spk_result_free(&result);
-    return elapsed;
-}
-
 
 JNI(jstring, nativeMemoryReport)(JNIEnv* env, jclass, jlong engineHandle) {
     spk_engine* engine = reinterpret_cast<spk_engine*>(engineHandle);
@@ -529,6 +461,10 @@ JNI(jstring, nativeGetBuildInfo)(JNIEnv* env, jclass) {
 // ---------------------------------------------------------------------------
 static spk_result g_result{};
 static bool g_result_valid = false;
+// Java serialises renderBegin/copyArgbRange/renderEnd with RENDER_LOCK, but the
+// edge probe and the display-EV sampler also read this slot, from other threads.
+// Guard the slot itself so a reader can never see a half-updated header.
+static std::mutex g_result_mutex;
 
 // **The source frame is linear; a screen is not.**
 //
@@ -543,76 +479,100 @@ static bool g_result_is_source = false;
 // The view layer's tone controls. They run on the finished print -- screen and
 // every exported file -- and do nothing at all until one of them leaves zero.
 static spk_adjust::ViewAdjust g_adjust;
+// Written by the UI thread, read by the live/render/export threads. Snapshot it
+// under this lock: a partially updated grade used to produce one wrong frame
+// during a drag, and a torn read is undefined behaviour.
+static std::mutex g_adjust_mutex;
 
 JNI(void, nativeSetViewAdjust)(JNIEnv* env, jclass, jdoubleArray values) {
-    g_adjust = spk_adjust::ViewAdjust{};
-    if (!values) return;
-    const jsize n = env->GetArrayLength(values);
-    double v[25] = {0};
-    env->GetDoubleArrayRegion(values, 0, std::min<jsize>(n, 25), v);
-    g_adjust.vibrance = n >= 25 ? v[24] : 0.0;
-    g_adjust.temperature = v[0];
-    g_adjust.tint = v[1];
-    g_adjust.exposure = v[2];
-    g_adjust.contrast = v[3];
-    g_adjust.brightness = v[4];
-    g_adjust.saturation = v[5];
-    g_adjust.highlights = v[6];
-    g_adjust.shadows = v[7];
-    g_adjust.black_point = v[8];
-    g_adjust.white_point = v[9];
-    g_adjust.vignette = v[10];
-    g_adjust.vignette_mid = v[11] > 0.0 ? v[11] : 50.0;
-    // Four zones: master, shadows, midtones, highlights. Each is hue in
-    // degrees, saturation 0..1 and luminance -1..1 -- the same units the
-    // upstream grade layer takes.
-    if (n >= 24) {
-        constexpr double kPi = 3.14159265358979323846;
-        for (int z = 0; z < 4; ++z) {
-            const double hue = v[12 + z * 3] * kPi / 180.0;
-            const double sat = v[13 + z * 3] * 0.25;
-            for (int c = 0; c < 3; ++c)
-                g_adjust.cb[z][c] = std::cos(hue - 2.0 * kPi * c / 3.0) * sat;
-            g_adjust.cb_lum[z] = v[14 + z * 3] * 0.25;
-            if (std::fabs(g_adjust.cb[z][0]) + std::fabs(g_adjust.cb[z][1]) +
-                std::fabs(g_adjust.cb[z][2]) + std::fabs(g_adjust.cb_lum[z]) > 1e-9)
-                g_adjust.balance = true;
+    spk_adjust::ViewAdjust next;
+    if (values) {
+        const jsize n = env->GetArrayLength(values);
+        double v[25] = {0};
+        env->GetDoubleArrayRegion(values, 0, std::min<jsize>(n, 25), v);
+        next.vibrance = n >= 25 ? v[24] : 0.0;
+        next.temperature = v[0];
+        next.tint = v[1];
+        next.exposure = v[2];
+        next.contrast = v[3];
+        next.brightness = v[4];
+        next.saturation = v[5];
+        next.highlights = v[6];
+        next.shadows = v[7];
+        next.black_point = v[8];
+        next.white_point = v[9];
+        next.vignette = v[10];
+        next.vignette_mid = v[11] > 0.0 ? v[11] : 50.0;
+        // Four zones: master, shadows, midtones, highlights. Each is hue in
+        // degrees, saturation 0..1 and luminance -1..1 -- the same units the
+        // upstream grade layer takes.
+        if (n >= 24) {
+            constexpr double kPi = 3.14159265358979323846;
+            for (int z = 0; z < 4; ++z) {
+                const double hue = v[12 + z * 3] * kPi / 180.0;
+                const double sat = v[13 + z * 3] * 0.25;
+                for (int c = 0; c < 3; ++c)
+                    next.cb[z][c] = std::cos(hue - 2.0 * kPi * c / 3.0) * sat;
+                next.cb_lum[z] = v[14 + z * 3] * 0.25;
+                if (std::fabs(next.cb[z][0]) + std::fabs(next.cb[z][1]) +
+                    std::fabs(next.cb[z][2]) + std::fabs(next.cb_lum[z]) > 1e-9)
+                    next.balance = true;
+            }
         }
     }
-    g_adjust.normalise();
+    next.normalise();
+    std::lock_guard<std::mutex> lock(g_adjust_mutex);
+    g_adjust = next;
 }
 
 // Five channels x eight control points, x < 0 meaning "unused". The tables are
 // built here with the engine's own monotone cubic, so a curve drawn in the app
 // is the curve the kernel would have drawn.
 JNI(void, nativeSetViewCurves)(JNIEnv* env, jclass, jdoubleArray packed) {
-    g_adjust.curves = false;
-    if (!packed || env->GetArrayLength(packed) < 80) { g_adjust.normalise(); return; }
-    double v[80] = {0};
-    env->GetDoubleArrayRegion(packed, 0, 80, v);
-    for (int ch = 0; ch < 5; ++ch) {
-        double xs[8], ys[8];
-        int n = 0;
-        for (int k = 0; k < 8; ++k) {
-            const double x = v[(ch * 8 + k) * 2], y = v[(ch * 8 + k) * 2 + 1];
-            if (x < 0.0) continue;
-            xs[n] = x;
-            ys[n] = y;
-            ++n;
+    spk_adjust::ViewAdjust next;
+    if (packed && env->GetArrayLength(packed) >= 80) {
+        double v[80] = {0};
+        env->GetDoubleArrayRegion(packed, 0, 80, v);
+        for (int ch = 0; ch < 5; ++ch) {
+            double xs[8], ys[8];
+            int n = 0;
+            for (int k = 0; k < 8; ++k) {
+                const double x = v[(ch * 8 + k) * 2], y = v[(ch * 8 + k) * 2 + 1];
+                if (x < 0.0) continue;
+                xs[n] = x;
+                ys[n] = y;
+                ++n;
+            }
+            if (n < 2) { for (int i = 0; i < 256; ++i) next.curve[ch][i] = float(i / 255.0); continue; }
+            spk_adjust::detail::build_curve(next.curve[ch], xs, ys, n);
+            for (int i = 0; i < 256; ++i)
+                if (std::fabs(double(next.curve[ch][i]) - i / 255.0) > 1e-3) { next.curves = true; }
         }
-        if (n < 2) { for (int i = 0; i < 256; ++i) g_adjust.curve[ch][i] = float(i / 255.0); continue; }
-        spk_adjust::detail::build_curve(g_adjust.curve[ch], xs, ys, n);
-        for (int i = 0; i < 256; ++i)
-            if (std::fabs(double(g_adjust.curve[ch][i]) - i / 255.0) > 1e-3) { g_adjust.curves = true; }
     }
-    g_adjust.normalise();
+    next.normalise();
+    std::lock_guard<std::mutex> lock(g_adjust_mutex);
+    // Curves are a separate setter from the tone controls; preserve the latter.
+    next.temperature = g_adjust.temperature; next.tint = g_adjust.tint;
+    next.exposure = g_adjust.exposure; next.contrast = g_adjust.contrast;
+    next.brightness = g_adjust.brightness; next.saturation = g_adjust.saturation;
+    next.highlights = g_adjust.highlights; next.shadows = g_adjust.shadows;
+    next.black_point = g_adjust.black_point; next.white_point = g_adjust.white_point;
+    next.vignette = g_adjust.vignette; next.vignette_mid = g_adjust.vignette_mid;
+    next.vibrance = g_adjust.vibrance;
+    std::memcpy(next.cb, g_adjust.cb, sizeof next.cb);
+    std::memcpy(next.cb_lum, g_adjust.cb_lum, sizeof next.cb_lum);
+    next.balance = g_adjust.balance;
+    next.normalise();
+    g_adjust = next;
 }
 
 // One place for "grade this result before it leaves the library".
 static void grade_result(spk_result& r) {
-    if (g_adjust.neutral() || !r.rgba16 || !r.width || !r.height) return;
+    spk_adjust::ViewAdjust adjust;
+    { std::lock_guard<std::mutex> lock(g_adjust_mutex); adjust = g_adjust; }
+    if (adjust.neutral() || !r.rgba16 || !r.width || !r.height) return;
     spk_adjust::apply(const_cast<uint16_t*>(r.rgba16), r.width, r.height,
-                      r.row_stride_px ? r.row_stride_px : r.width, g_adjust);
+                      r.row_stride_px ? r.row_stride_px : r.width, adjust);
 }
 
 // **The same exposure the render will use.** The meter applies an EV to the
@@ -624,6 +584,9 @@ static double g_source_display_gain = 1.0;
 // Encoded-domain lift for the canvas: 0.85 when the canvas auto-levels, 1.0
 // (identity) when it shows the decode as measured. See `lift8`.
 static double g_source_display_lift = 1.0;
+// Both are set from the UI thread and read by the live/render threads. Guard
+// them together so a frame always sees one consistent display rule.
+static std::mutex g_source_view_mutex;
 
 // **The vendor's display profile, when the source ships one.**
 //
@@ -654,11 +617,15 @@ JNI(void, nativeSetSourceDisplayEv)(JNIEnv*, jclass, jdouble ev, jboolean auto_l
     // therefore the measurement; the switch in 光学 -> 亮度 turns the old
     // behaviour back on for anyone who prefers it.
     if (!auto_level) {
+        std::lock_guard<std::mutex> lock(g_source_view_mutex);
         g_source_display_gain = 1.0;
         g_source_display_lift = 1.0;
         return;
     }
-    g_source_display_lift = 0.85;
+    {
+        std::lock_guard<std::mutex> lock(g_source_view_mutex);
+        g_source_display_lift = 0.85;
+    }
     const double clamped = ev < -4.0 ? -4.0 : (ev > 6.0 ? 6.0 : ev);
     double gain = std::pow(2.0, clamped);
     // **Cap the display gain so the frame's own highlights survive it.**
@@ -676,6 +643,7 @@ JNI(void, nativeSetSourceDisplayEv)(JNIEnv*, jclass, jdouble ev, jboolean auto_l
     // already 1.0 keeps gain 1.0.
     if (g_result_valid && g_result_is_source && g_result.rgba16 &&
         g_result.width && g_result.height) {
+        std::lock_guard<std::mutex> result_lock(g_result_mutex);
         const uint32_t w = g_result.width, h = g_result.height;
         const uint32_t stride = g_result.row_stride_px ? g_result.row_stride_px : w;
         const uint32_t ystep = std::max<uint32_t>(1, h / 200u);
@@ -712,22 +680,26 @@ JNI(void, nativeSetSourceDisplayEv)(JNIEnv*, jclass, jdouble ev, jboolean auto_l
             }
         }
     }
-    g_source_display_gain = gain;
+    {
+        std::lock_guard<std::mutex> lock(g_source_view_mutex);
+        g_source_display_gain = gain;
+    }
 }
 
 static const uint8_t* srgb_display_lut() {
-    static uint8_t table[65536];
-    static bool ready = false;
-    if (!ready) {
+    // Function-local static initialisation is thread-safe since C++11; the old
+    // `static bool ready` let two threads build the table at the same time.
+    static const std::vector<uint8_t> table = [] {
+        std::vector<uint8_t> t(65536);
         for (int i = 0; i < 65536; ++i) {
             const double x = double(i) / 65535.0;
             const double s = x <= 0.0031308 ? 12.92 * x : 1.055 * std::pow(x, 1.0 / 2.4) - 0.055;
             const int q = int(s * 255.0 + 0.5);
-            table[i] = uint8_t(q < 0 ? 0 : (q > 255 ? 255 : q));
+            t[size_t(i)] = uint8_t(q < 0 ? 0 : (q > 255 ? 255 : q));
         }
-        ready = true;
-    }
-    return table;
+        return t;
+    }();
+    return table.data();
 }
 
 // `reprint` runs the print side over the session's cached negative instead of
@@ -742,6 +714,7 @@ JNI(jintArray, nativeRenderBegin)(JNIEnv* env, jclass, jlong sessionHandle, jstr
     if (!session) { throw_runtime(env, "session is null"); return nullptr; }
     const char* t = env->GetStringUTFChars(tier, nullptr);
     if (!t) { throw_runtime(env, "tier is null"); return nullptr; }
+    std::lock_guard<std::mutex> result_lock(g_result_mutex);
 
     if (g_result_valid) { spk_result_free(&g_result); g_result_valid = false; }
     std::memset(&g_result, 0, sizeof g_result);
@@ -784,6 +757,7 @@ JNI(jintArray, nativeExportSource)(JNIEnv* env, jclass, jlong sessionHandle, jst
     if (!session) { throw_runtime(env, "session is null"); return nullptr; }
     const char* t = tier ? env->GetStringUTFChars(tier, nullptr) : nullptr;
     if (!t) { throw_runtime(env, "tier is null"); return nullptr; }
+    std::lock_guard<std::mutex> result_lock(g_result_mutex);
 
     if (g_result_valid) { spk_result_free(&g_result); g_result_valid = false; }
     std::memset(&g_result, 0, sizeof g_result);
@@ -815,15 +789,14 @@ JNI(jintArray, nativeExportSource)(JNIEnv* env, jclass, jlong sessionHandle, jst
 
 // Encoded-domain lift: 0 stays 0, 255 stays 255, the shadows come up.
 // Identity unless the canvas is auto-levelling -- see `g_source_display_lift`.
-static inline uint8_t lift8(uint8_t v) {
-    if (g_source_display_lift >= 0.9999) return v;
-    static uint8_t table[256];
-    static bool ready = false;
-    if (!ready) {
+static inline uint8_t lift8(uint8_t v, double lift) {
+    if (lift >= 0.9999) return v;
+    static const std::array<uint8_t, 256> table = [] {
+        std::array<uint8_t, 256> t{};
         for (int i = 0; i < 256; ++i)
-            table[i] = uint8_t(std::lround(255.0 * std::pow(i / 255.0, 0.85)));
-        ready = true;
-    }
+            t[size_t(i)] = uint8_t(std::lround(255.0 * std::pow(i / 255.0, 0.85)));
+        return t;
+    }();
     return table[v];
 }
 
@@ -846,6 +819,9 @@ static double curve_lookup(const std::vector<float>& c, double x) {
 }
 
 JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffset, jint rowCount) {
+    // Hold the result slot for the whole conversion: another entry point may
+    // free and replace it while we walk the rows.
+    std::lock_guard<std::mutex> result_lock(g_result_mutex);
     if (!g_result_valid) { throw_runtime(env, "no rendered result"); return -1; }
     const uint32_t w = g_result.width;
     const uint32_t h = g_result.height;
@@ -855,6 +831,15 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
 
     const jsize cap = env->GetArrayLength(dst);
     if (jsize(rows) * jsize(w) > cap) { throw_runtime(env, "argb array too small"); return -1; }
+
+    // Snapshot every UI-owned setting once per call. Reading them per pixel
+    // would need the lock inside the loop, and a torn read would grade half a
+    // frame with the old slider value.
+    spk_adjust::ViewAdjust adjust;
+    { std::lock_guard<std::mutex> lk(g_adjust_mutex); adjust = g_adjust; }
+    double source_gain = 1.0, source_lift = 1.0;
+    { std::lock_guard<std::mutex> lk(g_source_view_mutex);
+      source_gain = g_source_display_gain; source_lift = g_source_display_lift; }
 
     // The profile is copied once per call: it can be replaced from the UI
     // thread between frames, and reading it per pixel would need the lock.
@@ -871,11 +856,11 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
     for (uint32_t y = 0; y < rows; ++y) {
         const uint16_t* src = px + size_t(rowOffset + y) * g_result.row_stride_px * 4;
         jint* line = tmp.data() + size_t(y) * w;
-        if (!g_result_is_source && !g_adjust.neutral()) {
+        if (!g_result_is_source && !adjust.neutral()) {
             for (uint32_t x = 0; x < w; ++x) {
                 double c[3] = {src[x * 4 + 0] / 65535.0, src[x * 4 + 1] / 65535.0,
                                src[x * 4 + 2] / 65535.0};
-                spk_adjust::apply_pixel(c, int(x), int(rowOffset + y), int(w), int(h), g_adjust);
+                spk_adjust::apply_pixel(c, int(x), int(rowOffset + y), int(w), int(h), adjust);
                 const int r = int(std::clamp(c[0], 0.0, 1.0) * 255.0 + 0.5);
                 const int g = int(std::clamp(c[1], 0.0, 1.0) * 255.0 + 0.5);
                 const int b = int(std::clamp(c[2], 0.0, 1.0) * 255.0 + 0.5);
@@ -915,7 +900,7 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
             // `curve_base` carries `BaselineExposure` even when there is no
             // tone curve -- most cameras and most older phones ship only the
             // exposure, and the DNG spec applies it either way.
-            const double gain = g_source_display_gain * curve_base;
+            const double gain = source_gain * curve_base;
             // **The reference has two decodes, not one.** Its engine reads a
             // `.linear` decode with every tone rendering switched off
             // (`boostAmount = 0`, `localToneMapAmount = 0`, gamut mapping off);
@@ -984,9 +969,9 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
                 // where it is -- a display decision, exactly like the S-curve
                 // above, and the engine never sees it.
                 line[x] = jint(0xFF000000u)
-                        | (jint(lift8(lut[ir])) << 16)
-                        | (jint(lift8(lut[ig])) << 8)
-                        | jint(lift8(lut[ib]));
+                        | (jint(lift8(lut[ir], source_lift)) << 16)
+                        | (jint(lift8(lut[ig], source_lift)) << 8)
+                        | jint(lift8(lut[ib], source_lift));
             }
         } else {
             for (uint32_t x = 0; x < w; ++x) {
@@ -1020,6 +1005,7 @@ JNI(void, nativeSetSourceToneCurve)(JNIEnv* env, jclass, jfloatArray curve) {
 }
 
 JNI(void, nativeRenderEnd)(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(g_result_mutex);
     if (g_result_valid) { spk_result_free(&g_result); g_result_valid = false; }
 }
 
@@ -1297,6 +1283,7 @@ static void log_edge_profile(const spk_result& r, const std::string& progPath) {
 // rounds of "send me the export" is three rounds of asking the user to do our
 // work. Read-only, ~2 ms on a 2048 tier.
 JNI(jstring, nativeEdgeReport)(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lock(g_result_mutex);
     if (!g_result_valid) return nullptr;
     const std::string line = edge_profile_line(g_result);
     if (line.empty()) return nullptr;
@@ -1437,6 +1424,7 @@ static bool write_jpeg_file(const char* path, const spk_result& r, int quality,
 // profile that has to survive it. Metadata belongs with the encoder that knows
 // what it wrote.
 static spk_export::SourceExif g_export_exif;
+static std::mutex g_export_exif_mutex;
 
 static std::string jni_string(JNIEnv* env, jstring value) {
     if (!value) return std::string();
@@ -1461,16 +1449,17 @@ static double jni_seconds(const std::string& text) {
 
 JNI(void, nativeSetExportExif)(JNIEnv* env, jclass, jstring make, jstring model, jstring datetime,
                                jstring shutter, jstring aperture, jstring iso, jstring focal) {
-    g_export_exif = spk_export::SourceExif{};
-    g_export_exif.make = jni_string(env, make);
-    g_export_exif.model = jni_string(env, model);
-    g_export_exif.datetime = jni_string(env, datetime);
-    g_export_exif.shutter = jni_seconds(jni_string(env, shutter));
-    g_export_exif.aperture = jni_seconds(jni_string(env, aperture));
-    g_export_exif.iso = jni_seconds(jni_string(env, iso));
-    g_export_exif.focal_mm = jni_seconds(jni_string(env, focal));
-    g_export_exif.present = !(g_export_exif.make.empty() && g_export_exif.model.empty() &&
-                              g_export_exif.datetime.empty());
+    spk_export::SourceExif next;
+    next.make = jni_string(env, make);
+    next.model = jni_string(env, model);
+    next.datetime = jni_string(env, datetime);
+    next.shutter = jni_seconds(jni_string(env, shutter));
+    next.aperture = jni_seconds(jni_string(env, aperture));
+    next.iso = jni_seconds(jni_string(env, iso));
+    next.focal_mm = jni_seconds(jni_string(env, focal));
+    next.present = !(next.make.empty() && next.model.empty() && next.datetime.empty());
+    std::lock_guard<std::mutex> lock(g_export_exif_mutex);
+    g_export_exif = next;
 }
 
 // **What the source JPEG's own APP1 says, as seven fields.**
@@ -1564,7 +1553,9 @@ JNI(jintArray, nativeExportJpeg)(JNIEnv* env, jclass, jlong sessionHandle,
             mean16 = sum / (double(npx) * 3.0);
         }
     }
-    const bool ok = write_jpeg_file(outPath.c_str(), result, int(quality), g_export_exif);
+    spk_export::SourceExif export_exif;
+    { std::lock_guard<std::mutex> lock(g_export_exif_mutex); export_exif = g_export_exif; }
+    const bool ok = write_jpeg_file(outPath.c_str(), result, int(quality), export_exif);
     const double total_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     spk_result_free(&result);

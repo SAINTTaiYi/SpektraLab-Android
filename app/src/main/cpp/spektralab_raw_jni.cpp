@@ -393,34 +393,3 @@ JNI(void, nativeForgetRawSession)(JNIEnv*, jclass, jlong sessionHandle) {
     std::lock_guard<std::mutex> lock(g_raw_info_mutex);
     g_raw_info.erase(sessionHandle);
 }
-
-// Get RAW metadata as JSON string (for debugging/info)
-JNI(jstring, nativeGetRawMetadata)(JNIEnv* env, jclass, jstring filePath) {
-    const char* path = env->GetStringUTFChars(filePath, nullptr);
-    if (!path) { throw_runtime(env, "filePath is null"); return nullptr; }
-    
-    spk::io::DecodedRaw raw;
-    std::string error;
-    spk::io::RawDecodeThreadScope scope;
-    
-    bool ok = spk::io::decode_raw_compatible(path, raw, error);
-    env->ReleaseStringUTFChars(filePath, path);
-    
-    if (!ok) {
-        std::string msg = "RAW decode failed: " + error;
-        throw_runtime(env, msg.c_str());
-        return nullptr;
-    }
-    
-    // Build simple JSON with key metadata
-    std::string json = "{";
-    json += "\"width\":" + std::to_string(raw.width) + ",";
-    json += "\"height\":" + std::to_string(raw.height) + ",";
-    json += "\"make\":\"" + raw.metadata.make + "\",";
-    json += "\"model\":\"" + raw.metadata.model + "\",";
-    json += "\"decoder\":\"" + raw.metadata.decoder_name + "\",";
-    json += "\"libraw_version\":\"" + raw.metadata.libraw_version + "\"";
-    json += "}";
-    
-    return env->NewStringUTF(json.c_str());
-}

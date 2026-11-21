@@ -3,9 +3,8 @@
 # apksigner) for the same reason build-engine.sh is separate from
 # build-native.sh: a step that can fail needs to fail on its own line.
 #
-# The Kotlin files beside these are an earlier Compose prototype and are NOT
-# built (there is no kotlinc in this toolchain, and MainActivity.java is the
-# activity the manifest names).
+# Only the Java sources under app/src/main/java are built; the manifest names
+# MainActivity.java and this toolchain has no Kotlin compiler.
 set -e
 cd "$HOME/SpektraLab-apk"
 SDK="${ANDROID_SDK:-$HOME/Android/Sdk}"

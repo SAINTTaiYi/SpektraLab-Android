@@ -85,6 +85,12 @@ Windows x64 可使用 [Windows 调试构建指南](docs/windows-build.md)：从�
 
 前置：Termux（aarch64）、Android SDK 36 / NDK 28、上游引擎源码、约 15 GB 空闲。
 
+> **完整原生构建目前不能从公开仓库复现。** 公开补丁引用了它没有加入的
+> `engine/src/pipeline/tiling.hpp`，也没有声明 JNI 调用的 14 个 `spk_*` 新接口
+> （`spk_trim_pool`、`spk_suspend_session`、`spk_set_output_linear` 等）。
+> 运行 `python app/build/check-patch.py <上游引擎目录>` 可复验；详见
+> [构建输入检查](docs/source-build.md)。Java/UI 可用上面的 Windows 路径正常开发。
+
 ```bash
 # 1) 上游引擎 + 本项目的 Android 补丁
 git clone https://github.com/JamesQiu2005/SpektraLab
@@ -171,5 +177,10 @@ Known limits: arbitrary-angle rotation needs a whole-source binding and is refus
 devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
 Lightroom — use TIFF + share from the phone.
 
+**Building on Windows x64:** see [setup, build, and project layout](docs/windows-build.md).
+Run `./scripts/verify.ps1` for offline locale/version/Java/header checks, and add
+`-EngineRoot <upstream checkout>` to also verify the published engine patch.
+
 **App language:** Open the settings menu in the upper left and select **Language**
 to switch between English and Simplified Chinese. See [how to add a language](docs/localization.md).
+

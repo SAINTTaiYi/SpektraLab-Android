@@ -87,8 +87,11 @@ public final class DebugSink {
             retry = pendingFile;
         }
         text("ds-init", "ring=" + RING_BYTES + "B pending=" + (retry == null ? -1 : retry.length()));
-        // One retry per launch, and only when a report already failed to send.
-        if (retry != null && retry.exists()) {
+        // One retry per launch, and only with consent. A pending bundle left by
+        // an older build must not go out just because the user opened the app.
+        final boolean consent = context.getSharedPreferences("spektralab", android.content.Context.MODE_PRIVATE)
+                .getBoolean("driver_report_enabled", false);
+        if (consent && retry != null && retry.exists()) {
             new Thread(() -> retryPending(retry), "SpektraLab-sink-retry").start();
         }
     }
@@ -167,12 +170,6 @@ public final class DebugSink {
             b.append("--- details ---\n").append(extra);
         }
         return send(tag, b.toString());
-    }
-
-    /** Binary best-effort: never sent, never queued. */
-    public static void bytes(String tag, String name, byte[] data, String type) {
-        // Binary is not the diagnostic; base64 would triple the row for a
-        // picture nobody needs.
     }
 
     // -- one-slot retry ------------------------------------------------------
