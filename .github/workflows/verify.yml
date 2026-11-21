@@ -25,6 +25,7 @@ jobs:
           python app/build/check-prebuilt.py
           python app/build/test_build_tools.py
           python app/build/test_checkers.py
+          python app/build/check-no-silent-catch.py
       - name: Compile Java
         shell: pwsh
         run: |

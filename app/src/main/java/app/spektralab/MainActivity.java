@@ -254,7 +254,7 @@ public class MainActivity extends Activity {
     private final android.os.Handler persistHandler =
             new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable persistSession = () -> {
-        try { saveLookIntoFrames(); } catch (Throwable ignored) { }
+        try { saveLookIntoFrames(); } catch (Throwable spkIgnored) { Diagnostics.ignored("parse:257", spkIgnored); }
         saveSessionState();
     };
 
@@ -411,7 +411,7 @@ public class MainActivity extends Activity {
         // SpektraLabEngine.ensureLoaded) so that the import reports the real
         // reason instead of a NoClassDefFoundError on the class itself.
         String nativeDir = null;
-        try { nativeDir = getApplicationInfo().nativeLibraryDir; } catch (Throwable ignored) {}
+        try { nativeDir = getApplicationInfo().nativeLibraryDir; } catch (Throwable spkIgnored) { Diagnostics.ignored("onCreate:414", spkIgnored); }
         try { SpektraLabEngine.prepare(nativeDir); } catch (Throwable e) { lastImportError = describe(e); }
         // **Now, and only now.** `prepare` is what loads the library the
         // handler lives in; the first dispatch can crash, so this is as early
@@ -421,7 +421,7 @@ public class MainActivity extends Activity {
         // launch, and it alone was enough to fill the free D1 quota over a few
         // hundred users. It now goes into the in-memory ring, which is what a
         // report carries when something actually goes wrong.
-        try { DebugSink.text("app-start", "buildInfo=" + SpektraLabEngine.buildInfo()); } catch (Throwable ignored) {}
+        try { DebugSink.text("app-start", "buildInfo=" + SpektraLabEngine.buildInfo()); } catch (Throwable spkIgnored) { Diagnostics.ignored("onCreate:424", spkIgnored); }
         
         buildUi();
         uiReady = true;
@@ -841,7 +841,7 @@ public class MainActivity extends Activity {
                         .putString(KEY_SESSION, json).apply();
             }
         } catch (Throwable t) {
-            try { DebugSink.text("session", "save failed: " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("session", "save failed: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("toString:844", spkIgnored); }
         }
     }
 
@@ -856,7 +856,7 @@ public class MainActivity extends Activity {
         String raw = null;
         try {
             raw = getSharedPreferences(PREFS_SESSION, MODE_PRIVATE).getString(KEY_SESSION, null);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("restoreSessionState:859", spkIgnored); }
         if (raw == null || raw.isEmpty()) return false;
         try {
             final SessionState.Snapshot snapshot = SessionState.fromJson(raw, this);
@@ -878,7 +878,7 @@ public class MainActivity extends Activity {
             if (dropped > 0) {
                 try {
                     DebugSink.text("session", "dropped " + dropped + " unreadable frames");
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("fromJson:881", spkIgnored); }
                 showInAppToast(dropped + tr("frame.photos_were_removed_from_the"));
             }
             if (frames.isEmpty()) return false;
@@ -894,7 +894,7 @@ public class MainActivity extends Activity {
             setShelfCollapsed(shelfCollapsed);
             try {
                 DebugSink.text("session", "restored " + frames.size() + " frames, current=" + currentFrame);
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("fromJson:897", spkIgnored); }
             // The photograph is decoded off the shelf by the same road a chip
             // takes. If the file is gone (moved, or a picker grant expired) the
             // import reports it and the strip keeps the rest.
@@ -919,7 +919,7 @@ public class MainActivity extends Activity {
             if (filmStock != null && !restoredOriginal) renderImage();
             return true;
         } catch (Throwable t) {
-            try { DebugSink.text("session", "restore failed: " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("session", "restore failed: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("get:922", spkIgnored); }
             return false;
         }
     }
@@ -1140,7 +1140,7 @@ public class MainActivity extends Activity {
 
     private void dismissDialogs() {
         for (android.app.Dialog d : liveDialogs) {
-            try { if (d.isShowing()) d.dismiss(); } catch (Throwable ignored) { }
+            try { if (d.isShowing()) d.dismiss(); } catch (Throwable spkIgnored) { Diagnostics.ignored("dismissDialogs:1143", spkIgnored); }
         }
         liveDialogs.clear();
     }
@@ -1361,7 +1361,7 @@ public class MainActivity extends Activity {
             @Override public void onRotateCommit(float total) { commitRotate(total); }
             @Override public void onRotateReset() {
                 try { DebugSink.text("rotate", "reset by double tap (was " + geometryRotation + ")"); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("onRotateReset:1364", spkIgnored); }
                 rotationBeforeDrag = geometryRotation;
                 geometryRotation = 0f;
                 rotationPending = true;
@@ -1691,7 +1691,7 @@ public class MainActivity extends Activity {
                                     }
                                     body.append(buf.toString("UTF-8")).append('\n');
                                 }
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getReason:1694", spkIgnored); }
                         }
                     }
                 }
@@ -1721,7 +1721,7 @@ public class MainActivity extends Activity {
                 }
                 lastCrashFile = out.getAbsolutePath();
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("File:1724", spkIgnored); }
         // **One row, and it is the whole report.** This used to be a
         // previous-exit row plus a probe row on every launch that had died; the
         // quota is counted in writes, and one is enough.
@@ -1787,7 +1787,7 @@ public class MainActivity extends Activity {
             b.setPositiveButton(tr("crash.send_log"), (d, w) -> shareCrashReport());
             b.setNegativeButton(tr("crash.close"), null);
             b.show();
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("Builder:1790", spkIgnored); }
     }
 
     private void shareCrashReport() {
@@ -1949,7 +1949,7 @@ public class MainActivity extends Activity {
         try {
             java.io.File f = new java.io.File(getFilesDir(), "native-crash.txt");
             code = SpektraLabEngine.installCrashHandler(f.getAbsolutePath());
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("installNativeCrashHandler:1952", spkIgnored); }
         // 0 armed, 1 already armed, 2 no path, 3 open failed, 4 sigaction
         // failed, 5 the library was not loaded. In the trail of every report,
         // so the next "reason=5 with no native-crash row" answers itself.
@@ -1986,7 +1986,7 @@ public class MainActivity extends Activity {
                 // `send` stashes the row when the network is down, so the file
                 // is not needed as a second copy once it has been attempted.
                 if (DebugSink.send(tag, body)) f.delete();
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("versionLine:1989", spkIgnored); }
         }, "SpektraLab-crash-upload").start();
     }
 
@@ -2009,7 +2009,7 @@ public class MainActivity extends Activity {
                 try (java.io.FileOutputStream out = new java.io.FileOutputStream(f, false)) {
                     out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 }
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("getFilesDir:2012", spkIgnored); }
             if (previous != null) previous.uncaughtException(thread, error);
         });
     }
@@ -2034,7 +2034,7 @@ public class MainActivity extends Activity {
             if (probe == null || !probe.valid) return;
             getSharedPreferences("ui", MODE_PRIVATE).edit()
                     .putString("last_device", probe.describe()).apply();
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("rememberDevice:2037", spkIgnored); }
     }
 
     private String buildLine() {
@@ -2077,7 +2077,7 @@ public class MainActivity extends Activity {
     void showInAppToast(final CharSequence message) {
         if (message == null || message.length() == 0) return;
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-            runOnUiThread(() -> showInAppToast(message));
+            UiDispatcher.post(() -> showInAppToast(message));
             return;
         }
         if (uiRoot == null) return;
@@ -2788,7 +2788,7 @@ public class MainActivity extends Activity {
                                 w * beforeBitmap.getHeight() / (float) beforeBitmap.getWidth()));
                         reopened.thumb = Bitmap.createScaledBitmap(beforeBitmap, w, h, true);
                         persistThumb(reopened);
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("round:2791", spkIgnored); }
                 }
                 rebuildFrameChips();
                 return;
@@ -2803,7 +2803,7 @@ public class MainActivity extends Activity {
                 final int h = Math.max(1, Math.round(
                         w * beforeBitmap.getHeight() / (float) beforeBitmap.getWidth()));
                 frame.thumb = Bitmap.createScaledBitmap(beforeBitmap, w, h, true);
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("round:2806", spkIgnored); }
         }
         frames.add(frame);
         currentFrame = frames.size() - 1;
@@ -2881,7 +2881,7 @@ public class MainActivity extends Activity {
         updateShelfVisibility();
         try {
             DebugSink.text("frame-strip", "frames=" + frames.size() + " current=" + currentFrame);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("getChildAt:2884", spkIgnored); }
     }
 
     /** Drop a chip. The file is untouched -- this is the strip's own list. If
@@ -2926,7 +2926,7 @@ public class MainActivity extends Activity {
         rebuildFrameChips();
         saveSessionState();
         try { DebugSink.text("frame-strip", "removed " + index + ", now " + frames.size()); }
-        catch (Throwable ignored) { }
+        catch (Throwable spkIgnored) { Diagnostics.ignored("removeFrame:2929", spkIgnored); }
     }
 
     /** Re-open a frame from the strip. Same entry point the picker uses, so a
@@ -3010,7 +3010,7 @@ public class MainActivity extends Activity {
                     try {
                         DebugSink.text("zoom", "pinch end at "
                                 + String.format(java.util.Locale.US, "%.2f", compare.zoomLevel()));
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("getActionMasked:3013", spkIgnored); }
                 }
                 endTwist();
                 return true;
@@ -3028,7 +3028,7 @@ public class MainActivity extends Activity {
                 try {
                     DebugSink.text("zoom", "pinch begin span=" + Math.round(span)
                             + " at=" + (int) ev.getRawX() + "," + (int) ev.getRawY());
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("spanOf:3031", spkIgnored); }
                 statusText.setText("ZOOM " + String.format(java.util.Locale.US, "%.2f", canvasPinchStartZoom)
                         + " · 0%");
                 beginTwist(ev);
@@ -3524,7 +3524,7 @@ public class MainActivity extends Activity {
         try {
             DebugSink.text("film-shelf", "films=" + filmIds.size() + " cards=" + filmCards.size()
                     + " brand=" + brandFilter + " thumbs=" + filmThumbs.size());
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("get:3527", spkIgnored); }
     }
 
     private void addFilmCard(final String id, String text, final int index) {
@@ -3606,7 +3606,7 @@ public class MainActivity extends Activity {
             final int w = Math.max(1, dp(86));
             final int h = Math.max(1, Math.round(w * rendered.getHeight() / (float) rendered.getWidth()));
             filmThumbs.put(stock, Bitmap.createScaledBitmap(rendered, w, h, true));
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("getWidth:3609", spkIgnored); }
     }
 
     private void updateFilmSelection() { updateFilmSelection(false); }
@@ -4617,7 +4617,7 @@ public class MainActivity extends Activity {
                             setOriginalVisual(false);
                             renderImage();
                         }
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("trim:4620", spkIgnored); }
                 })
                 .setNegativeButton(tr("editor.cancel"), null)
                 .show();
@@ -4634,7 +4634,7 @@ public class MainActivity extends Activity {
 
     private void refreshViewPanel() {
         for (Runnable r : viewRefreshers) {
-            try { r.run(); } catch (Throwable ignored) { }
+            try { r.run(); } catch (Throwable spkIgnored) { Diagnostics.ignored("refreshViewPanel:4637", spkIgnored); }
         }
         if (curveView != null) curveView.invalidate();
         if (colorWheel != null) colorWheel.invalidate();
@@ -4702,7 +4702,7 @@ public class MainActivity extends Activity {
                     cbHue[0], cbSat[0], cbLum[0], cbHue[1], cbSat[1], cbLum[1],
                     cbHue[2], cbSat[2], cbLum[2], cbHue[3], cbSat[3], cbLum[3],
                     viewVibrance});
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("pushViewAdjust:4705", spkIgnored); }
     }
 
     /**
@@ -4732,7 +4732,7 @@ public class MainActivity extends Activity {
         final int cap = importCapPixels;
         final int edge = importCapPixels > 0 ? IMPORT_LONG_EDGE : 0;
         wbDecoding = true;
-        runOnUiThread(() -> {
+        UiDispatcher.post(() -> {
             if (statusText != null) statusText.setText(tr("optics.decoding_again"));
         });
         new Thread(() -> {
@@ -4745,7 +4745,7 @@ public class MainActivity extends Activity {
                 synchronized (renderMutex) {
                     if (wbPreset != 0 && kelvin > 0) {
                         try { mul = SpektraLabEngine.rawMulForKelvin(current, kelvin, tint); }
-                        catch (Throwable ignored) { }
+                        catch (Throwable spkIgnored) { Diagnostics.ignored("round:4748", spkIgnored); }
                     }
                     // **Carried to the export.** A fresh export session is a
                     // second decode of the same file; without these gains it
@@ -4754,8 +4754,8 @@ public class MainActivity extends Activity {
                     wbUserMul = mul;
                     Probe.log("wb", "decode preset=" + wbPreset + " K=" + kelvin
                             + " tint=" + tint + " mul=" + Probe.mul(mul) + " cap=" + cap);
-                    try { params = current.getParams(); } catch (Throwable ignored) { }
-                    try { current.close(); } catch (Throwable ignored) { }
+                    try { params = current.getParams(); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:4757", spkIgnored); }
+                    try { current.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:4758", spkIgnored); }
                     session = null;
                 }
                 SpektraLabEngine.Session fresh = mul != null
@@ -4764,13 +4764,13 @@ public class MainActivity extends Activity {
                 if (generation != wbGeneration) {
                     // A newer choice arrived while this one decoded; its own
                     // thread will finish the job.
-                    try { fresh.close(); } catch (Throwable ignored) { }
+                    try { fresh.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:4767", spkIgnored); }
                     return;
                 }
                 synchronized (renderMutex) { session = fresh; }
                 final Bitmap src = exportSourceBitmap(fresh, 0.0);
                 wbDecoding = false;
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     if (src != null) {
                         beforeBitmap = src;
                         if (compare != null) compare.setBefore(src);
@@ -4781,7 +4781,7 @@ public class MainActivity extends Activity {
                 });
             } catch (Throwable t) {
                 wbDecoding = false;
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     if (session == null) session = current;
                     showErrorDialog(tr("optics.could_not_re_decode_with"), describe(t));
                 });
@@ -4805,7 +4805,7 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        try { SpektraLabEngine.setViewCurves(packed); } catch (Throwable ignored) { }
+        try { SpektraLabEngine.setViewCurves(packed); } catch (Throwable spkIgnored) { Diagnostics.ignored("pushViewCurves:4808", spkIgnored); }
     }
 
     /** Fritsch-Carlson, for drawing the curve the engine will actually use. */
@@ -6079,7 +6079,7 @@ public class MainActivity extends Activity {
         try {
             DebugSink.text("rotate", "commit want=" + want + " before=" + rotationBeforeDrag
                     + " total=" + total);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("commitRotate:6082", spkIgnored); }
         // Level is a place, not a number: 0.6 degrees is about two pixels of
         // travel at the frame's corner.
         if (Math.abs(want) < 0.6f) want = 0f;
@@ -7454,95 +7454,10 @@ public class MainActivity extends Activity {
     // Sharing it is text on purpose: no FileProvider, no MIME the other app has
     // to understand, and the receiver can paste it back or read it.
 
-    private org.json.JSONArray presetList() {
-        final String raw = getSharedPreferences("presets", MODE_PRIVATE).getString("list", "[]");
-        try {
-            return new org.json.JSONArray(raw);
-        } catch (Throwable t) {
-            return new org.json.JSONArray();
-        }
-    }
-
-    private void storePresetList(org.json.JSONArray list) {
-        getSharedPreferences("presets", MODE_PRIVATE).edit().putString("list", list.toString()).apply();
-    }
-
-
-    /**
-     * The keys a share may leave out when they hold the engine's default.
-     *
-     * <p>82 keys is a screenful of JSON in a chat window, and nine tenths of it
-     * is zeros nobody set. Each value here is exactly the fallback
-     * `lookFromJson` uses, so omitting one and reading it back is lossless.
-     */
-    private static final java.util.Map<String, Double> SHARE_DEFAULTS =
-            new java.util.HashMap<String, Double>();
-    static {
-        for (String k : new String[]{
-                "highlight", "shadow", "boost", "scatterr", "lens",
-                "vT", "vTn", "vE", "vC", "vB", "vS", "vHi", "vSh", "vBk",
-                "vWh", "vV", "cEv", "vVb", "wb", "wbT",
-                "yf", "mf", "preflash", "leaks", "frameno",
-                "ahrem", "scw", "scb", "edr", "slb",
-                "cbh0", "cbh1", "cbh2", "cbh3",
-                "cbs0", "cbs1", "cbs2", "cbs3",
-                "cbl0", "cbl1", "cbl2", "cbl3",
-                "gturn", "grot", "gcx", "gcy"}) {
-            SHARE_DEFAULTS.put(k, 0.0);
-        }
-        SHARE_DEFAULTS.put("exp", 1.0);
-        SHARE_DEFAULTS.put("grain", 1.0);
-        SHARE_DEFAULTS.put("halation", 1.0);
-        SHARE_DEFAULTS.put("glare", 1.0);
-        SHARE_DEFAULTS.put("scatter", 1.0);
-        SHARE_DEFAULTS.put("fog", 1.0);
-        SHARE_DEFAULTS.put("halon", 1.0);
-        SHARE_DEFAULTS.put("grainon", 1.0);
-        SHARE_DEFAULTS.put("coupon", 1.0);
-        SHARE_DEFAULTS.put("gla", 1.0);
-        SHARE_DEFAULTS.put("fscale", 1.0);
-        SHARE_DEFAULTS.put("gcw", 1.0);
-        SHARE_DEFAULTS.put("gch", 1.0);
-        SHARE_DEFAULTS.put("wbK", 5500.0);
-        SHARE_DEFAULTS.put("hhe", 4.0);
-        SHARE_DEFAULTS.put("dcg", 1.0);
-        SHARE_DEFAULTS.put("rolloff", 2.0);
-        SHARE_DEFAULTS.put("lift", 4.0);
-        SHARE_DEFAULTS.put("gcri", -1.0);
-        SHARE_DEFAULTS.put("dinsx", 3.0);
-        SHARE_DEFAULTS.put("dinsy", 2.4);
-        SHARE_DEFAULTS.put("dsize", 1.0);
-        SHARE_DEFAULTS.put("dev", 3.5);
-        SHARE_DEFAULTS.put("mm", 36.0);
-        SHARE_DEFAULTS.put("cseed", 1.0);
-        SHARE_DEFAULTS.put("fseed", 1.0);
-    }
-
-    /** Drop the keys still holding their default, and the flat curves. */
-    private static org.json.JSONObject lookCompact(Look l) {
-        final org.json.JSONObject full = lookToJson(l);
-        final org.json.JSONObject out = new org.json.JSONObject();
-        final java.util.Iterator<String> it = full.keys();
-        while (it.hasNext()) {
-            final String k = it.next();
-            final Double def = SHARE_DEFAULTS.get(k);
-            if (def != null) {
-                final double v = full.optDouble(k, Double.NaN);
-                if (!Double.isNaN(v) && Math.abs(v - def) < 1e-6) continue;
-            }
-            if (k.startsWith("cv")) {
-                final org.json.JSONArray arr = full.optJSONArray(k);
-                if (arr == null || arr.length() == 0) continue;
-                boolean flat = true;
-                for (int i = 0; i < arr.length(); ++i) {
-                    if (Math.abs(arr.optDouble(i, 0.0)) > 1e-6) { flat = false; break; }
-                }
-                if (flat) continue;
-            }
-            try { out.put(k, full.opt(k)); } catch (Throwable ignored) { }
-        }
-        return out;
-    }
+    // Preset persistence and share compaction are pure data work; see PresetStore.
+    private org.json.JSONArray presetList() { return PresetStore.load(this); }
+    private void storePresetList(org.json.JSONArray list) { PresetStore.save(this, list); }
+    private static org.json.JSONObject lookCompact(Look l) { return PresetStore.compact(l); }
 
     /** "fujifilm_c200" reads badly in a chat; its label reads fine. */
     private String stockDisplay(String id) {
@@ -8280,7 +8195,7 @@ public class MainActivity extends Activity {
             cm.setPrimaryClip(android.content.ClipData.newPlainText(labelText, text));
             return true;
         } catch (Throwable t) {
-            try { DebugSink.text("clipboard", String.valueOf(t)); } catch (Throwable ignored) { }
+            try { DebugSink.text("clipboard", String.valueOf(t)); } catch (Throwable spkIgnored) { Diagnostics.ignored("copyToClipboard:8198", spkIgnored); }
             return false;
         }
     }
@@ -8297,7 +8212,7 @@ public class MainActivity extends Activity {
                 startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                         android.net.Uri.parse(scheme)));
                 return;
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("openQqGroup:8215", spkIgnored); }
         }
         copyToClipboard(tr("feedback.spektralab_feedback_group"), QQ_GROUP);
         showInAppToast(tr("feedback.group_id_copied_search_for"));
@@ -8862,7 +8777,7 @@ public class MainActivity extends Activity {
         try {
             DebugSink.text("overscan", "aspect=" + aspect + " gates=" + edgeIds
                     + " chosen=" + overscanFormat);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("indexOf:8780", spkIgnored); }
         return rebateClosed;
     }
 
@@ -8941,12 +8856,12 @@ public class MainActivity extends Activity {
                     if (++sinceTrim >= 6) {
                         sinceTrim = 0;
                         if (prefetchEngine != null) {
-                            try { prefetchEngine.trimPool(); } catch (Throwable ignored) { }
+                            try { prefetchEngine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:8859", spkIgnored); }
                         }
                     }
                     if (thumb == null) continue;
-                    try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable ignored) { }
-                    runOnUiThread(() -> {
+                    try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:8863", spkIgnored); }
+                    UiDispatcher.post(() -> {
                         if (generation != prefetchGeneration) return;
                         filmThumbs.put(id, thumb);
                         updateCardThumb(id);
@@ -8964,7 +8879,7 @@ public class MainActivity extends Activity {
                 try {
                     DebugSink.text("prefetch", "done gen=" + generation + "/" + prefetchGeneration
                             + " thumbs=" + filmThumbs.size());
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:8882", spkIgnored); }
             }
         }, "film-prefetch");
         prefetchThread.setPriority(Thread.MIN_PRIORITY);
@@ -8986,7 +8901,7 @@ public class MainActivity extends Activity {
                 // 629x1167` in the field report: a blurry picture, not a crash.
                 deltaSent.clear();
                 deltaSession = null;
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("setPrefetchEdge:8904", spkIgnored); }
         }
     }
 
@@ -9050,13 +8965,13 @@ public class MainActivity extends Activity {
                 if (small != full) full.recycle();
                 return small;
             } catch (Throwable t) {
-                try { DebugSink.text("prefetch", "render " + stock + ": " + t); } catch (Throwable ignored) { }
+                try { DebugSink.text("prefetch", "render " + stock + ": " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:8968", spkIgnored); }
                 return null;
             } finally {
                 // Nothing is put back. The card left its own film on the
                 // session; the next render or export states the user's film in
                 // its own delta, so there is nothing here to keep in step.
-                try { s.renderEnd(); } catch (Throwable ignored) { }
+                try { s.renderEnd(); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:8974", spkIgnored); }
             }
         }
     }
@@ -9242,7 +9157,7 @@ public class MainActivity extends Activity {
                             + " " + Integer.parseInt(v.substring(8, 10));
                 }
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("imprintDate:9160", spkIgnored); }
         if (text == null) {
             final java.util.Calendar c = java.util.Calendar.getInstance();
             text = "'" + (c.get(java.util.Calendar.YEAR) % 100) + " "
@@ -10299,7 +10214,7 @@ public class MainActivity extends Activity {
                     && e.getPointerCount() >= 2) {
                 beginPinch(e);
                 try { DebugSink.text("zoom", "pinch begin span=" + Math.round(pinchStartSpan)); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("getActionMasked:10217", spkIgnored); }
                 return true;
             }
             if (pinching) {
@@ -10310,7 +10225,7 @@ public class MainActivity extends Activity {
                 if (action == android.view.MotionEvent.ACTION_POINTER_UP) {
                     endPinch();
                     try { DebugSink.text("zoom", "pinch end at " + String.format(java.util.Locale.US, "%.2f", zoom)); }
-                    catch (Throwable ignored) { }
+                    catch (Throwable spkIgnored) { Diagnostics.ignored("getActionMasked:10228", spkIgnored); }
                     return true;
                 }
                 if (action == android.view.MotionEvent.ACTION_UP
@@ -10629,7 +10544,7 @@ public class MainActivity extends Activity {
                 return new int[]{bounds.outWidth, bounds.outHeight};
             }
         } catch (Throwable t) {
-            try { DebugSink.text("decode", "sniff " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("decode", "sniff " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("sniffImageSize:10547", spkIgnored); }
         }
         return null;
     }
@@ -10666,17 +10581,17 @@ public class MainActivity extends Activity {
             try {
                 synchronized (renderMutex) { json = e.probeCanary(DeviceProbe.CANARY_NEED_BYTES); }
             } catch (Throwable t) {
-                try { DebugSink.text("canary", "threw: " + describe(t)); } catch (Throwable ignored) { }
+                try { DebugSink.text("canary", "threw: " + describe(t)); } catch (Throwable spkIgnored) { Diagnostics.ignored("startCanaryProbe:10584", spkIgnored); }
             }
             final String result = json;
             final long budget = maxImportPixels();
-            runOnUiThread(() -> {
+            UiDispatcher.post(() -> {
                 try {
                     if (result != null) probe.applyCanary(result);
                     DebugSink.text("canary", (result == null ? "(no answer)" : result)
                             + "\n" + probe.describe());
-                } catch (Throwable ignored) { }
-                try { DeviceReport.submit(this, probe, budget); } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:10593", spkIgnored); }
+                try { DeviceReport.submit(this, probe, budget); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:10594", spkIgnored); }
             });
         }, "canary-probe").start();
     }
@@ -10689,7 +10604,7 @@ public class MainActivity extends Activity {
             try { ensureEngine(); }
             catch (Throwable t) {
                 try { DebugSink.text("device-profile", "engine create failed: " + describe(t)); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("probeNow:10607", spkIgnored); }
             }
         }
         if (!probe.valid && engine != null) {
@@ -10698,10 +10613,10 @@ public class MainActivity extends Activity {
                 probe = DeviceProbe.parse(json);
                 rememberDevice();
                 try { DebugSink.text("device-profile", "re-read " + probe.describe() + "\n" + json); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("deviceProfile:10616", spkIgnored); }
             } catch (Throwable t) {
                 try { DebugSink.text("device-profile", "re-read failed: " + describe(t)); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("deviceProfile:10619", spkIgnored); }
             }
         }
         return probe;
@@ -10725,9 +10640,9 @@ public class MainActivity extends Activity {
     private void setDebugStorageLimitMib(int mib) {
         try {
             getSharedPreferences(DEBUG_PREFS, MODE_PRIVATE).edit().putInt(DEBUG_SIM_MIB, mib).apply();
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("setDebugStorageLimitMib:10643", spkIgnored); }
         try { DebugSink.text("debug-cap", "simulated storage range = " + mib + " MiB (0 = off)"); }
-        catch (Throwable ignored) { }
+        catch (Throwable spkIgnored) { Diagnostics.ignored("setDebugStorageLimitMib:10645", spkIgnored); }
     }
 
     private int debugBandCap() {
@@ -10739,17 +10654,17 @@ public class MainActivity extends Activity {
     private void setDebugBandCap(int elements) {
         try {
             getSharedPreferences(DEBUG_PREFS, MODE_PRIVATE).edit().putInt(DEBUG_BAND_CAP, elements).apply();
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("setDebugBandCap:10657", spkIgnored); }
         try { DebugSink.text("debug-cap", "band element cap = " + elements + " (0 = engine default 2^21)"); }
-        catch (Throwable ignored) { }
+        catch (Throwable spkIgnored) { Diagnostics.ignored("setDebugBandCap:10659", spkIgnored); }
     }
 
     private void setDebugPixelCapMp(int mp) {
         try {
             getSharedPreferences(DEBUG_PREFS, MODE_PRIVATE).edit().putInt(DEBUG_CAP_MP, mp).apply();
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("setDebugPixelCapMp:10665", spkIgnored); }
         try { DebugSink.text("debug-cap", "pixel ceiling override = " + mp + " MP (0 = off)"); }
-        catch (Throwable ignored) { }
+        catch (Throwable spkIgnored) { Diagnostics.ignored("setDebugPixelCapMp:10667", spkIgnored); }
     }
 
     /**
@@ -10840,7 +10755,7 @@ public class MainActivity extends Activity {
                 new Thread(() -> {
                     final boolean ok = DebugSink.report("steps", head,
                             ring.isEmpty() ? tr("settings.no_activity_logged_yet") : ring);
-                    runOnUiThread(() -> showTextDialog(
+                    UiDispatcher.post(() -> showTextDialog(
                             ok ? tr("settings.recent_activity_uploaded") : tr("settings.upload_failed"),
                             tr("settings.report_id") + DebugSink.REF + "\n\n"
                             + (ring.isEmpty() ? tr("settings.no_activity_logged_yet") : ring)
@@ -10869,7 +10784,7 @@ public class MainActivity extends Activity {
                 try {
                     startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                             android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("report:10787", spkIgnored); }
             }
         }, this::showPixelCapSheet);
     }
@@ -11013,19 +10928,19 @@ public class MainActivity extends Activity {
                 startActivityForResult(intent, requestCode);
                 Probe.log("picker", "ok " + intent.getAction());
                 try { DebugSink.text("picker", "launched " + intent.getAction()); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("launchFirstResolvable:10931", spkIgnored); }
                 return true;
             } catch (android.content.ActivityNotFoundException missing) {
                 // This ROM has no handler for this action; try the next one.
                 Probe.log("picker", "missing " + intent.getAction());
                 try { DebugSink.text("picker", "unresolvable " + intent.getAction()); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("launchFirstResolvable:10937", spkIgnored); }
             } catch (Throwable t) {
                 // A provider that vanished between the check and the launch, a
                 // SecurityException, or a picker that throws from its own
                 // onCreate. Next one.
                 try { DebugSink.text("picker", intent.getAction() + " failed: " + t); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("launchFirstResolvable:10943", spkIgnored); }
             }
         }
         return false;
@@ -11097,7 +11012,7 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {
             // importPicked makes its own private copy when the grant cannot persist.
         }
-        runOnUiThread(() -> {
+        UiDispatcher.post(() -> {
             if (!uiReady) { pendingIncomingUri = uri; return; }
             importPicked(uri);
         });
@@ -11127,7 +11042,7 @@ public class MainActivity extends Activity {
             }
         }
         if (picked.isEmpty()) {
-            try { DebugSink.text("picker", "RESULT_OK with no data"); } catch (Throwable ignored) { }
+            try { DebugSink.text("picker", "RESULT_OK with no data"); } catch (Throwable spkIgnored) { Diagnostics.ignored("getUri:11045", spkIgnored); }
             showInAppToast(tr("import.the_picker_did_not_return"));
             return;
         }
@@ -11169,7 +11084,7 @@ public class MainActivity extends Activity {
         showInAppToast(tr("import.copying_photos_into_app_storage"));
         new Thread(() -> {
             final Uri copy = privateCopy(uri);
-            runOnUiThread(() -> {
+            UiDispatcher.post(() -> {
                 if (copy == null) {
                     showErrorDialog(tr("import.import_failed"), tr("import.could_not_read_or_copy"));
                     return;
@@ -11216,13 +11131,13 @@ public class MainActivity extends Activity {
                 while ((read = in.read(buf)) > 0) out.write(buf, 0, read);
             }
             try { DebugSink.text("import", "copied " + name + " -> " + dst.getName()
-                    + " (" + dst.length() + " bytes)"); } catch (Throwable ignored) { }
+                    + " (" + dst.length() + " bytes)"); } catch (Throwable spkIgnored) { Diagnostics.ignored("listFiles:11134", spkIgnored); }
             return Uri.fromFile(dst);
         } catch (Throwable t) {
             // A half-copied file is worse than no file: the next launch would
             // hand a truncated RAW to the decoder and blame the photograph.
             if (dst != null) dst.delete();
-            try { DebugSink.text("import", "copy failed: " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("import", "copy failed: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("listFiles:11140", spkIgnored); }
             return null;
         }
     }
@@ -11273,8 +11188,8 @@ public class MainActivity extends Activity {
                     + " avail=" + (availableMemoryBytes() >> 20) + "MB");
             try { DebugSink.text("import-size", (sz == null ? "unknown" : sz[0] + "x" + sz[1])
                     + " need=" + (want >> 20) + "MB avail=" + (availableMemoryBytes() >> 20) + "MB"
-                    + " native=" + importAtNativeSize); } catch (Throwable ignored) { }
-        } catch (Throwable ignored) { }
+                    + " native=" + importAtNativeSize); } catch (Throwable spkIgnored) { Diagnostics.ignored("sniffImageSize:11191", spkIgnored); }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("sniffImageSize:11192", spkIgnored); }
         // A new photograph starts at the two entry cards, never on a page
         // whose switch belonged to the frame before it.
         CrashTrail.mark(this, "import:page");
@@ -11397,7 +11312,7 @@ public class MainActivity extends Activity {
             // and it surfaces as `cannot allocate Vulkan result pixels` ->
             // E-1003 even though the frame alone would have fit. The export
             // path already trims for exactly this reason.
-            try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
+            try { if (engine != null) engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:11315", spkIgnored); }
             lastRenderedBitmap = null;
             refreshPanelLocks();
             // The plate on the canvas belongs to the frame we just left.
@@ -11410,7 +11325,7 @@ public class MainActivity extends Activity {
             // `allocDirect` has no cleaner: dropping the field frees nothing.
             if (sourcePixels != null) { SpektraLabEngine.freeDirect(sourcePixels); sourcePixels = null; }
             // The previous file's unpacked plane is not this frame's problem.
-            try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
+            try { SpektraLabEngine.clearRawCache(); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:11328", spkIgnored); }
             filmThumbs.clear();
             // The canvas is not a control. `setOriginalVisual` only paints the
             // 原图 button; what CompareView holds is `after` (the last render)
@@ -11494,7 +11409,7 @@ public class MainActivity extends Activity {
                 if (scaled != sourceBitmap) sourceBitmap.recycle();
                 sourceBitmap = scaled;
                 try { DebugSink.text("import-scale", "k=" + k + " -> " + nw + "x" + nh
-                        + " avail=" + availBytes); } catch (Throwable ignored) { }
+                        + " avail=" + availBytes); } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:11412", spkIgnored); }
             }
             sourceWidth = sourceBitmap.getWidth();
             sourceHeight = sourceBitmap.getHeight();
@@ -11518,7 +11433,7 @@ public class MainActivity extends Activity {
                     + (availableMemoryBytes() >> 20) + "MB");
             try { DebugSink.text("import-pixels", sourceWidth + "x" + sourceHeight
                     + " need=" + (pixelBytes >> 20) + "MB avail="
-                    + (availableMemoryBytes() >> 20) + "MB"); } catch (Throwable ignored) { }
+                    + (availableMemoryBytes() >> 20) + "MB"); } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:11436", spkIgnored); }
             // **malloc, not allocateDirect.** The runtime caps direct-buffer
             // memory at the heap growth limit (512 MB on the phone that
             // reported this), and a 50 MP frame is 576 MB of float32, so the
@@ -11619,7 +11534,7 @@ public class MainActivity extends Activity {
                     + ": " + describe(t));
             lastImportError = describeImportFailure(t);
             showErrorDialog(tr("import.import_failed"), lastImportError);
-            try { DebugSink.text("import-failed", lastImportError); } catch (Throwable ignored) { }
+            try { DebugSink.text("import-failed", lastImportError); } catch (Throwable spkIgnored) { Diagnostics.ignored("max:11537", spkIgnored); }
         }
     }
 
@@ -11711,12 +11626,12 @@ public class MainActivity extends Activity {
             rememberDevice();
             CrashTrail.markNow(this, "engine:probe " + (probe != null && probe.valid));
             try { DebugSink.text("device-profile", probe.describe() + "\n" + engine.deviceProfile()); }
-            catch (Throwable ignored) { }
+            catch (Throwable spkIgnored) { Diagnostics.ignored("deviceProfile:11629", spkIgnored); }
             // A simulated limit is a claim about a device this one is not, so
             // the canary -- which measures the *real* driver and would raise the
             // range back to 2 GiB -- is not run against it.
             if (simMib == 0) startCanaryProbe();
-            try { uploadCapabilities(); } catch (Throwable ignored) { }
+            try { uploadCapabilities(); } catch (Throwable spkIgnored) { Diagnostics.ignored("deviceProfile:11634", spkIgnored); }
             CrashTrail.markNow(this, "engine:ready");
         }
         return engine;
@@ -11782,13 +11697,13 @@ public class MainActivity extends Activity {
      * small is a picture; one that lands over the limit is a dead end.
      */
     private int maxImportPixels(boolean withRebate) {
-        try { ensureEngine(); } catch (Throwable ignored) { }
+        try { ensureEngine(); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:11700", spkIgnored); }
         probeNow();
         long byBinding = Long.MAX_VALUE;
         try {
             final int byNative = engine == null ? 0 : engine.maxFramePixels();
             if (byNative > 0) byBinding = byNative;
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("maxFramePixels:11706", spkIgnored); }
         // **No fallback to `probe.maxPixelsByBinding()`.** `maxFramePixels()`
         // answers 0 on purpose -- the renderer bands every pass that would
         // otherwise bind a whole plane -- and falling back here silently put
@@ -11930,12 +11845,12 @@ public class MainActivity extends Activity {
                         ? "export: empty ev=" + ev
                         : "export " + bitmap.getWidth() + "x" + bitmap.getHeight()
                           + " ev=" + ev + means);
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:11848", spkIgnored); }
         } catch (Throwable t) {
-            try { DebugSink.text("raw-view", "export failed: " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("raw-view", "export failed: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:11850", spkIgnored); }
         } finally {
-            try { SpektraLabEngine.setSourceDisplayEv(0, false); } catch (Throwable ignored) { }
-            try { SpektraLabEngine.setSourceToneCurve(null); } catch (Throwable ignored) { }
+            try { SpektraLabEngine.setSourceDisplayEv(0, false); } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:11852", spkIgnored); }
+            try { SpektraLabEngine.setSourceToneCurve(null); } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:11853", spkIgnored); }
         }
         }
         return bitmap;
@@ -11958,7 +11873,7 @@ public class MainActivity extends Activity {
             }
             if (b == null) return;
             final Bitmap shown = b;
-            runOnUiThread(() -> {
+            UiDispatcher.post(() -> {
                 if (!uiReady || compare == null) return;
                 // The frame has to be kept even while the developed side is on
                 // screen: the switch is a property of the canvas, and flipping
@@ -11980,7 +11895,7 @@ public class MainActivity extends Activity {
         // copies inside one second share an mtime, so the second import could
         // be handed the first one's decoded pixels. Clearing here costs one
         // unpack and buys the guarantee that the pixels belong to this file.
-        try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
+        try { SpektraLabEngine.clearRawCache(); } catch (Throwable spkIgnored) { Diagnostics.ignored("loadRawImage:11898", spkIgnored); }
         CrashTrail.mark(this, "import:raw " + uri);
         try {
             String filePath = getFilePathFromUri(uri);
@@ -12070,7 +11985,7 @@ public class MainActivity extends Activity {
                     // ~76 B/px of planes (3.8 GB); the previous session's pool
                     // is freed here rather than left for the allocator to run
                     // out against.
-                    try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
+                    try { if (engine != null) engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:11988", spkIgnored); }
                     Probe.log("import", "trimmed pool=" + Probe.pool(engine));
                     
                     // `film_stock` names a profile file: "" and "null" both make
@@ -12084,7 +11999,7 @@ public class MainActivity extends Activity {
                         filmField, printStock, printExposure
                     );
                     
-                    try { DebugSink.text("open-params", "path=" + filePath + "\n" + params); } catch (Throwable ignored) {}
+                    try { DebugSink.text("open-params", "path=" + filePath + "\n" + params); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:12002", spkIgnored); }
                     // The cap comes from the device, not from a constant: a
                     // plane is 12 B/px and a binding may not exceed the GPU's
                     // maxStorageBufferRange. Two limits apply, whichever is
@@ -12093,7 +12008,7 @@ public class MainActivity extends Activity {
                     final boolean nativeSize = importAtNativeSize;
                     importAtNativeSize = false;                   // one import only
                     if (nativeSize) {
-                        try { DebugSink.text("import-mode", "native size, no cap"); } catch (Throwable ignored) { }
+                        try { DebugSink.text("import-mode", "native size, no cap"); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:12011", spkIgnored); }
                     }
                     rawFilePath = filePath;
                     importCapPixels = nativeSize ? 0 : maxImportPixels();
@@ -12151,7 +12066,7 @@ public class MainActivity extends Activity {
                         synchronized (renderMutex) {
                             if (session != null) session.solve("exposure");
                         }
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("getDimensions:12069", spkIgnored); }
                     // **The raw itself**, which is the "before" side of every
                     // comparison and the only honest thing to show on import:
                     // the decoded frame in working space, packed with no
@@ -12171,11 +12086,11 @@ public class MainActivity extends Activity {
                         // a bug, and it has to say so rather than look like a
                         // photo that failed to load.
                         try { DebugSink.text("raw-view", "no source frame for the canvas"); }
-                        catch (Throwable ignored) { }
-                        runOnUiThread(() -> statusText.setText(tr("import.raw_loaded_but_the_original")));
+                        catch (Throwable spkIgnored) { Diagnostics.ignored("getDimensions:12089", spkIgnored); }
+                        UiDispatcher.post(() -> statusText.setText(tr("import.raw_loaded_but_the_original")));
                     }
                     if (hasPreview) {
-                        runOnUiThread(() -> {
+                        UiDispatcher.post(() -> {
                             beforeBitmap = preview;
                             compare.setBefore(preview);
                             setStage(1, getFileName(uri));
@@ -12211,7 +12126,7 @@ public class MainActivity extends Activity {
                             final org.json.JSONObject sp = root.optJSONObject("solved_params");
                             meteredEv = sp == null ? 0.0 : sp.optDouble("exposure_compensation_ev", 0.0);
                             Probe.log("meter", "applied ev=" + meteredEv);
-                        } catch (Throwable ignored) { }
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("optJSONObject:12129", spkIgnored); }
                     }
                     if (hasPreview && solvedJson != null) {
                         double solvedEv = 0.0;
@@ -12219,7 +12134,7 @@ public class MainActivity extends Activity {
                             solvedEv = new org.json.JSONObject(solvedJson)
                                     .getJSONObject("exposure_ev_by_method")
                                     .optDouble("balanced", 0.0);
-                        } catch (Throwable ignored) { }
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("optJSONObject:12137", spkIgnored); }
                         // **Shown a little under the meter, on purpose.** At the
                         // full metered EV the decoded side reads brighter than
                         // the developed one, and the film's own contrast stops
@@ -12230,7 +12145,7 @@ public class MainActivity extends Activity {
                             final Bitmap lifted = exportSourceBitmap(session, solvedEv);
                             if (lifted != null) {
                                 final double shownEv = solvedEv;
-                                runOnUiThread(() -> {
+                                UiDispatcher.post(() -> {
                                     beforeBitmap = lifted;
                                     if (compare != null) compare.setBefore(lifted);
                                     if (currentFrame >= 0 && currentFrame < frames.size()) {
@@ -12241,17 +12156,17 @@ public class MainActivity extends Activity {
                                                     tw * lifted.getHeight() / (float) lifted.getWidth()));
                                             frame.thumb = Bitmap.createScaledBitmap(lifted, tw, th, true);
                                             persistThumb(frame);
-                                        } catch (Throwable ignored) { }
+                                        } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12159", spkIgnored); }
                                         rebuildFrameChips();
                                     }
                                     try {
                                         DebugSink.text("raw-view", "display ev=" + shownEv);
-                                    } catch (Throwable ignored) { }
+                                    } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12164", spkIgnored); }
                                 });
                             }
                         }
                     }
-                    runOnUiThread(() -> {
+                    UiDispatcher.post(() -> {
                         if (session == null) return;
                         showingOriginal = true;
                         lastRenderedBitmap = null;
@@ -12278,7 +12193,7 @@ public class MainActivity extends Activity {
                         // the user to start again -- and if it fails the same
                         // way, that is a decode problem and the message below is
                         // the honest one.
-                        try { if (session != null) session.close(); } catch (Throwable ignored) { }
+                        try { if (session != null) session.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12196", spkIgnored); }
                         session = wbMul != null
                                 ? engine.openRawSessionTuned(filePath, params,
                                         importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE, wbMul)
@@ -12299,7 +12214,7 @@ public class MainActivity extends Activity {
                     int h = dims[1];
                     sourceWidth = w;
                     sourceHeight = h;
-                    try { DebugSink.text("raw-dims", "w=" + w + " h=" + h); } catch (Throwable ignored) {}
+                    try { DebugSink.text("raw-dims", "w=" + w + " h=" + h); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12217", spkIgnored); }
 
                     // **The session's own size, not `rawSourceSize()`.** That
                     // legacy query answers {0,0} on purpose -- its comment says
@@ -12309,9 +12224,9 @@ public class MainActivity extends Activity {
                     try {
                         DebugSink.text("raw-cap", (capped ? "capped at " + importCapPixels : "native")
                                 + " -> session " + w + "x" + h);
-                    } catch (Throwable ignored) {}
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12227", spkIgnored); }
 
-                    runOnUiThread(() -> {
+                    UiDispatcher.post(() -> {
                         refreshEdgeFormats();
                         setStep(1);
                         // **No sheet.** The raw arrives at the size it was
@@ -12346,7 +12261,7 @@ public class MainActivity extends Activity {
                     // A High-Efficiency NEF is not a preview job. Say what it
                     // is (E-1108, a compression this build has no decoder for)
                     // and what to change, and leave the file alone.
-                    runOnUiThread(() -> {
+                    UiDispatcher.post(() -> {
                         statusText.setText(tr("import.raw_load_failed") + SpkError.shortForm(said));
                         showErrorDialog(tr("import.raw_load_failed_2"), said);
                     });
@@ -12386,7 +12301,7 @@ public class MainActivity extends Activity {
         // recorded, the queue moves on, and the summary at the end counts it.
         if (batchExportRunning) {
             try { DebugSink.text("batch-error", title + " | " + body); }
-            catch (Throwable ignored) { }
+            catch (Throwable spkIgnored) { Diagnostics.ignored("showTextDialog:12304", spkIgnored); }
             return;
         }
         final String shownTitle = (title == null || title.isEmpty()) ? tr("import.error") : title;
@@ -12395,7 +12310,7 @@ public class MainActivity extends Activity {
         // here is what makes an error report readable without the user having
         // to copy anything, and it costs one write instead of sixty-four.
         if (report) reportFailure(shownTitle, shownBody);
-        runOnUiThread(() -> {
+        UiDispatcher.post(() -> {
             final android.app.Dialog dialog = newDialog();
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
@@ -12553,7 +12468,7 @@ public class MainActivity extends Activity {
                 try (android.database.Cursor c = getContentResolver().query(uri,
                         new String[]{android.provider.OpenableColumns.SIZE}, null, null, null)) {
                     if (c != null && c.moveToFirst()) expected = c.getLong(0);
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("getFilePathFromUri:12471", spkIgnored); }
                 try (InputStream in = getContentResolver().openInputStream(uri);
                      java.io.OutputStream out = new java.io.FileOutputStream(tempFile)) {
                     byte[] buf = new byte[64 * 1024];
@@ -12562,15 +12477,15 @@ public class MainActivity extends Activity {
                 }
                 if (expected > 0 && tempFile.length() != expected) {
                     try { DebugSink.text("import", "copy short: " + tempFile.length()
-                            + " of " + expected + " for " + fileName); } catch (Throwable ignored) { }
+                            + " of " + expected + " for " + fileName); } catch (Throwable spkIgnored) { Diagnostics.ignored("getFilePathFromUri:12480", spkIgnored); }
                     tempFile.delete();
                     return null;
                 }
                 try { DebugSink.text("import", "copied " + tempFile.length() + " -> "
-                        + tempFile.getAbsolutePath()); } catch (Throwable ignored) { }
+                        + tempFile.getAbsolutePath()); } catch (Throwable spkIgnored) { Diagnostics.ignored("getFilePathFromUri:12485", spkIgnored); }
                 return tempFile.getAbsolutePath();
             } catch (Exception e) {
-                try { DebugSink.text("import", "copy failed: " + e); } catch (Throwable ignored) { }
+                try { DebugSink.text("import", "copy failed: " + e); } catch (Throwable spkIgnored) { Diagnostics.ignored("getFilePathFromUri:12488", spkIgnored); }
                 return null;
             }
         } else if (uri.getScheme().equals("file")) {
@@ -12596,7 +12511,7 @@ public class MainActivity extends Activity {
                     android.media.ExifInterface.TAG_ORIENTATION,
                     android.media.ExifInterface.ORIENTATION_NORMAL);
         } catch (Throwable t) {
-            try { DebugSink.text("exif", "path: " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("exif", "path: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("orientationOfPath:12514", spkIgnored); }
         }
         if (fromPlatform > 0) return fromPlatform;
         // ExifInterface does not open every raw container: RW2 writes 0x55
@@ -12635,7 +12550,7 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             return -1;
         } finally {
-            if (file != null) try { file.close(); } catch (Throwable ignored) { }
+            if (file != null) try { file.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("shortAt:12553", spkIgnored); }
         }
         return -1;
     }
@@ -12661,14 +12576,14 @@ public class MainActivity extends Activity {
                         android.media.ExifInterface.TAG_ORIENTATION,
                         android.media.ExifInterface.ORIENTATION_NORMAL);
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("readOrientation:12579", spkIgnored); }
         try (android.os.ParcelFileDescriptor fd = getContentResolver().openFileDescriptor(uri, "r")) {
             if (fd != null) {
                 return new android.media.ExifInterface(fd.getFileDescriptor()).getAttributeInt(
                         android.media.ExifInterface.TAG_ORIENTATION,
                         android.media.ExifInterface.ORIENTATION_NORMAL);
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("readOrientation:12586", spkIgnored); }
         return -1;
     }
 
@@ -12690,7 +12605,7 @@ public class MainActivity extends Activity {
             try (InputStream head = getContentResolver().openInputStream(uri)) {
                 if (head != null) BitmapFactory.decodeStream(head, null, bounds);
             } catch (Throwable t) {
-                try { DebugSink.text("decode", "sniff " + t); } catch (Throwable ignored) { }
+                try { DebugSink.text("decode", "sniff " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("decodeImport:12608", spkIgnored); }
             }
             if (bounds.outWidth > 0 && bounds.outHeight > 0) {
                 int sample = 1;
@@ -12702,16 +12617,16 @@ public class MainActivity extends Activity {
                     Bitmap decoded = BitmapFactory.decodeStream(stream, null, opts);
                     if (decoded != null) return decoded;
                     try { DebugSink.text("decode", "null at sample " + sample); }
-                    catch (Throwable ignored) { }
+                    catch (Throwable spkIgnored) { Diagnostics.ignored("decodeImport:12620", spkIgnored); }
                 } catch (Throwable t) {
-                    try { DebugSink.text("decode", "stream " + t); } catch (Throwable ignored) { }
+                    try { DebugSink.text("decode", "stream " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("decodeImport:12622", spkIgnored); }
                 }
             } else {
                 try { DebugSink.text("decode", "no bounds " + bounds.outWidth + "x" + bounds.outHeight); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("decodeImport:12626", spkIgnored); }
             }
         } catch (Throwable t) {
-            try { DebugSink.text("decode", "outer " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("decode", "outer " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("decodeImport:12629", spkIgnored); }
         }
         return decodeViaImageDecoder(uri, capPixels, edgeCap);
     }
@@ -12743,10 +12658,10 @@ public class MainActivity extends Activity {
                         decoder.setAllocator(android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE);
                     });
             try { DebugSink.text("decode", "imagedecoder " + decoded.getWidth() + "x"
-                    + decoded.getHeight()); } catch (Throwable ignored) { }
+                    + decoded.getHeight()); } catch (Throwable spkIgnored) { Diagnostics.ignored("max:12661", spkIgnored); }
             return decoded;
         } catch (Throwable t) {
-            try { DebugSink.text("decode", "imagedecoder " + t); } catch (Throwable ignored) { }
+            try { DebugSink.text("decode", "imagedecoder " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("max:12664", spkIgnored); }
             return null;
         }
     }
@@ -12757,7 +12672,7 @@ public class MainActivity extends Activity {
      * process die on the Honor report instead of saying 内存不足.
      */
     private String describeImportFailure(Throwable t) {
-        try { DebugSink.text("import-error", String.valueOf(t)); } catch (Throwable ignored) { }
+        try { DebugSink.text("import-error", String.valueOf(t)); } catch (Throwable spkIgnored) { Diagnostics.ignored("describeImportFailure:12675", spkIgnored); }
         if (t instanceof OutOfMemoryError) {
             // **Never tell the user to bring a smaller picture.** That turns our
             // own allocation into their composition problem, and the frame that
@@ -12774,7 +12689,7 @@ public class MainActivity extends Activity {
     private Bitmap applyExifRotation(Uri uri, Bitmap bitmap) {
         final int orientation = readOrientation(uri);
         try { DebugSink.text("exif", "orientation=" + orientation + " bitmap="
-                + bitmap.getWidth() + "x" + bitmap.getHeight()); } catch (Throwable ignored) { }
+                + bitmap.getWidth() + "x" + bitmap.getHeight()); } catch (Throwable spkIgnored) { Diagnostics.ignored("readOrientation:12692", spkIgnored); }
         return rotateForOrientation(bitmap, orientation);
     }
 
@@ -12867,7 +12782,7 @@ public class MainActivity extends Activity {
             DebugSink.text("params", "deferred render=" + rendering + " film=" + filmStock
                     + " print=" + printStock + " overscan=" + overscanOn + " date=" + dateOn
                     + " fmt=" + filmFormatMm);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("applyParams:12785", spkIgnored); }
     }
 
     /**
@@ -12935,12 +12850,12 @@ public class MainActivity extends Activity {
                 final int at = gp.indexOf("\"geometry_rotation_deg\"");
                 DebugSink.text("geo-check", at >= 0
                         ? gp.substring(at, Math.min(gp.length(), at + 44)) : "absent");
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("indexOf:12853", spkIgnored); }
         } catch (Throwable t) {
             // Put it back: a geometry edit that did not reach the engine must
             // be retried by the next render, not forgotten.
             pendingGeometry = true;
-            try { DebugSink.textNow("geo", "FAILED " + t + " :: " + d); } catch (Throwable ignored) { }
+            try { DebugSink.textNow("geo", "FAILED " + t + " :: " + d); } catch (Throwable spkIgnored) { Diagnostics.ignored("indexOf:12858", spkIgnored); }
         }
     }
 
@@ -13013,7 +12928,7 @@ public class MainActivity extends Activity {
         if (previous == null) return;
         try {
             applyLook(lookFromJson(new org.json.JSONObject(previous)));
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("peek:12931", spkIgnored); }
         undoLast = previous;
         refreshUndoPill();
         applyParams();
@@ -13138,7 +13053,7 @@ public class MainActivity extends Activity {
                             lastAppliedEvValid = true;
                             lastAppliedEvUri = frameUri(currentFrame);
                         }
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("substring:13056", spkIgnored); }
                 }
             }
         }
@@ -13149,7 +13064,7 @@ public class MainActivity extends Activity {
             try {
                 DebugSink.text("exposure", "tier=" + tier + " " + text
                         + " -> pinned " + lastAppliedEv + (lastAppliedEvValid ? "" : " (none)"));
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("substring:13067", spkIgnored); }
         }
     }
 
@@ -13337,13 +13252,13 @@ public class MainActivity extends Activity {
                     + " render=" + rendering + " long=" + longEdge
                     + " keys=" + delta.split(",").length + " [" + keyNames(delta) + "]"
                     + " geo=" + kv.get("geometry_rotation_deg"));
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("deltaFor:13255", spkIgnored); }
         // **A JSON that does not parse is a build error, not a user error.**
         try {
             new org.json.JSONObject(delta);
         } catch (Throwable bad) {
             try { DebugSink.textNow("params-bad", bad + "\n" + delta); }
-            catch (Throwable ignored) { }
+            catch (Throwable spkIgnored) { Diagnostics.ignored("deltaFor:13261", spkIgnored); }
         }
         try {
             target.setParams(delta);
@@ -13435,12 +13350,12 @@ public class MainActivity extends Activity {
                     // that has been inside `filming.expose.halation` for twenty
                     // seconds says so in the trail instead of just "20s".
                     String stage = null;
-                    try { stage = s == null ? null : s.stageSnapshot(); } catch (Throwable ignored) { }
+                    try { stage = s == null ? null : s.stageSnapshot(); } catch (Throwable spkIgnored) { Diagnostics.ignored("Thread:13353", spkIgnored); }
                     CrashTrail.mark(this, tag + ":tick " + n + "s"
                             + (stage == null || stage.isEmpty() ? "" : " @ " + stage));
                 }
             } catch (InterruptedException ignored) {
-            } catch (Throwable ignored) { }
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("Thread:13358", spkIgnored); }
         }, "tick-" + tag);
         t.setDaemon(true);
         t.start();
@@ -13493,7 +13408,7 @@ public class MainActivity extends Activity {
         final long now = System.currentTimeMillis();
         if (now - lastLiveLog < 1000) return;
         lastLiveLog = now;
-        try { DebugSink.text("live", what); } catch (Throwable ignored) { }
+        try { DebugSink.text("live", what); } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:13411", spkIgnored); }
     }
 
     private void requestLivePreview() {
@@ -13631,7 +13546,7 @@ public class MainActivity extends Activity {
                 bmp = newFrameBitmap(w, h);
                 bmp.setPixels(livePixels, 0, w, 0, 0, w, h);
                 s.renderEnd();
-                try { rememberAppliedEv(s.progressJson(), "live"); } catch (Throwable ignored) { }
+                try { rememberAppliedEv(s.progressJson(), "live"); } catch (Throwable spkIgnored) { Diagnostics.ignored("copyArgbRange:13549", spkIgnored); }
                 liveHash = pixelHash(livePixels, w * h);
                 // **The histograms move with the picture, not with the render
                 // size.** Both of them used to wait for a full 2048 render, so
@@ -13644,17 +13559,17 @@ public class MainActivity extends Activity {
                 try { DebugSink.text("live", "frame " + w + "x" + h + " "
                         + (System.currentTimeMillis() - liveStart) + " ms "
                         + Long.toHexString(liveHash)); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("copyArgbRange:13562", spkIgnored); }
             } catch (Throwable t) {
-                try { s.renderEnd(); } catch (Throwable ignored) { }
-                try { DebugSink.text("live", "fail " + describe(t)); } catch (Throwable ignored) { }
+                try { s.renderEnd(); } catch (Throwable spkIgnored) { Diagnostics.ignored("copyArgbRange:13564", spkIgnored); }
+                try { DebugSink.text("live", "fail " + describe(t)); } catch (Throwable spkIgnored) { Diagnostics.ignored("copyArgbRange:13565", spkIgnored); }
                 return;
             }
         }
         final Bitmap out = bmp;
         final long hash = liveHash;
         final int[] histBins = liveBins;
-        runOnUiThread(() -> {
+        UiDispatcher.post(() -> {
             if (!uiReady || gen != liveGeneration.get()) {
                 liveLog("drop: superseded");
                 return;
@@ -13681,7 +13596,7 @@ public class MainActivity extends Activity {
             // this says what the canvas was handed. If they disagree the loss is
             // between the two, not in the render.
             try { DebugSink.text("live", "canvas " + out.getWidth() + "x" + out.getHeight()
-                    + " " + Long.toHexString(hash)); } catch (Throwable ignored) { }
+                    + " " + Long.toHexString(hash)); } catch (Throwable spkIgnored) { Diagnostics.ignored("copyArgbRange:13599", spkIgnored); }
         });
     }
 
@@ -13715,9 +13630,9 @@ public class MainActivity extends Activity {
                 synchronized (renderMutex) { freed = engine.trimPool(); }
                 try { DebugSink.text("pool-trim",
                         "after render: total was " + (total >> 20) + " MB, freed "
-                                + (freed >> 20) + " MB"); } catch (Throwable ignored) { }
+                                + (freed >> 20) + " MB"); } catch (Throwable spkIgnored) { Diagnostics.ignored("toString:13633", spkIgnored); }
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("toString:13635", spkIgnored); }
     }
 
     private void renderImage() { renderImage(PREVIEW_LONG_EDGE); }
@@ -13738,7 +13653,7 @@ public class MainActivity extends Activity {
         // carry "nothing happened"; failures need to be readable.
         if (session == null) {
             try { DebugSink.text("render", "no session, lastImportError=" + lastImportError); }
-            catch (Throwable ignored) { }
+            catch (Throwable spkIgnored) { Diagnostics.ignored("renderImage:13656", spkIgnored); }
             // **A frame in the strip means an import is on its way.** Coming
             // back from the background walks through here while `loadImage` is
             // still decoding -- there is a picture loading, so "还没有可渲染的
@@ -13762,7 +13677,7 @@ public class MainActivity extends Activity {
         if (rendering) {
             // One native result buffer for the whole process: two renders would
             // interleave on it and hand back another frame's dimensions.
-            try { DebugSink.text("render", "already rendering"); } catch (Throwable ignored) { }
+            try { DebugSink.text("render", "already rendering"); } catch (Throwable spkIgnored) { Diagnostics.ignored("renderImage:13680", spkIgnored); }
             Probe.log("render", "queued film=" + filmStock + " pending=" + pendingRender);
             statusText.setText(tr("render.rendering"));
             // Not dropped: a tap that lands mid-render is the *last* choice the
@@ -13789,7 +13704,7 @@ public class MainActivity extends Activity {
         busyLabel.setVisibility(View.VISIBLE);
         statusText.setText(tr("render.rendering"));
         try { DebugSink.text("render", "begin " + sourceWidth + "x" + sourceHeight); }
-        catch (Throwable ignored) { }
+        catch (Throwable spkIgnored) { Diagnostics.ignored("renderImage:13707", spkIgnored); }
 
         new Thread(() -> {
             try {
@@ -13805,7 +13720,7 @@ public class MainActivity extends Activity {
                     // slower, which is exactly why that window got wide enough
                     // to hit in the field and not on the bench.
                     CrashTrail.mark(this, "render:session-gone");
-                    runOnUiThread(() -> {
+                    UiDispatcher.post(() -> {
                         rendering = false;
                         if (progressBar != null) progressBar.setVisibility(View.GONE);
                         if (busyLabel != null) busyLabel.setVisibility(View.GONE);
@@ -13842,7 +13757,7 @@ public class MainActivity extends Activity {
                         final int at = gp.indexOf("\"geometry_rotation_deg\"");
                         DebugSink.text("geo-check", "after delta " + (at >= 0
                                 ? gp.substring(at, Math.min(gp.length(), at + 30)) : "absent"));
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("indexOf:13760", spkIgnored); }
                 }
                 Probe.log("render", "apply film=" + renderedStock + " long=" + longEdge
                         + " src=" + sourceWidth + "x" + sourceHeight);
@@ -13893,7 +13808,7 @@ public class MainActivity extends Activity {
                             ++edgeCanvasSends;
                             DebugSink.textNow("edge-weak", edgeLine);
                         }
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13811", spkIgnored); }
                 }
                 session.renderEnd();
                 CrashTrail.markNow(MainActivity.this, "render:end");
@@ -13903,14 +13818,14 @@ public class MainActivity extends Activity {
                 // numbers settles it.
                 try {
                     rememberAppliedEv(session.progressJson(), "full");
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13821", spkIgnored); }
                 // The rebate's own numbers, next to the buffer they belong to.
                 // "the edge is wrong in the export but right in the preview" is
                 // a question only these two lines can answer.
                 try {
                     DebugSink.text("overscan-geom", "tier=live " + w + "x" + h + " "
                             + session.overscanGeometry());
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13828", spkIgnored); }
                 // The engine's log for this render. When a frame comes back as
                 // one flat colour there is nothing else to read: it says which
                 // tier was built, how big, and what each dispatch covered.
@@ -13928,12 +13843,12 @@ public class MainActivity extends Activity {
                     DebugSink.text("preview", "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
                             + " copy=" + copied + " first=" + Integer.toHexString(pixels[0])
                             + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2]));
-                } catch (Throwable ignored) {}
-                runOnUiThread(() -> {
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13846", spkIgnored); }
+                UiDispatcher.post(() -> {
                     if (renderedEpoch != renderEpoch
                             || currentFrame != renderedFrame || session == null) {
                         try { DebugSink.text("render", "frame changed mid-render; dropped"); }
-                        catch (Throwable ignored) { }
+                        catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13851", spkIgnored); }
                         // **The overlay belongs to this generation too.**
                         //
                         // Returning here is what left the canvas saying
@@ -13986,7 +13901,7 @@ public class MainActivity extends Activity {
                         DebugSink.text("bands", "render " + fw + "x" + fh
                                 + " black rows top=" + bands[0] + " bottom=" + bands[1]
                                 + " source=" + sourceWidth + "x" + sourceHeight);
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("blackBands:13904", spkIgnored); }
                     progressBar.setVisibility(View.GONE);
                     busyLabel.setVisibility(View.GONE);
                     rendering = false;
@@ -13997,11 +13912,11 @@ public class MainActivity extends Activity {
                 });
             }
             } catch (Throwable e) {
-                try { session.renderEnd(); } catch (Throwable ignored) {}
+                try { session.renderEnd(); } catch (Throwable spkIgnored) { Diagnostics.ignored("blackBands:13915", spkIgnored); }
                 DebugSink.text("failure", AppFailure.of(AppFailure.Stage.RENDER, e).stage
                         + ": " + describe(e));
                 final String msg = describe(e);
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     // **A rotation that failed must not stay half applied.** The
                     // numbers were committed before the render and the canvas
                     // still shows the view-space turn; leaving both is a picture
@@ -14059,7 +13974,7 @@ public class MainActivity extends Activity {
         target = (long) (target * 0.75);
         target = Math.max(1_000_000L, Math.min(target, 100_000_000L));
         final long picking = target;
-        runOnUiThread(() -> showActionSheet(tr("render.the_image_exceeds_this_device"),
+        UiDispatcher.post(() -> showActionSheet(tr("render.the_image_exceeds_this_device"),
                 tr("render.import_and_render_again_at") + String.format(java.util.Locale.US, "%.1f", picking / 1e6)
                         + tr("render.mp_the_image_will_be"),
                 new String[]{tr("render.retry"), tr("editor.cancel")}, which -> {
@@ -14110,7 +14025,7 @@ public class MainActivity extends Activity {
                 return uri;
             } catch (Throwable t) {
                 lastError = t;
-                try { resolver.delete(uri, null, null); } catch (Throwable ignored) { }
+                try { resolver.delete(uri, null, null); } catch (Throwable spkIgnored) { Diagnostics.ignored("ContentValues:14028", spkIgnored); }
             }
         }
         if (android.os.Build.VERSION.SDK_INT >= 29) {
@@ -14133,7 +14048,7 @@ public class MainActivity extends Activity {
                 }
             } catch (Throwable t) {
                 lastError = t;
-                if (uri != null) { try { resolver.delete(uri, null, null); } catch (Throwable ignored) { } }
+                if (uri != null) { try { resolver.delete(uri, null, null); } catch (Throwable spkIgnored) { Diagnostics.ignored("ContentValues:14051", spkIgnored); } }
             }
         }
         throw new java.io.IOException(SpkError.ALBUM_WRITE_PREFIX, lastError);
@@ -14183,7 +14098,7 @@ public class MainActivity extends Activity {
                 failure = describeImportFailure(e);
             }
             final String out = json, err = failure;
-            runOnUiThread(() -> {
+            UiDispatcher.post(() -> {
                 if (err != null) {
                     statusText.setText(tr("print.could_not_rebalance_the_print"));
                     showErrorDialog(tr("print.could_not_rebalance_the_print"), err);
@@ -14201,7 +14116,7 @@ public class MainActivity extends Activity {
                         mg = String.format(java.util.Locale.US, "%.1f", sp.optDouble("m_filter_neutral", 0.0));
                         ye = String.format(java.util.Locale.US, "%.1f", sp.optDouble("y_filter_neutral", 0.0));
                     }
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("optJSONObject:14119", spkIgnored); }
                 statusText.setText(tr("print.print_rebalanced") + balanced);
                 showActionSheet(tr("print.color_timing_results"),
                         tr("print.metering") + balanced + tr("print.neutral_filters_based_on_the")
@@ -14242,7 +14157,7 @@ public class MainActivity extends Activity {
             getContentResolver().takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             return uri;
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("persistOrCopy:14160", spkIgnored); }
         return privateCopy(uri);
     }
 
@@ -14264,7 +14179,7 @@ public class MainActivity extends Activity {
                 return getContentResolver().loadThumbnail(uri,
                         new android.util.Size(Math.max(1, dp(42)), Math.max(1, dp(42))), null);
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("systemThumb:14182", spkIgnored); }
         return null;
     }
 
@@ -14286,7 +14201,7 @@ public class MainActivity extends Activity {
 
     private void startBatchImport(final java.util.List<Uri> uris) {
         final int total = uris.size();
-        runOnUiThread(() -> {
+        UiDispatcher.post(() -> {
             if (statusText != null) statusText.setText(tr("export.adding") + total + tr("export.photos"));
         });
         new Thread(() -> {
@@ -14297,7 +14212,7 @@ public class MainActivity extends Activity {
                 if (addFrameOnly(target)) ++added; else ++failed;
             }
             final int a = added, f = failed;
-            runOnUiThread(() -> {
+            UiDispatcher.post(() -> {
                 if (a > 0) {
                     saveSessionState();
                     rebuildFrameChips();
@@ -14320,10 +14235,10 @@ public class MainActivity extends Activity {
             return;
         }
         final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        runOnUiThread(() -> {
+        UiDispatcher.post(() -> {
             try { r.run(); }
             catch (Throwable t) {
-                try { DebugSink.text("uiWait", describe(t)); } catch (Throwable ignored) { }
+                try { DebugSink.text("uiWait", describe(t)); } catch (Throwable spkIgnored) { Diagnostics.ignored("CountDownLatch:14241", spkIgnored); }
             } finally { latch.countDown(); }
         });
         try { latch.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS); }
@@ -14391,7 +14306,7 @@ public class MainActivity extends Activity {
                     ++failed;               // nothing to print: no film chosen
                     continue;
                 }
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     if (statusText != null) {
                         statusText.setText(tr("export.batch_export") + (index + 1) + "/" + total + ": " + name);
                     }
@@ -14413,7 +14328,7 @@ public class MainActivity extends Activity {
                             + " glare=" + frame.look.glareAmount
                             + " edr=" + frame.look.edrOn
                             + " viewC=" + frame.look.viewContrast);
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("get:14331", spkIgnored); }
                 uiWait(() -> {
                     applyLook(frame.look);
                     // **Drop the previous frame's session before asking for
@@ -14435,7 +14350,7 @@ public class MainActivity extends Activity {
                 if (!pollUntil(() -> session != null, 180000)) {
                     ++failed;
                     try { DebugSink.text("batch-export", "open failed " + index + " " + name); }
-                    catch (Throwable ignored) { }
+                    catch (Throwable spkIgnored) { Diagnostics.ignored("get:14353", spkIgnored); }
                     continue;
                 }
                 final java.util.concurrent.CountDownLatch done =
@@ -14451,19 +14366,19 @@ public class MainActivity extends Activity {
                         if (session != null) { session.close(); session = null; }
                     }
                 }, 5000);
-                try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
+                try { if (engine != null) engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("get:14369", spkIgnored); }
                 // **The next frame starts from zero.** The decoded raw cache
                 // holds one frame's unpacked plane, and the heap still carries
                 // the last frame's bitmaps; six frames of that is what made the
                 // fifth one die.
-                try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
+                try { SpektraLabEngine.clearRawCache(); } catch (Throwable spkIgnored) { Diagnostics.ignored("get:14374", spkIgnored); }
                 System.gc();
             }
             } finally {
                 // **The flag has to come down even when the loop throws**, or
                 // every later batch is refused and every error dialog is eaten.
                 final int fok = ok, ffail = failed;
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     batchExportRunning = false;
                     if (abortBatchPill != null) abortBatchPill.setVisibility(View.GONE);
                     if (exportProgressBar != null) exportProgressBar.setVisibility(View.GONE);
@@ -14480,7 +14395,7 @@ public class MainActivity extends Activity {
                         // already finished.
                         new Thread(() -> {
                             if (!pollUntil(() -> session != null, 120000)) return;
-                            runOnUiThread(() -> {
+                            UiDispatcher.post(() -> {
                                 // **800, not 2048.** Six full-size exports leave
                                 // the pool carrying a gigabyte of lookup tables
                                 // that nothing reclaims; the redisplay then asked
@@ -14521,7 +14436,7 @@ public class MainActivity extends Activity {
                         + new String(buf, java.nio.charset.StandardCharsets.UTF_8));
                 f.delete();
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("uploadStaleExportProgress:14439", spkIgnored); }
     }
 
     private java.io.File vkLogFile() {
@@ -14548,7 +14463,7 @@ public class MainActivity extends Activity {
             DebugSink.text("vk-log", "bytes=" + len + " from=" + start + "\n"
                     + new String(buf, java.nio.charset.StandardCharsets.UTF_8));
         } catch (Throwable t) {
-            try { DebugSink.text("vk-log", "read failed: " + t); } catch (Throwable ignored) {}
+            try { DebugSink.text("vk-log", "read failed: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("uploadVkLog:14466", spkIgnored); }
         }
     }
 
@@ -14559,7 +14474,7 @@ public class MainActivity extends Activity {
             String mem = engine != null ? engine.memoryReport() : null;
             if (mem != null) DebugSink.text("memory-report", mem);
             uploadStaleExportProgress();
-        } catch (Throwable ignored) {}
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("uploadCapabilities:14477", spkIgnored); }
     }
 
     /** Upload the native export black box, if the JNI left one. */
@@ -14574,7 +14489,7 @@ public class MainActivity extends Activity {
             }
             DebugSink.text("export-progress", new String(buf, java.nio.charset.StandardCharsets.UTF_8));
             prog.delete();
-        } catch (Throwable ignored) {}
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("uploadExportProgress:14492", spkIgnored); }
     }
 
     /** The rebate's canvas as `WxH`, or "" when this frame has no rebate.
@@ -14614,7 +14529,7 @@ public class MainActivity extends Activity {
                         src.has("iso") ? String.valueOf(Math.round(src.getDouble("iso"))) : "",
                         src.has("focal") ? String.format(us, "%.1f", src.getDouble("focal")) : ""};
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("sourceExifJson:14532", spkIgnored); }
         return none;
     }
 
@@ -14642,22 +14557,22 @@ public class MainActivity extends Activity {
                         try (java.io.FileOutputStream out = new java.io.FileOutputStream(dump)) {
                             out.write(head);
                         }
-                    } catch (Throwable ignored) { }
+                    } catch (Throwable spkIgnored) { Diagnostics.ignored("getExternalFilesDir:14560", spkIgnored); }
                 }
                 try {
                     final byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(head);
                     final StringBuilder hex = new StringBuilder();
                     for (int i = 0; i < 8; ++i) hex.append(String.format("%02x", digest[i]));
                     headHash = hex.toString();
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("StringBuilder:14567", spkIgnored); }
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("StringBuilder:14569", spkIgnored); }
         try (android.database.Cursor c = getContentResolver().query(sourceUri, null, null, null, null)) {
             if (c != null && c.moveToFirst()) {
                 final int idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE);
                 if (idx >= 0 && !c.isNull(idx)) declared = String.valueOf(c.getLong(idx));
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("getColumnIndex:14575", spkIgnored); }
         try (java.io.InputStream in = getContentResolver().openInputStream(sourceUri)) {
             if (in != null) {
                 final android.media.ExifInterface src = new android.media.ExifInterface(in);
@@ -14669,7 +14584,7 @@ public class MainActivity extends Activity {
                 platformFields[5] = nz(src.getAttribute(android.media.ExifInterface.TAG_ISO_SPEED_RATINGS));
                 platformFields[6] = nz(src.getAttribute(android.media.ExifInterface.TAG_FOCAL_LENGTH));
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("ExifInterface:14587", spkIgnored); }
         final String[] merged = new String[7];
         for (int i = 0; i < 7; ++i) {
             // A number field that came back as a bare zero is "not known": the
@@ -14681,13 +14596,13 @@ public class MainActivity extends Activity {
         }
         try {
             String sourceName = "";
-            try { sourceName = getFileName(sourceUri); } catch (Throwable ignored) { }
+            try { sourceName = getFileName(sourceUri); } catch (Throwable spkIgnored) { Diagnostics.ignored("isEmpty:14599", spkIgnored); }
             DebugSink.text("exif", "jpeg source name=" + sourceName + " size=" + declared
                     + " head=" + headBytes + " B sha=" + headHash + " uri=" + sourceUri
                     + " native=" + java.util.Arrays.toString(nativeFields)
                     + " platform=" + java.util.Arrays.toString(platformFields)
                     + " -> " + java.util.Arrays.toString(merged));
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("isEmpty:14605", spkIgnored); }
         return merged;
     }
 
@@ -14761,7 +14676,7 @@ public class MainActivity extends Activity {
                 final String v = edgeVerdictOfLine(line);
                 if (v != null) return v;
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:14679", spkIgnored); }
         return null;
     }
 
@@ -14890,7 +14805,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ext);
             try {
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     statusText.setText(tr("export.exporting_preparing_full_size_render"));
                     exportProgressBar.setVisibility(View.VISIBLE);
                     setStep(3);
@@ -14902,7 +14817,7 @@ public class MainActivity extends Activity {
                 try {
                     DebugSink.text("export-params", "film=" + filmStock + " print=" + printStock
                             + " pex=" + printExposure + " (no delta sent)");
-                } catch (Throwable ignored) {}
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("equals:14820", spkIgnored); }
 
                 // **The numbers the export is about to spend, before it spends
                 // them.** Which frame, which cap, whether the rebate is on, and
@@ -14920,7 +14835,7 @@ public class MainActivity extends Activity {
                             + " importCap=" + importCapPixels + " frameCap=" + maxImportPixels()
                             + " overscan=" + overscanOn + " tier=" + tier
                             + " avail=" + (availableMemoryBytes() >> 20) + "MiB");
-                } catch (Throwable ignored) { }
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("equals:14838", spkIgnored); }
                 final long t0 = System.currentTimeMillis();
                 // The stop pill used to be checked only between frames: a batch of
                 // twenty pictures could not be stopped once one export started.
@@ -14949,7 +14864,7 @@ public class MainActivity extends Activity {
                                 final long avail = availableMemoryBytes();
                                 DebugSink.textNow("export-mem", el + "s avail=" + (avail >> 20)
                                         + "MiB " + (engine == null ? "no engine" : engine.memoryReport()));
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:14867", spkIgnored); }
                         }
                         ticker.postDelayed(this, 1000);
                     }
@@ -14971,18 +14886,18 @@ public class MainActivity extends Activity {
                             // and survives the kill; the report picks it up.
                             CrashTrail.markNow(MainActivity.this, "export-mem " + line);
                             DebugSink.textNow("export-mem", line);
-                        } catch (Throwable ignored) { }
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:14889", spkIgnored); }
                         try { Thread.sleep(5000); } catch (InterruptedException ie) { break; }
                     }
                 }, "SpektraLab-export-memory");
                 memTicker.setDaemon(true);
                 memTicker.start();
-                runOnUiThread(tick);
+                UiDispatcher.post(tick);
                 // A full-size export does not need the preview bitmaps resident.
                 // Keep the frame and its Look; these two are only the display.
                 final Bitmap savedBefore = beforeBitmap;
                 final Bitmap savedAfter = lastRenderedBitmap;
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     beforeBitmap = null;
                     lastRenderedBitmap = null;
                     if (compare != null) compare.clear();
@@ -15000,7 +14915,7 @@ public class MainActivity extends Activity {
                             final long freed = engine.trimPool();
                             DebugSink.text("export", "pre-export trim freed " + (freed >> 20)
                                     + " MiB; report " + engine.memoryReport());
-                        } catch (Throwable ignored) { }
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:14918", spkIgnored); }
                         // **A session of its own for the export.** The preview
                         // session has already rasterised the rebate's masks at
                         // the preview's millimetres per pixel. Rendering that
@@ -15032,7 +14947,7 @@ public class MainActivity extends Activity {
                                 keepSuspended = keep.suspend();
                                 DebugSink.text("export", "preview suspended=" + keepSuspended
                                         + "; report " + engine.memoryReport());
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:14950", spkIgnored); }
                         }
                         CrashTrail.markNow(MainActivity.this, "export:suspend " + keepSuspended);
                         SpektraLabEngine.Session fresh = null;
@@ -15094,7 +15009,7 @@ public class MainActivity extends Activity {
                                     fresh = null;
                                     try { DebugSink.textNow("export-full",
                                             "could not re-decode at " + fw + "x" + fh + ": " + e); }
-                                    catch (Throwable ignored) { }
+                                    catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:15012", spkIgnored); }
                                 } finally {
                                     if (fullBmp != null) fullBmp.recycle();
                                     if (fullBuf != null) SpektraLabEngine.freeDirect(fullBuf);
@@ -15167,7 +15082,7 @@ public class MainActivity extends Activity {
                                             + " pin=" + (pinEv ? f("%.6f", lastAppliedEv) : "none")
                                             + " offset=" + f("%.4f", cameraEv)
                                             + " paper=" + printStock + " raw=" + rawFilePath);
-                                } catch (Throwable ignored) { }
+                                } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:15085", spkIgnored); }
                                 fresh = wbMul != null
                                         ? engine.openRawSessionTuned(rawFilePath,
                                                 "{\"print_stock\":\"" + (printStock == null ? "kodak_portra_endura" : printStock)
@@ -15274,7 +15189,7 @@ public class MainActivity extends Activity {
                             final long avail = availableMemoryBytes();
                             final boolean tight = avail > 0 && needBytes > avail * 55L / 100L;
                             if (!wasSuspended || tight) {
-                                try { keep.close(); } catch (Throwable ignored) { }
+                                try { keep.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15192", spkIgnored); }
                                 if (session == keep) session = null;
                                 keepSuspended = false;
                                 keepClosed = true;
@@ -15283,7 +15198,7 @@ public class MainActivity extends Activity {
                                             + " suspended=" + wasSuspended
                                             + " need=" + (needBytes >> 20)
                                             + " avail=" + (avail >> 20) + " MiB");
-                                } catch (Throwable ignored) { }
+                                } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15201", spkIgnored); }
                             }
                         }
                         if (exportSession == null) {
@@ -15292,8 +15207,8 @@ public class MainActivity extends Activity {
                             // frame; dereferencing it was a null pointer.
                             try {
                                 DebugSink.text("export-error", "tier=" + tier + " no session for the export");
-                            } catch (Throwable ignored) { }
-                            runOnUiThread(() -> {
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15210", spkIgnored); }
+                            UiDispatcher.post(() -> {
                                 showInAppToast(tr("export.skipping_this_photo_it_is"));
                                 if (onDone != null) onDone.run();
                             });
@@ -15301,7 +15216,7 @@ public class MainActivity extends Activity {
                         }
                         if (fresh != null) {
                             try { DebugSink.text("export", "fresh session for tier=" + tier); }
-                            catch (Throwable ignored) { }
+                            catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15219", spkIgnored); }
                         } else if (keepSuspended && keep != null) {
                             // **The export is about to run on the session we just
                             // suspended.** Every branch that builds a fresh session is
@@ -15313,10 +15228,10 @@ public class MainActivity extends Activity {
                             // with a shape and no buffer: `affine: input plane has no
                             // buffer (7387x4952x3)`, on a frame that previews perfectly.
                             // Give the planes back before the export asks for them.
-                            try { keep.resume(); } catch (Throwable ignored) { }
+                            try { keep.resume(); } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15231", spkIgnored); }
                             keepSuspended = false;
                             try { DebugSink.text("export", "no fresh session; preview resumed"); }
-                            catch (Throwable ignored) { }
+                            catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15234", spkIgnored); }
                         }
                         try {
                             // Everything the preview drew with, re-stated: a
@@ -15377,11 +15292,11 @@ public class MainActivity extends Activity {
                                                 + " solved=" + f("%.4f", ev)
                                                 + (sane ? "" : " (clamped)")
                                                 + " sameFrame=" + lastAppliedEvValid);
-                                    } catch (Throwable ignored) { }
+                                    } catch (Throwable spkIgnored) { Diagnostics.ignored("abs:15295", spkIgnored); }
                                 } else {
                                     exportSession.clearPinAutoExposureEv();
                                 }
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("abs:15299", spkIgnored); }
                             // **Which object got the parameters.** The owner's
                             // files come out at print_exposure 1.0 while this app
                             // sends 0.41 -- on the same frame the host answers
@@ -15396,7 +15311,7 @@ public class MainActivity extends Activity {
                                 DebugSink.text("export-ident", "sent hash=" + System.identityHashCode(exportSession)
                                         + " fresh=" + (fresh != null) + " keep=" + (keep != null)
                                         + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15314", spkIgnored); }
                             try {
                                 DebugSink.text("export-exposure", "tier=" + tier
                                         + " auto=" + exportAutoExposure
@@ -15406,12 +15321,12 @@ public class MainActivity extends Activity {
                                         + (lastAppliedEvValid ? "" : " (none)")
                                         + " solveEv=" + f("%.4f", meteredEv)
                                         + " offset=" + f("%.2f", cameraEv));
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15324", spkIgnored); }
                             try {
                                 DebugSink.text("overscan-geom", "tier=" + tier + " before "
                                         + exportSession.overscanGeometry());
                                 DebugSink.text("export-params", "tier=" + tier + " " + exportSession.getParams());
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15329", spkIgnored); }
                             // **Metadata goes in with the pixels.** The writer
                             // appends one APP1 segment and then the ICC profile;
                             // nothing reopens the finished file afterwards.
@@ -15443,7 +15358,7 @@ public class MainActivity extends Activity {
                                 int j = gp.indexOf("\"print_exposure\"");
                                 DebugSink.text("export-ident", "call hash=" + System.identityHashCode(exportSession)
                                         + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15361", spkIgnored); }
                             if (batchExportAbort) throw new IllegalStateException(tr("export.stopped"));
                             CrashTrail.markNow(this, "export:write " + tier + " " + format);
                             Thread wtick = startTick("export", exportSession);
@@ -15460,27 +15375,27 @@ public class MainActivity extends Activity {
                             try {
                                 DebugSink.text("overscan-geom", "tier=" + tier + " " + info[0] + "x" + info[1]
                                         + " " + exportSession.overscanGeometry());
-                            } catch (Throwable ignored) { }
+                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15378", spkIgnored); }
                         } finally {
                             if (fresh != null) {
-                                try { fresh.close(); } catch (Throwable ignored) { }
+                                try { fresh.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15381", spkIgnored); }
                                 // **The export's pool goes back before the
                                 // preview's planes come back.** `resume`
                                 // allocates persistent buffers, and they cannot
                                 // come out of an arena the export is still
                                 // sitting in -- the whole reason the preview was
                                 // suspended is that the two do not fit at once.
-                                try { engine.trimPool(); } catch (Throwable ignored) { }
+                                try { engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15388", spkIgnored); }
                             }
                             if (keepSuspended && keep != null) {
-                                try { keep.resume(); } catch (Throwable ignored) { }
+                                try { keep.resume(); } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15391", spkIgnored); }
                             }
                             final boolean closedForExport = keepClosed;
                             if (closedForExport) {
                                 // The preview session was closed to make room for
                                 // the export, so the canvas has nothing behind it.
                                 // Re-open the same frame the way a chip does.
-                                runOnUiThread(() -> {
+                                UiDispatcher.post(() -> {
                                     if (!uiReady) return;
                                     if (currentFrame < 0 || currentFrame >= frames.size()) return;
                                     CrashTrail.mark(MainActivity.this, "export:reopen after close");
@@ -15500,12 +15415,12 @@ public class MainActivity extends Activity {
                             final long freed = engine.trimPool();
                             DebugSink.text("export", "pool trim freed "
                                     + (freed >> 20) + " MiB; report " + engine.memoryReport());
-                        } catch (Throwable ignored) { }
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:15418", spkIgnored); }
                     }
                 } finally {
                     spinning.set(false);
-                    try { memTicker.interrupt(); } catch (Throwable ignored) { }
-                    runOnUiThread(() -> {
+                    try { memTicker.interrupt(); } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:15422", spkIgnored); }
+                    UiDispatcher.post(() -> {
                         if (beforeBitmap == null) beforeBitmap = savedBefore;
                         if (lastRenderedBitmap == null) lastRenderedBitmap = savedAfter;
                         if (compare != null) {
@@ -15528,7 +15443,7 @@ public class MainActivity extends Activity {
                 // `"jpg".equals(ext)` against an `ext` of ".jpg", so for a whole
                 // release no export carried any of it -- silently.)
                 final int fw = w, fh = h;
-                runOnUiThread(() -> statusText.setText(tr("export.exporting_saving_to_the_photo") + fw + "x" + fh + "..."));
+                UiDispatcher.post(() -> statusText.setText(tr("export.exporting_saving_to_the_photo") + fw + "x" + fh + "..."));
                 String fileName = "SpektraLab_" + System.currentTimeMillis() + ext;
                 final Uri outUri = writeExportFile(tmp, fileName, ext, mime);
                 // **Does the file look like the picture we think we wrote?**
@@ -15551,17 +15466,17 @@ public class MainActivity extends Activity {
                                     String.format(java.util.Locale.US,
                                         "canvas NCC %.3f at %dx%d tier=%s overscan=%s — file kept? no, retrying",
                                         ncc, w, h, tier, overscanOn) + "\n" + reportHead());
-                        } catch (Throwable ignored) { }
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("writeExportFile:15469", spkIgnored); }
                     } else if (ncc >= 0) {
                         try { DebugSink.text("export-selfcheck", String.format(
                                 java.util.Locale.US, "canvas NCC %.3f", ncc)); }
-                        catch (Throwable ignored) { }
+                        catch (Throwable spkIgnored) { Diagnostics.ignored("writeExportFile:15473", spkIgnored); }
                     }
                 }
                 {
                     final String verdict = exportCorruptNow ? null : inspectExportedFile(tmp.getAbsolutePath());
                     if (verdict != null) {
-                        try { DebugSink.textNow("export-selfcheck", verdict); } catch (Throwable ignored) { }
+                        try { DebugSink.textNow("export-selfcheck", verdict); } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15479", spkIgnored); }
                         // **Say it out loud.** This measurement has existed since
                         // the "garbled, once, never again" report, but it only
                         // ever reached the status bar -- and the field reports
@@ -15571,7 +15486,7 @@ public class MainActivity extends Activity {
                         // normal 0.5-1) and the app called it a success.
                         // The file stays -- the render cost minutes -- but it
                         // is named as suspect and the user is told to try again.
-                        runOnUiThread(() -> {
+                        UiDispatcher.post(() -> {
                             if (statusText != null) statusText.setText(tr("export.the_export_did_not_pass") + verdict);
                             showInAppToast(tr("export.the_export_may_be_corrupted"));
                         });
@@ -15591,8 +15506,8 @@ public class MainActivity extends Activity {
                         // queued path is exactly what lost the last three.
                         try {
                             DebugSink.textNow("edge-ruler", ruler + "\n" + reportHead());
-                        } catch (Throwable ignored) { }
-                        runOnUiThread(() -> {
+                        } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15509", spkIgnored); }
+                        UiDispatcher.post(() -> {
                             if (statusText != null) statusText.setText(tr("export.edge_check") + ruler);
                         });
                     }
@@ -15608,13 +15523,13 @@ public class MainActivity extends Activity {
                     // 30 MB and passed to DebugSink.bytes(), which discards them.
                     // The file size above is the whole diagnostic; do not read it
                     // back into the heap at the end of a minutes-long export.
-                } catch (Throwable ignored) {}
+                } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15526", spkIgnored); }
                 final long secs = Math.max(1, (System.currentTimeMillis() - t0) / 1000);
                 final long fRender = renderMs;
                 final long bytes = tmp.exists() ? tmp.length() : 0;
                 final String sizeLabel = bytes > 0
                         ? String.format("%.1f MB", bytes / 1048576.0) : "?";
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     lastExportUri = outUri;
                     lastExportMime = mime;
                     // A separate control, and only when it has something to do:
@@ -15643,10 +15558,10 @@ public class MainActivity extends Activity {
                 final String msg = describe(e);
                 DebugSink.text("failure", AppFailure.of(AppFailure.Stage.EXPORT, e).stage
                         + ": " + msg);
-                try { DebugSink.text("export-error", "tier=" + tier + " " + msg); } catch (Throwable ignored) {}
+                try { DebugSink.text("export-error", "tier=" + tier + " " + msg); } catch (Throwable spkIgnored) { Diagnostics.ignored("describe:15561", spkIgnored); }
                 uploadExportProgress(tmp);
                 uploadVkLog();
-                runOnUiThread(() -> {
+                UiDispatcher.post(() -> {
                     statusText.setText(tr("export.export_failed") + SpkError.shortForm(msg));
                     showErrorDialog(tr("export.export_failed_2"), SpkError.format(msg)
                             + "\n\n" + sourceWidth + "×" + sourceHeight
@@ -15664,16 +15579,16 @@ public class MainActivity extends Activity {
                 // the UI thread, and let the second attempt report.
                 if (exportCorruptNow && !exportRetried && !batchExportRunning) {
                     exportRetried = true;
-                    runOnUiThread(() -> {
+                    UiDispatcher.post(() -> {
                         if (statusText != null) statusText.setText(tr("export.the_export_did_not_pass_3"));
                         exportImage(format, tier, onDone);
                     });
                     return;
                 }
                 if (exportCorruptNow) {
-                    runOnUiThread(() -> showInAppToast(tr("export.the_export_may_be_corrupted_2")));
+                    UiDispatcher.post(() -> showInAppToast(tr("export.the_export_may_be_corrupted_2")));
                 }
-                if (onDone != null) runOnUiThread(onDone);
+                if (onDone != null) UiDispatcher.post(onDone);
             }
         }).start();
     }
@@ -15726,7 +15641,7 @@ public class MainActivity extends Activity {
             try {
                 DebugSink.text("resources", "copied in " + (System.currentTimeMillis() - t0)
                         + " ms (bundle " + want + ")");
-            } catch (Throwable ignored) {}
+            } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:15644", spkIgnored); }
         }
         return dir.getAbsolutePath();
     }
@@ -15808,7 +15723,7 @@ public class MainActivity extends Activity {
         // reclaims first. Save before it does, not in onDestroy, which is not
         // called on a kill.
         persistHandler.removeCallbacks(persistSession);
-        try { saveLookIntoFrames(); } catch (Throwable ignored) { }
+        try { saveLookIntoFrames(); } catch (Throwable spkIgnored) { Diagnostics.ignored("onPause:15726", spkIgnored); }
         saveSessionState();
         super.onPause();
     }

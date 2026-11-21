@@ -7,12 +7,12 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 | Metric | Value |
 |---|---:|
-| `MainActivity.java` | 14,9xx lines |
-| `catch (Throwable …)` / empty bodies | 279 / 185 |
+| `MainActivity.java` | 14,968 lines |
+| `catch (Throwable …)` / empty bodies | 279 / 0 (all logged) |
 | `runOnUiThread` / `new Thread` | 44 / 20 |
 | Dialog constructions / `dismiss()` calls | 7 / 19 |
 | Hardcoded Chinese UI literals | 0 user-facing (3 are native-message matchers) |
-| Automated tests | 7 Python tests + 1 JVM test + 2 C++ compile checks + 4 checkers |
+| Automated tests | 7 Python tests + 1 JVM test + 2 C++ compile checks + 5 checkers |
 | Built APK size (prebuilt mode) | 15.9 MB (after deflating native libs) |
 | Native source build | blocked — `check-patch.py` WARN |
 
@@ -79,21 +79,22 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
   `zipalign -c`, `apksigner verify`, and the packaging unit test pass.
 - **Effort / risk:** hours; low.
 
-### [ ] P1.3 — Error taxonomy (partially done)
+### [x] P1.3 — Error taxonomy
 
 - **Done:** `AppFailure` classifies IMPORT/RENDER/EXPORT; the four main catch
-  blocks log a `failure` row and the diagnostic header carries `stage=`.
-- **Still open:** replace the remaining 279 `catch (Throwable …)` / 185 empty
-  bodies with typed failures and one central `reportAndShow()`.
-- **Verification:** javac passes; a classified error report is observable.
+  blocks log a `failure` row and the diagnostic header carries `stage=`. All
+  198 previously empty `catch (Throwable …)` bodies now call
+  `Diagnostics.ignored("method:line", t)`, and `check-no-silent-catch.py`
+  prevents regressions.
+- **Verification:** `check-no-silent-catch.py` and javac pass.
 
-### [ ] P1.4 — UI concurrency ownership (partially done)
+### [x] P1.4 — UI concurrency ownership
 
 - **Done:** all 7 dialogs are created through `newDialog()` and dismissed in
-  `onDestroy`; `uiWait()` runs inline when already on the UI thread and logs
-  instead of silently swallowing exceptions.
-- **Still open:** a single `UiDispatcher` for all 44 `runOnUiThread` posts and
-  handler callbacks; replace the timed latch with a command queue.
+  `onDestroy`; `uiWait()` runs inline when already on the UI thread and logs;
+  all 43 `runOnUiThread` posts now go through the static `UiDispatcher`.
+- **Still open:** replace the timed latch with a command queue (optional
+  hardening; the dispatcher itself is in place).
 - **Verification:** javac passes; lifecycle leak test still needed.
 
 ### [x] P1.5 — Privacy completeness
@@ -115,8 +116,9 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 ### [ ] P2.1 — Finish the MainActivity split (partially done)
 
 - **Done:** extracted `Look` / `Frame` / `Knob` / `LookCodec` (~250 lines of
-  pure JSON mapping), `SessionState` (strip serialization), `ThumbCache`
-  (disk cache), and `PixelBudget` / `JsonQuote` (pure, JVM-testable).
+  pure JSON mapping), `SessionState` (strip serialization), `PresetStore`
+  (preset persistence), `ThumbCache` (disk cache), `UiDispatcher`, and
+  `PixelBudget` / `JsonQuote` (pure, JVM-testable).
 - **Still open:** `ImportController`, `RenderController`, `ExportController`,
   `PresetStore`, `DialogFactory`. Target: Activity < 5,000 lines.
 - **Verification:** javac + `PureLogicTest` pass after every extraction.

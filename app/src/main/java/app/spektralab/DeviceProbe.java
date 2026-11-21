@@ -301,8 +301,7 @@ public final class DeviceProbe {
             o.put("budget_px", budgetPixels);
             o.put("limited", isLimited());
             o.put("ts", System.currentTimeMillis() / 1000L);
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("reportJson:304", spkIgnored); }
         return o;
     }
 }

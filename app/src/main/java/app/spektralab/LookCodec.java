@@ -120,7 +120,7 @@ final class LookCodec {
             o.put("overscan", l.overscanOn);
             o.put("format", l.overscanFormat == null ? "135" : l.overscanFormat);
             o.put("date", l.dateOn);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("JSONArray:123", spkIgnored); }
         return o;
     }
 

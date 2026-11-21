@@ -24,7 +24,7 @@ final class ThumbCache {
         if (frame == null || frame.thumb == null) return;
         try (FileOutputStream out = new FileOutputStream(file(context, frame.uri))) {
             frame.thumb.compress(Bitmap.CompressFormat.PNG, 100, out);
-        } catch (Throwable ignored) { }
+        } catch (Throwable spkIgnored) { Diagnostics.ignored("persist:27", spkIgnored); }
     }
 
     static Bitmap read(Context context, Uri uri) {

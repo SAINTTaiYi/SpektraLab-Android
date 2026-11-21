@@ -34,6 +34,8 @@ Write-Host '== build-tool tests =='
 Report 'test_build_tools' ($LASTEXITCODE -eq 0)
 & $py "$root\app\build\test_checkers.py"
 Report 'test_checkers' ($LASTEXITCODE -eq 0)
+& $py "$root\app\build\check-no-silent-catch.py"
+Report 'check-no-silent-catch' ($LASTEXITCODE -eq 0)
 
 Write-Host '== Java compilation =='
 $jdk = (Get-ChildItem "$BuildHome\jdk-17*" -Directory -ErrorAction SilentlyContinue |

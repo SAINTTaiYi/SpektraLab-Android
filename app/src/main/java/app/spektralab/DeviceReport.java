@@ -128,11 +128,11 @@ final class DeviceReport {
                 if (status == 200) p.edit().putLong(KEY_LAST, now).apply();
                 p.edit().putString(KEY_SEEN, String.valueOf(status)).apply();
                 try { DebugSink.text("driver-report", status + "\n" + body); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("getResponseCode:131", spkIgnored); }
             } catch (Throwable t) {
                 p.edit().putString(KEY_SEEN, "error · " + t.getClass().getSimpleName()).apply();
                 try { DebugSink.text("driver-report", "failed: " + t + "\n" + body); }
-                catch (Throwable ignored) { }
+                catch (Throwable spkIgnored) { Diagnostics.ignored("getResponseCode:135", spkIgnored); }
             } finally {
                 if (conn != null) conn.disconnect();
             }
