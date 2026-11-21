@@ -94,15 +94,7 @@ $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 # version.json is the single source of truth for the release identity.
 $version = Get-Content -LiteralPath "$root\version.json" -Raw | ConvertFrom-Json
 if ($UseReleaseNative) {
-    $release = Join-Path $BuildHome $version.releaseApk
-    if (!(Test-Path $release)) {
-        $url = "https://github.com/SAINTTaiYi/SpektraLab-Android/releases/download/v$($version.versionName)/$($version.releaseApk)"
-        curl.exe --fail --location --silent --show-error --retry 2 $url -o "$release.part"
-        Move-Item "$release.part" $release -Force
-    }
-    if ((Get-FileHash $release -Algorithm SHA256).Hash -ne $version.releaseSha256) {
-        throw "Release APK checksum mismatch: $release"
-    }
+    $release = & "$root\scripts\cache-release.ps1" -BuildHome $BuildHome
     Write-Host "Using v$($version.versionName) release native libraries and assets; C++ changes are not included."
 } elseif ($UsePrebuiltNative) {
     & $python "$root\app\build\check-prebuilt.py"
@@ -123,14 +115,16 @@ try {
     } elseif ($UsePrebuiltNative) {
         Copy-Item "$root\app\prebuilt\arm64-v8a\*.so" $abiDir
         $localAssets = "$root\app\src\main\assets"
-        $cachedRelease = Join-Path $BuildHome $version.releaseApk
         if (Test-Path "$localAssets\resources") {
             Get-ChildItem $localAssets -Exclude locales | Copy-Item -Destination "$stage\assets" -Recurse -Force
-        } elseif (Test-Path $cachedRelease) {
-            # Offline: reuse an already downloaded APK for its assets only.
-            & $python $apkContents assets $stage $cachedRelease
         } else {
-            throw 'No engine assets: put them in app/src/main/assets/resources or cache the release APK in BuildHome.'
+            # Offline by design: never download just to get assets.
+            try {
+                $cached = & "$root\scripts\cache-release.ps1" -BuildHome $BuildHome -Offline
+            } catch {
+                throw 'No engine assets: put them in app/src/main/assets/resources or cache the release APK with scripts/cache-release.ps1.'
+            }
+            & $python $apkContents assets $stage $cached
         }
     } else {
         $resources = "$stage\assets\resources"

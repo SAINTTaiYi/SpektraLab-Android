@@ -13,6 +13,16 @@ From the repository root:
 .\scripts\build-windows.ps1 -UseReleaseNative
 ```
 
+The release APK is cached in `%LOCALAPPDATA%\SpektraLabBuild`, verified against
+the SHA-256 in `version.json`, and reused on later builds. To populate or refresh
+that cache explicitly (once, while online):
+
+```powershell
+.\scripts\cache-release.ps1            # download + verify, or reuse a valid cache
+.\scripts\cache-release.ps1 -Force     # re-download and re-verify
+.\scripts\cache-release.ps1 -Offline   # fail instead of downloading
+```
+
 Review and accept the SDK package license when prompted. If you have already
 reviewed the license and want unattended setup, pass `-AcceptAndroidLicenses`.
 Both scripts accept `-BuildHome`; the default is
