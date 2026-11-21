@@ -56,6 +56,11 @@ public class MainActivity extends Activity {
     // than the memory estimate asks again: the number is advice, and the answer
     // is the user's.
     private boolean importAtNativeSize = false;
+    /**
+     * The frame on the canvas was imported with 「按原图」: its export owes the
+     * file's own size, even though the session holds the device's budget.
+     */
+    private boolean exportAtNative = false;
     /** A cap the last E-1001 offered, good for exactly one import. */
     private int pendingCapPixels = 0;
     /** The user has already said yes to this frame's downscale. One import. */
@@ -28868,6 +28873,20 @@ public class MainActivity extends Activity {
             // so one exact scale follows if the sample still overshoots.
             final boolean nativeSize = importAtNativeSize;
             importAtNativeSize = false;                       // one import only
+            // **「按原图」 is about the export, not about what the engine
+            // holds.** It used to lift every ceiling here, so a 200 MP file
+            // opened a 200 MP session: 12 B/px of float is 2.4 GB, beside an
+            // 800 MB ARGB bitmap, for a canvas that renders at 2048 and a
+            // negative cache that holds the frame again. That is the 4.9-6.5 GB
+            // low-memory kills in 1.7.0's first four hours, and a five-second
+            // main-thread stall on the way in.
+            //
+            // The session now takes the device's own budget, and
+            // `exportAtNative` sends the export back to the file for its real
+            // size -- `exportImage` already re-decodes and opens a fresh
+            // session for exactly that (the `bigger` branch). Same promise,
+            // a tenth of the frame.
+            exportAtNative = nativeSize;
             // A cap the last render failure handed us (see offerSmallerImport):
             // one import's worth, then back to the device's own answer.
             final int forcedCap = pendingCapPixels;
@@ -28875,9 +28894,8 @@ public class MainActivity extends Activity {
             e1001Offered = false;
             // An explicit "render smaller" from the failure sheet outranks the
             // native default: the user asked for that one.
-            final int capPixels = forcedCap > 0 ? forcedCap
-                    : (nativeSize ? Integer.MAX_VALUE : maxImportPixels());
-            final int edgeCap = nativeSize ? Integer.MAX_VALUE : IMPORT_LONG_EDGE;
+            final int capPixels = forcedCap > 0 ? forcedCap : maxImportPixels();
+            final int edgeCap = IMPORT_LONG_EDGE;
             // The cleanup above (shelf queue, session close, gc) is its own
             // stretch; without this mark a death there would still be reported
             // as `import:look` and blamed on the decoder.
@@ -29640,6 +29658,10 @@ public class MainActivity extends Activity {
                     // limit (16,776,960 px) this driver still loses blocks over.
                     final boolean nativeSize = importAtNativeSize;
                     importAtNativeSize = false;                   // one import only
+                    // The raw path re-opens at the file's own size for its
+                    // export already (`openRawSession(..., 0, 0)`), so a flag
+                    // left over from a JPEG import must not reach it.
+                    exportAtNative = false;
                     if (nativeSize) {
                         try { DebugSink.text("import-mode", "native size, no cap"); } catch (Throwable ignored) { }
                     }
@@ -36643,6 +36665,19 @@ public class MainActivity extends Activity {
      * power-of-two sample above the cap and then scaled down exactly, and the
      * size it settled on is logged.
      */
+    /**
+     * The pixel cap an export decode gets.
+     *
+     * <p>`maxImportPixels()` is what the canvas can hold; it is not what the
+     * export is allowed to be. A frame imported with 「按原图」 promised the
+     * file's own size, so that decode asks for it -- and when the phone cannot
+     * hold it, the export says which allocation failed instead of quietly
+     * writing the working size.
+     */
+    private long exportPixelCap() {
+        return exportAtNative ? Long.MAX_VALUE / 4L : Math.max(4_000_000L, maxImportPixels());
+    }
+
     private Bitmap decodeForExport(String path, long capPixels) {
         final android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
         o.inJustDecodeBounds = true;
@@ -36729,6 +36764,12 @@ public class MainActivity extends Activity {
                 Bitmap bmp = null;
                 try {
                     if (!rawSource) {
+                        // **Still the budget, not the file.** `exportOriginal`
+                        // hands the bitmap to a writer that materialises 8 B/px
+                        // in native (a 200 MP file would ask for 1.6 GB on top
+                        // of the 800 MB bitmap), and it is the *undeveloped*
+                        // photograph rather than the developed export 「按原图」
+                        // is about. Unchanged from 1.7.0f.
                         bmp = decodeForExport(path, Math.max(4_000_000L, maxImportPixels()));
                         // **The same turn the import applied.** `decodeForExport`
                         // is a plain BitmapFactory read: it does not look at tag
@@ -37073,8 +37114,16 @@ public class MainActivity extends Activity {
                         // inside the driver (SL-261111-204F: `suspend=false`,
                         // then `raw-session fresh`, then the driver faulted).
                         // Same decision, same threshold, taken one step earlier.
-                        final long exportNeed = (long) sourceWidth * sourceHeight * 12L * 51L / 10L
-                                + (160L << 20);
+                        // **The export's own size, not the session's.** With
+                        // 「按原图」 the session is the working size and the
+                        // export re-decodes at the file's, which can be ten
+                        // times what this heuristic was weighing.
+                        long needPixels = (long) sourceWidth * sourceHeight;
+                        final int[] fileSize = exportAtNative && sourceUri != null
+                                ? sniffImageSize(sourceUri) : null;
+                        if (fileSize != null && fileSize[0] > 0 && fileSize[1] > 0)
+                            needPixels = (long) fileSize[0] * fileSize[1];
+                        final long exportNeed = needPixels * 12L * 51L / 10L + (160L << 20);
                         final long exportAvail = availableMemoryBytes();
                         if (!reuseCanvas && keep != null && (!keepSuspended
                                 || (exportAvail > 0 && exportNeed > exportAvail * 55L / 100L))) {
@@ -37118,8 +37167,7 @@ public class MainActivity extends Activity {
                                 // release frame is the largest this phone can develop, not
                                 // the largest the file happens to be.
                                 if (path != null) {
-                                    fullBmp = decodeForExport(path,
-                                            Math.max(4_000_000L, maxImportPixels()));
+                                    fullBmp = decodeForExport(path, exportPixelCap());
                                 }
                             } catch (Throwable ignored) { fullBmp = null; }
                             final boolean bigger = fullBmp != null
@@ -37130,7 +37178,16 @@ public class MainActivity extends Activity {
                                 try {
                                     fullBuf = SpektraLabEngine.allocPixels((long) fw * fh * 12L);
                                     liftRows(fullBmp, fullBuf, fw, fh);
+                                    // **Give the memory back as soon as it is
+                                    // copied.** A 200 MP re-decode is 800 MB of
+                                    // bitmap, 2.4 GB of float and then the
+                                    // engine's own 2.4 GB; releasing each one
+                                    // when its successor exists keeps the peak
+                                    // at two of the three instead of three.
+                                    if (fullBmp != null) { fullBmp.recycle(); fullBmp = null; }
                                     fresh = engine.openSession(fullBuf, fw, fh, 3);
+                                    SpektraLabEngine.freePixels(fullBuf);
+                                    fullBuf = 0;
                                     CrashTrail.markNow(MainActivity.this,
                                             "export:full-size " + fw + "x" + fh
                                                     + " (import was " + sourceWidth + "x" + sourceHeight + ")");
@@ -37143,6 +37200,25 @@ public class MainActivity extends Activity {
                                     if (fullBmp != null) fullBmp.recycle();
                                     if (fullBuf != 0) SpektraLabEngine.freePixels(fullBuf);
                                 }
+                            }
+                            // Only when the file really is bigger than the
+                            // session: for a frame the working size already
+                            // holds whole, the fallback *is* the file's size.
+                            if (fresh == null && exportAtNative && fileSize != null
+                                    && fileSize[0] > 0 && fileSize[1] > 0
+                                    && (long) fileSize[0] * fileSize[1]
+                                       > (long) sourceWidth * sourceHeight) {
+                                // **Never the working size.** 「按原图」 means the
+                                // file's size; falling back to the session here
+                                // is "the export came out smaller than the
+                                // import" with a new cause. Say what did not fit.
+                                throw new IllegalStateException(
+                                        "按原图导出要重新读一遍这张图（"
+                                                + (fileSize == null ? "文件自身尺寸"
+                                                   : fileSize[0] + "×" + fileSize[1])
+                                                + "，约 " + (exportNeed >> 20) + " MB），"
+                                                + "本机现在给不出来。关掉其它应用再试，"
+                                                + "或重新导入时选「缩到…」。");
                             }
                             if (fresh == null) {
                                 try { fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3); }
