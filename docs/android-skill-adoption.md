@@ -49,7 +49,14 @@ Dependency rule, enforced by a new `app/build/check-package-rules.py`:
 
 ## 3. Roadmap
 
-### Phase A — interfaces and fakes (1–2 weeks)
+### Phase A — interfaces and fakes (1–2 weeks) — IN PROGRESS
+
+Done so far: `EngineApi`/`SessionApi` are implemented by the real facade;
+`ImportPlanner` is used by `MainActivity`; `RenderPreviewUseCase` and the
+`FakeEngine`/`FakeSession` doubles have JVM tests in `DomainTest`.
+
+Remaining: repository interfaces (`PhotoRepository`, `PresetRepository`,
+`StockCatalog`, `PreferencesStore`) and their fakes.
 
 1. Define `EngineApi` (create/open session/render/export/trim) and `SessionApi`
    (setParams, renderBegin, copyArgbRange, solve, close) around the existing

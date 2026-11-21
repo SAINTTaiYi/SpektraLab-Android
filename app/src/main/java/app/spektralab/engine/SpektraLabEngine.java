@@ -2,10 +2,13 @@ package app.spektralab.engine;
 
 import java.nio.ByteBuffer;
 
+import app.spektralab.domain.EngineApi;
+import app.spektralab.domain.SessionApi;
+
 /**
  * Java facade over the SpektraLab C ABI (spk_engine.h).
  */
-public class SpektraLabEngine implements AutoCloseable {
+public class SpektraLabEngine implements AutoCloseable, EngineApi {
     // **Not a `static {}` block on purpose.** A class initialiser that throws
     // leaves the class *erroneous*: the first access reports the real reason
     // (an UnsatisfiedLinkError, usually swallowed by a caller), and every later
@@ -265,7 +268,7 @@ public class SpektraLabEngine implements AutoCloseable {
         if (handle != 0) nativeDestroyEngine(handle);
     }
 
-    public static class Session implements AutoCloseable {
+    public static class Session implements AutoCloseable, SessionApi {
         /** Guards the single native result buffer against a second thread. */
         private static final Object RENDER_LOCK = new Object();
         /** **Not final: it has to be zeroed on close.** A final handle outlived

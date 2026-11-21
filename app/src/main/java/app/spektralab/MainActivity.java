@@ -11435,26 +11435,18 @@ public class MainActivity extends Activity {
             // allocation the app makes. Asking before taking it is what turns
             // an OutOfMemoryError (an Error, so the old `catch (Exception)`
             // never saw it and the process died) into a smaller import.
-            double k = 1.0;
-            // **Nothing is scaled when the user asked for the original.** The
-            // memory test below used to run even with `nativeSize`, so "force
-            // original" still came back smaller -- the one place where the
-            // suggestion was a ceiling in disguise.
+            // The downscale decision is pure maths now (ImportPlanner), which
+            // means it has JVM regression tests. "Force original" skips it.
             final long availBytes = availableMemoryBytes();
-            if (!nativeSize) {
-                if (area > capPixels) k = Math.min(k, Math.sqrt((double) capPixels / (double) area));
-                if (longEdge > edgeCap) k = Math.min(k, (double) edgeCap / longEdge);
-                // **No third ceiling from free RAM.** `capPixels` already came
-                // from the pixel budget, and that budget is now derived from
-                // total RAM rather than whatever happened to be free. Applying
-                // `availMem - 128 MB` *again*, here, is what made two imports of
-                // one file land on different sizes. The float buffer is malloc'd
-                // and its failure has an honest message (`导入这张图需要 N MB`),
-                // so the guess is not needed.
-            }
+            final app.spektralab.domain.ImportPlanner.Plan plan = nativeSize
+                    ? new app.spektralab.domain.ImportPlanner.Plan(
+                            1.0, sourceBitmap.getWidth(), sourceBitmap.getHeight())
+                    : app.spektralab.domain.ImportPlanner.plan(
+                            sourceBitmap.getWidth(), sourceBitmap.getHeight(), capPixels, edgeCap);
+            final double k = plan.scale;
             if (k < 1.0) {
-                final int nw = Math.max(1, (int) Math.round(sourceBitmap.getWidth() * k));
-                final int nh = Math.max(1, (int) Math.round(sourceBitmap.getHeight() * k));
+                final int nw = plan.width;
+                final int nh = plan.height;
                 Bitmap scaled = Bitmap.createScaledBitmap(sourceBitmap, nw, nh, true);
                 if (scaled != sourceBitmap) sourceBitmap.recycle();
                 sourceBitmap = scaled;

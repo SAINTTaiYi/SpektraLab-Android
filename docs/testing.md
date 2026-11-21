@@ -23,6 +23,7 @@ CI runs the same checks in `.github/workflows/verify.yml`.
 | `app/build/test_checkers.py` | runnable Python | version mismatch, corrupted/foreign prebuilt libraries |
 | `app/build/check-no-silent-catch.py` | runnable Python | no silent `catch (Throwable/Exception)` blocks in app code |
 | `app/src/test/.../PureLogicTest.java` | runnable JVM | budget maths, JSON quoting, failure classification |
+| `app/src/test/.../DomainTest.java` | runnable JVM | import planning, render use-case call order, engine/session fakes |
 | `native-tests/view_adjust_test.cpp` | compile + device/Linux run | neutral pass, monotone curves, levels |
 | `native-tests/export_metadata_test.cpp` | compile + device/Linux run | EXIF round trip |
 

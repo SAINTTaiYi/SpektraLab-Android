@@ -67,6 +67,24 @@ if ($LASTEXITCODE -eq 0) {
 }
 Report 'PureLogicTest' ($LASTEXITCODE -eq 0)
 
+Write-Host '== domain use-case tests =='
+$domainOut = Join-Path ([IO.Path]::GetTempPath()) 'spektralab-domain'
+Remove-Item -LiteralPath $domainOut -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $domainOut | Out-Null
+$domainSources = @(
+    "$root\app\src\main\java\app\spektralab\domain\EngineApi.java",
+    "$root\app\src\main\java\app\spektralab\domain\SessionApi.java",
+    "$root\app\src\main\java\app\spektralab\domain\ImportPlanner.java",
+    "$root\app\src\main\java\app\spektralab\domain\RenderPreviewUseCase.java",
+    "$root\app\src\test\java\app\spektralab\testing\FakeSession.java",
+    "$root\app\src\test\java\app\spektralab\testing\FakeEngine.java",
+    "$root\app\src\test\java\app\spektralab\testing\DomainTest.java")
+& "$jdk\bin\javac.exe" @domainSources -d $domainOut
+if ($LASTEXITCODE -eq 0) {
+    & "$jdk\bin\java.exe" -cp $domainOut app.spektralab.testing.DomainTest
+}
+Report 'DomainTest' ($LASTEXITCODE -eq 0)
+
 Write-Host '== native header checks =='
 $ndk = "$BuildHome\sdk\ndk\28.2.13676358"
 $clang = "$ndk\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe"
