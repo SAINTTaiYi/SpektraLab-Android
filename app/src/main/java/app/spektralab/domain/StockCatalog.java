@@ -10,7 +10,9 @@ public final class StockCatalog {
     public final List<String> filmIds = new ArrayList<>();
     public final List<String> filmLabels = new ArrayList<>();
     public final List<String> filmTypes = new ArrayList<>();
+    public final List<String> filmUses = new ArrayList<>();
     public final List<String> printIds = new ArrayList<>();
     public final List<String> printLabels = new ArrayList<>();
+    public final List<String> printUses = new ArrayList<>();
     public final Map<String, String> filmTargetPrints = new HashMap<>();
 }

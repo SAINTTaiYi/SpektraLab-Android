@@ -63,9 +63,12 @@ tests cover the params → render order. Golden hashes remain identical on the
 physical device and the Orca-attached emulator (`emulator-5554`, API 37);
 tapping a film card in Orca switched stock/paper without a crash.
 
-Phase A repositories now cover photos, presets and preferences with fakes.
-Remaining: the stock-catalog repository (its label decoration is coupled to
-localization, so it needs a small label-decorator seam).
+Phase A repositories now cover photos, presets, preferences and the stock
+catalog (translation stays in the UI via `decorateStockLabel`), with fakes for
+the pure interfaces.
+
+Phase C started: theme tokens moved to `app.spektralab.ui.UiPalette`; the app
+renders identically on the Orca emulator after the extraction.
 
 1. Define `EngineApi` (create/open session/render/export/trim) and `SessionApi`
    (setParams, renderBegin, copyArgbRange, solve, close) around the existing

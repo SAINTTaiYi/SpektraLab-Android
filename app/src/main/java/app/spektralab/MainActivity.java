@@ -19,6 +19,7 @@ import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
+import app.spektralab.ui.UiPalette;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -92,6 +93,7 @@ public class MainActivity extends Activity {
     /** Data-layer boundaries; implementations are in app.spektralab.data. */
     private app.spektralab.domain.PhotoRepository photoRepository;
     private app.spektralab.data.PresetRepository presetRepository;
+    private app.spektralab.data.StockCatalogRepository stockCatalogRepository;
     private app.spektralab.domain.AppPreferences appPreferences;
 
     private Bitmap sourceBitmap;
@@ -392,6 +394,7 @@ public class MainActivity extends Activity {
         photoRepository = new app.spektralab.data.AndroidPhotoRepository(this);
         presetRepository = new app.spektralab.data.SharedPreferencesPresetRepository(this);
         appPreferences = new app.spektralab.data.SharedPreferencesAppPreferences(this, "ui");
+        stockCatalogRepository = new app.spektralab.data.AssetStockCatalogRepository();
         // Device-test hooks, set only by device-golden.ps1 through intent extras.
         final android.content.Intent launch = getIntent();
         if (launch != null) {
@@ -424,7 +427,7 @@ public class MainActivity extends Activity {
         // **Before the first layout.** A palette applied afterwards would mean
         // rebuilding every widget, so the preference is read once here and the
         // switch asks for a restart.
-        applyPalette(appPreferences.getBoolean("dark", false));
+        UiPalette.apply(appPreferences.getBoolean("dark", false));
         CrashTrail.mark(this, "app:onCreate");
         // The native side, before anything reads it: every object the engine
         // is linked against is loaded by path, and a failure is kept (see
@@ -483,80 +486,9 @@ public class MainActivity extends Activity {
     //     page says 4; params.cpp refuses anything over 2) and exposure starts
     //     at 0.25 (below it the print is black and the schema's floor is 0.05).
     // ---------------------------------------------------------------------
-    // **The palette is a variable, not seven constants.** The app's whole look
-    // is read off these seven -- panels, text, strokes, the canvas -- so making
-    // them mutable and setting them from a preference is the entire theming
-    // system: no per-widget branches, no second layout.
-    private static int UI_BLUE       = 0xFF1C2AA5;   // accent, on paper
-    private static int UI_BLUE_LIGHT = 0xFF3B4BC0;   // accent, lighter
-    private static int UI_PAPER      = 0xFFF1F1EE;   // panel background
-    private static int UI_GROUND     = 0xFFE3E3E0;   // card background
-    private static int UI_INK        = 0xFF171717;   // text
-    private static int UI_MUTED      = 0xFF777772;   // secondary text
-    private static int UI_LINE       = 0xFFCECEC8;   // strokes
-    private static int UI_STAGE      = 0xFF172174;   // the canvas
-    /**
-     * Ink for anything that sits on a white disc.
-     *
-     * <p>The compare pill is white in both themes, so its glyph cannot be
-     * `UI_INK` -- the dark palette's ink is a light grey and would vanish into
-     * the disc. This stays dark in both.
-     */
-    private static final int UI_ON_WHITE  = 0xFF171717;
-
-    /**
-     * The unchecked outline of a `Square`.
-     *
-     * <p>It was the literal `0x66171717` -- a 40% black hairline that is
-     * invisible on the dark theme's panel, which is why "开启片边" and 时间水印
-     * became un-clickable-looking holes on a black background.
-     */
-    /** The two switch rows, so the page's dimming can skip them. */
+    // Theme tokens live in UiPalette.
     private View overscanRow, dateRow;
 
-    private static int uiToggleOff() { return darkTheme ? 0xFF7A736A : 0x66171717; }
-
-    /**
-     * Text that sits on the canvas.
-     *
-     * <p>`UI_PAPER` is the *panel* colour: white on the light theme, near-black
-     * on the dark one. Every canvas label used it, which is why the wordmark,
-     * "RAW LOADED", the file name and the status line went invisible the moment
-     * the canvas turned black. On the canvas the contrast colour is what is
-     * wanted, and it is white in both themes.
-     */
-    private static int uiOnCanvas() { return 0xFFF1F1EE; }
-    /** True when the dark palette is in force; the canvas chrome asks. */
-    private static boolean darkTheme = false;
-
-    /**
-     * Orange on black: the same seven roles, re-coloured. Orange is the accent
-     * exactly where blue was -- selection outlines, the undo glyph, a link.
-     * Panels are dark grey rather than pure black, because a pure-black panel
-     * next to a pure-black canvas gives the frame no edge to sit against.
-     */
-    private static void applyPalette(boolean dark) {
-        darkTheme = dark;
-        if (dark) {
-            UI_BLUE       = 0xFFE8862A;   // orange, readable on black
-            UI_BLUE_LIGHT = 0xFFFFA54F;
-            UI_PAPER      = 0xFF171717;
-            UI_GROUND     = 0xFF242320;
-            UI_INK        = 0xFFEDEAE4;
-            UI_MUTED      = 0xFF9A948A;
-            UI_LINE       = 0xFF3A352F;
-            UI_STAGE      = 0xFF000000;   // **the canvas is black**
-        } else {
-            UI_BLUE       = 0xFF1C2AA5;
-            UI_BLUE_LIGHT = 0xFF3B4BC0;
-            UI_PAPER      = 0xFFF1F1EE;
-            UI_GROUND     = 0xFFE3E3E0;
-            UI_INK        = 0xFF171717;
-            UI_MUTED      = 0xFF777772;
-            UI_LINE       = 0xFFCECEC8;
-            UI_STAGE      = 0xFF172174;
-        }
-    }
 
     private Typeface tfDisplay;      // Inter 300 — numbers and the wordmark
     private Typeface tfBody;         // Inter 400 — Latin labels
@@ -1198,8 +1130,8 @@ public class MainActivity extends Activity {
     private void lightSystemBars() {
         try {
             getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-            getWindow().setStatusBarColor(UI_STAGE);
-            getWindow().setNavigationBarColor(UI_PAPER);
+            getWindow().setStatusBarColor(UiPalette.STAGE);
+            getWindow().setNavigationBarColor(UiPalette.PAPER);
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 // **`Window.getInsetsController()` dereferences `mDecor`.** On
                 // a window that has not attached yet that is a null dereference
@@ -1214,13 +1146,13 @@ public class MainActivity extends Activity {
                     // both themes; the navigation bar sits on the panel, so its
                     // glyphs follow the panel's lightness.
                     int on = 0;
-                    if (!darkTheme) on |= android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                    if (!UiPalette.dark()) on |= android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
                     int off = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
                     c.setSystemBarsAppearance(on, on | off);
                 }
             } else {
                 int flags = 0;
-                if (!darkTheme && android.os.Build.VERSION.SDK_INT >= 26) {
+                if (!UiPalette.dark() && android.os.Build.VERSION.SDK_INT >= 26) {
                     flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
                 }
                 getWindow().getDecorView().setSystemUiVisibility(flags);
@@ -1328,10 +1260,10 @@ public class MainActivity extends Activity {
         EdgeBackdrop(int top) { this.top = top; }
         @Override public void draw(android.graphics.Canvas canvas) {
             final android.graphics.Rect b = getBounds();
-            paint.setColor(UI_PAPER);
+            paint.setColor(UiPalette.PAPER);
             canvas.drawRect(b, paint);
             if (top > 0) {
-                paint.setColor(UI_STAGE);
+                paint.setColor(UiPalette.STAGE);
                 canvas.drawRect(b.left, b.top, b.right, b.top + top, paint);
             }
         }
@@ -1345,21 +1277,21 @@ public class MainActivity extends Activity {
         lightSystemBars();
 
         final android.widget.FrameLayout root = new android.widget.FrameLayout(this);
-        root.setBackgroundColor(UI_PAPER);
+        root.setBackgroundColor(UiPalette.PAPER);
         applySystemInsets(root);
         setContentView(root);
         uiRoot = root;
 
         LinearLayout app = new LinearLayout(this);
         app.setOrientation(LinearLayout.VERTICAL);
-        app.setBackgroundColor(UI_PAPER);
+        app.setBackgroundColor(UiPalette.PAPER);
         root.addView(app, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
         // The photograph is the page. The brand and Export float over it, the
         // source strip sits below it, and the tool panels sit below that.
         final android.widget.FrameLayout stage = new android.widget.FrameLayout(this);
         canvasStage = stage;
-        stage.setBackgroundColor(UI_STAGE);
+        stage.setBackgroundColor(UiPalette.STAGE);
         stage.setClipChildren(false);
 
         compare = new CompareView(this);
@@ -1404,11 +1336,11 @@ public class MainActivity extends Activity {
         LinearLayout load = new LinearLayout(this);
         load.setOrientation(LinearLayout.HORIZONTAL);
         load.setGravity(android.view.Gravity.CENTER);
-        load.setBackgroundColor(UI_PAPER);
+        load.setBackgroundColor(UiPalette.PAPER);
         load.setPadding(dp(18), 0, dp(18), 0);
         load.setOnClickListener(v -> showImportMenu());
-        load.addView(label(tr("frame.choose_photos"), 9, UI_BLUE, tfHan));
-        ArrowView loadArrow = new ArrowView(this, UI_BLUE);
+        load.addView(label(tr("frame.choose_photos"), 9, UiPalette.BLUE, tfHan));
+        ArrowView loadArrow = new ArrowView(this, UiPalette.BLUE);
         LinearLayout.LayoutParams arrowLp = new LinearLayout.LayoutParams(dp(14), dp(14));
         arrowLp.leftMargin = dp(8);
         load.addView(loadArrow, arrowLp);
@@ -1421,10 +1353,10 @@ public class MainActivity extends Activity {
         raw.setGravity(android.view.Gravity.CENTER);
         raw.setPadding(dp(24), dp(16), dp(24), dp(16));
         raw.setVisibility(View.GONE);
-        TextView rawTitle = label(tr("frame.raw_loaded"), 34, uiOnCanvas(), tfDisplay);
+        TextView rawTitle = label(tr("frame.raw_loaded"), 34, UiPalette.onCanvas(), tfDisplay);
         rawTitle.setLetterSpacing(-0.055f);
         raw.addView(rawTitle);
-        rawName = label("", 9, uiOnCanvas(), tfHan);
+        rawName = label("", 9, UiPalette.onCanvas(), tfHan);
         rawName.setAlpha(0.7f);
         rawName.setLineSpacing(dp(4), 1f);
         rawName.setGravity(android.view.Gravity.CENTER);
@@ -1434,16 +1366,16 @@ public class MainActivity extends Activity {
         stage.addView(raw, new android.widget.FrameLayout.LayoutParams(-1, -1));
         rawState = raw;
 
-        // On the canvas, so it is the canvas's contrast colour -- `UI_PAPER`
+        // On the canvas, so it is the canvas's contrast colour -- `UiPalette.PAPER`
         // is the *panel* colour and went black on the dark theme.
-        busyLabel = label(tr("frame.rendering"), 18, darkTheme ? UI_BLUE : uiOnCanvas(), tfDisplay);
+        busyLabel = label(tr("frame.rendering"), 18, UiPalette.dark() ? UiPalette.BLUE : UiPalette.onCanvas(), tfDisplay);
         busyLabel.setLetterSpacing(0.14f);
         busyLabel.setGravity(android.view.Gravity.CENTER);
         // **The rendering plate, and it was a literal of the blue canvas.**
         // At 90% opacity it covered the whole canvas, which is why the dark
         // theme still looked navy while everything else had gone black. It is
         // now the canvas colour itself, so it is invisible in both themes.
-        busyLabel.setBackgroundColor(0xE6000000 | (UI_STAGE & 0x00FFFFFF));
+        busyLabel.setBackgroundColor(0xE6000000 | (UiPalette.STAGE & 0x00FFFFFF));
         busyLabel.setVisibility(View.GONE);
         stage.addView(busyLabel, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
@@ -1456,14 +1388,14 @@ public class MainActivity extends Activity {
 
         // Ink on white in both themes, because the disc is white in both -- the
         // dark palette's ink is a light grey, which would disappear into it.
-        comparePill = label("↔", 15, UI_ON_WHITE, tfBody);
+        comparePill = label("↔", 15, UiPalette.ON_WHITE, tfBody);
         comparePill.setGravity(android.view.Gravity.CENTER);
         comparePill.setVisibility(View.GONE);
         comparePill.setOnClickListener(v -> {
             if (compare == null) return;
             final boolean on = !compare.isSplitMode();
             compare.setSplitMode(on);
-            comparePill.setTextColor(on ? UI_BLUE : UI_ON_WHITE);
+            comparePill.setTextColor(on ? UiPalette.BLUE : UiPalette.ON_WHITE);
             comparePill.setBackground(comparePillBg(on));
         });
         // **Hold it to see the original, tap it to arm the divider.** Both are
@@ -1512,12 +1444,12 @@ public class MainActivity extends Activity {
         android.widget.FrameLayout jobs = new android.widget.FrameLayout(this);
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progressBar.setIndeterminate(true);
-        progressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(UI_PAPER));
+        progressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(UiPalette.PAPER));
         progressBar.setVisibility(View.GONE);
         jobs.addView(progressBar, new android.widget.FrameLayout.LayoutParams(-1, -1));
         exportProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         exportProgressBar.setIndeterminate(true);
-        exportProgressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(UI_PAPER));
+        exportProgressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(UiPalette.PAPER));
         exportProgressBar.setVisibility(View.GONE);
         jobs.addView(exportProgressBar, new android.widget.FrameLayout.LayoutParams(-1, -1));
         stage.addView(jobs, new android.widget.FrameLayout.LayoutParams(-1, dp(2), android.view.Gravity.BOTTOM));
@@ -1527,7 +1459,7 @@ public class MainActivity extends Activity {
 
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
-        controls.setBackgroundColor(UI_PAPER);
+        controls.setBackgroundColor(UiPalette.PAPER);
 
         panelHolder = new LinearLayout(this);
         panelHolder.setOrientation(LinearLayout.VERTICAL);
@@ -2102,14 +2034,14 @@ public class MainActivity extends Activity {
         }
         if (uiRoot == null) return;
         if (inAppToast == null) {
-            inAppToast = label(String.valueOf(message), 10, UI_PAPER, tfHan);
+            inAppToast = label(String.valueOf(message), 10, UiPalette.PAPER, tfHan);
             inAppToast.setMaxWidth(Math.round(getResources().getConfiguration().screenWidthDp
                     * 0.82f * getResources().getDisplayMetrics().density));
             inAppToast.setGravity(android.view.Gravity.CENTER);
             inAppToast.setMaxLines(4);
             inAppToast.setEllipsize(android.text.TextUtils.TruncateAt.END);
             inAppToast.setPadding(dp(14), dp(10), dp(14), dp(10));
-            inAppToast.setBackgroundColor(UI_INK);
+            inAppToast.setBackgroundColor(UiPalette.INK);
             inAppToast.setElevation(dp(6));
             android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(
                     -2, -2, android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL);
@@ -2135,7 +2067,7 @@ public class MainActivity extends Activity {
      * and navy over the light one.
      */
     private int[] topWash() {
-        final int rgb = UI_STAGE & 0x00FFFFFF;
+        final int rgb = UiPalette.STAGE & 0x00FFFFFF;
         return new int[]{0xC9 << 24 | rgb, 0x66 << 24 | rgb, 0x00 << 24 | rgb};
     }
 
@@ -2156,10 +2088,10 @@ public class MainActivity extends Activity {
         LinearLayout wordRow = new LinearLayout(this);
         wordRow.setOrientation(LinearLayout.HORIZONTAL);
         wordRow.setGravity(android.view.Gravity.TOP);
-        // `UI_PAPER` is the panel colour: white on the light theme (correct on
+        // `UiPalette.PAPER` is the panel colour: white on the light theme (correct on
         // the navy canvas) and near-black on the dark one, where it vanished
         // into the black. The wordmark is always the canvas's *contrast* colour.
-        TextView word = label("SpektraLab", 18, uiOnCanvas(), tfDisplay);
+        TextView word = label("SpektraLab", 18, UiPalette.onCanvas(), tfDisplay);
         word.setLetterSpacing(-0.045f);
         word.setSingleLine(true);
         wordRow.addView(word);
@@ -2181,7 +2113,7 @@ public class MainActivity extends Activity {
         menuLp.rightMargin = dp(10);
         menuLp.topMargin = dp(1);
         wordRow.addView(menuPill, 0, menuLp);
-        TextView version = label("v" + UpdateCheck.versionName(this), 6.5f, uiOnCanvas(), tfBody);
+        TextView version = label("v" + UpdateCheck.versionName(this), 6.5f, UiPalette.onCanvas(), tfBody);
         version.setAlpha(0.7f);
         LinearLayout.LayoutParams versionLp = new LinearLayout.LayoutParams(-2, -2);
         versionLp.leftMargin = dp(4);
@@ -2207,7 +2139,7 @@ public class MainActivity extends Activity {
         undoLp.rightMargin = dp(6);
         top.addView(undoPill, undoLp);
 
-        sharePill = label(tr("editor.share"), 11, uiOnCanvas(), tfHan);
+        sharePill = label(tr("editor.share"), 11, UiPalette.onCanvas(), tfHan);
         sharePill.setGravity(android.view.Gravity.CENTER);
         sharePill.setShadowLayer(dp(3), 0, dp(1), 0xCC000000);
         sharePill.setBackground(null);
@@ -2264,14 +2196,14 @@ public class MainActivity extends Activity {
         foot.setPadding(dp(16), 0, dp(16), 0);
         foot.setClickable(false);
 
-        fileLabel = label(tr("editor.no_photo_selected"), 7, uiOnCanvas(), tfHan);
+        fileLabel = label(tr("editor.no_photo_selected"), 7, UiPalette.onCanvas(), tfHan);
         fileLabel.setAlpha(0.76f);
         fileLabel.setSingleLine(true);
         fileLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
         fileLabel.setShadowLayer(dp(2), 0, dp(1), 0x99000000);
         foot.addView(fileLabel, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        statusText = label(tr("editor.waiting_for_import"), 7, uiOnCanvas(), tfHan);
+        statusText = label(tr("editor.waiting_for_import"), 7, UiPalette.onCanvas(), tfHan);
         statusText.setSingleLine(true);
         statusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
         statusText.setGravity(android.view.Gravity.END);
@@ -2317,7 +2249,7 @@ public class MainActivity extends Activity {
     private View buildSourceBar() {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.VERTICAL);
-        bar.setBackgroundColor(UI_PAPER);
+        bar.setBackgroundColor(UiPalette.PAPER);
         sourceBar = bar;
 
         LinearLayout row = new LinearLayout(this);
@@ -2326,7 +2258,7 @@ public class MainActivity extends Activity {
         row.setPadding(dp(10), 0, dp(4), 0);
         sourceRow = row;
 
-        TextView add = label("\uff0b", 17, UI_BLUE, tfDisplay);
+        TextView add = label("\uff0b", 17, UiPalette.BLUE, tfDisplay);
         add.setGravity(android.view.Gravity.CENTER);
         add.setOnClickListener(v -> showImportMenu());
         row.addView(add, new LinearLayout.LayoutParams(dp(40), dp(48)));
@@ -2342,7 +2274,7 @@ public class MainActivity extends Activity {
         thumbScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
         row.addView(thumbScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        TextView fold = label("\u2039", 15, UI_MUTED, tfHan);
+        TextView fold = label("\u2039", 15, UiPalette.MUTED, tfHan);
         fold.setGravity(android.view.Gravity.CENTER);
         fold.setOnClickListener(v -> setShelfCollapsed(true));
         row.addView(fold, new LinearLayout.LayoutParams(dp(28), dp(48)));
@@ -2364,7 +2296,7 @@ public class MainActivity extends Activity {
             android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
             bg.setColor(i == 2 ? 0xFFD9D9D3 : 0xFFECECE7);
             bg.setCornerRadius(dp(7));
-            bg.setStroke(Math.max(1, dp(1)), UI_LINE);
+            bg.setStroke(Math.max(1, dp(1)), UiPalette.LINE);
             edge.setBackground(bg);
             android.widget.FrameLayout.LayoutParams lp =
                     new android.widget.FrameLayout.LayoutParams(card, card);
@@ -2383,7 +2315,7 @@ public class MainActivity extends Activity {
         });
         handle.addView(shelfHandleImage, new android.widget.FrameLayout.LayoutParams(card, card));
 
-        TextView chevron = label("\u203a", 14, uiOnCanvas(), tfDisplay);
+        TextView chevron = label("\u203a", 14, UiPalette.onCanvas(), tfDisplay);
         chevron.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
         chevron.setPadding(0, 0, dp(5), 0);
         chevron.setShadowLayer(dp(2), 0, 0, 0xCC000000);
@@ -2843,8 +2775,8 @@ public class MainActivity extends Activity {
             final boolean active = index == currentFrame;
             android.widget.FrameLayout box = new android.widget.FrameLayout(this);
             android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-            bg.setColor(UI_GROUND);
-            bg.setStroke(dp(active ? 2 : 1), active ? UI_BLUE : UI_LINE);
+            bg.setColor(UiPalette.GROUND);
+            bg.setStroke(dp(active ? 2 : 1), active ? UiPalette.BLUE : UiPalette.LINE);
             box.setBackground(bg);
             box.setPadding(dp(2), dp(2), dp(2), dp(2));
             ImageView img = new ImageView(this);
@@ -2982,20 +2914,20 @@ public class MainActivity extends Activity {
     private void setOriginalVisual(boolean on) {
         if (originalAction == null) return;
         android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-        bg.setColor(on ? UI_BLUE : UI_PAPER);
+        bg.setColor(on ? UiPalette.BLUE : UiPalette.PAPER);
         originalAction.setBackground(bg);
-        if (originalGlyph != null) originalGlyph.setColor(on ? UI_PAPER : UI_BLUE);
-        if (originalLabel != null) originalLabel.setTextColor(on ? UI_PAPER : UI_BLUE);
+        if (originalGlyph != null) originalGlyph.setColor(on ? UiPalette.PAPER : UiPalette.BLUE);
+        if (originalLabel != null) originalLabel.setTextColor(on ? UiPalette.PAPER : UiPalette.BLUE);
     }
 
     private LinearLayout sectionHead(String title, Runnable reset) {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView titleView = mixedLabel(title, 8.5f, UI_INK);
+        TextView titleView = mixedLabel(title, 8.5f, UiPalette.INK);
         titleView.setLetterSpacing(0.06f);
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView resetView = label(tr("editor.reset_this_page"), 8.5f, UI_MUTED, tfHan);
+        TextView resetView = label(tr("editor.reset_this_page"), 8.5f, UiPalette.MUTED, tfHan);
         resetView.setPaintFlags(resetView.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         resetView.setPadding(dp(8), dp(10), 0, dp(10));
         resetView.setOnClickListener(v -> reset.run());
@@ -3112,8 +3044,8 @@ public class MainActivity extends Activity {
         // On: the meter decides the film exposure. Off: the frame keeps the
         // exposure the camera recorded, which is the only way a lamp in a dark
         // room comes back dark instead of being lifted five stops onto Dmax.
-        final TextView meterLabel = label(tr("film.metering"), 8.5f, UI_MUTED, tfHan);
-        meterChip = label("", 8.5f, UI_INK, tfHan);
+        final TextView meterLabel = label(tr("film.metering"), 8.5f, UiPalette.MUTED, tfHan);
+        meterChip = label("", 8.5f, UiPalette.INK, tfHan);
         meterChip.setGravity(android.view.Gravity.CENTER);
         // **48dp, not 40x20.** The old chip was smaller than the minimum touch
         // target, so a tap that landed two pixels off did nothing -- which is
@@ -3154,17 +3086,17 @@ public class MainActivity extends Activity {
         LinearLayout paperRow = new LinearLayout(this);
         paperRow.setOrientation(LinearLayout.HORIZONTAL);
         paperRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        paperRow.addView(label(tr("film.paper_print_film"), 9, UI_MUTED, tfHan));
+        paperRow.addView(label(tr("film.paper_print_film"), 9, UiPalette.MUTED, tfHan));
         LinearLayout paperChoice = new LinearLayout(this);
         paperChoice.setOrientation(LinearLayout.HORIZONTAL);
         paperChoice.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
         paperChoice.setOnClickListener(v -> showPaperPicker());
-        paperValue = label("Kodak Portra Endura", 10, UI_INK, tfHan);
+        paperValue = label("Kodak Portra Endura", 10, UiPalette.INK, tfHan);
         paperValue.setSingleLine(true);
         paperValue.setEllipsize(android.text.TextUtils.TruncateAt.END);
         paperValue.setGravity(android.view.Gravity.END);
         paperChoice.addView(paperValue, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView paperArrow = label("↓", 10, UI_BLUE, tfBody);
+        TextView paperArrow = label("↓", 10, UiPalette.BLUE, tfBody);
         LinearLayout.LayoutParams paperArrowLp = new LinearLayout.LayoutParams(-2, -2);
         paperArrowLp.leftMargin = dp(7);
         paperChoice.addView(paperArrow, paperArrowLp);
@@ -3196,7 +3128,7 @@ public class MainActivity extends Activity {
             final int count = brandCount(id);
             if (count == 0) continue;
             TextView tab = label(BRAND_NAMES[i] + " " + count,
-                    8.5f, id.equals(brandFilter) ? UI_BLUE : UI_MUTED,
+                    8.5f, id.equals(brandFilter) ? UiPalette.BLUE : UiPalette.MUTED,
                     "all".equals(id) ? tfHan : tfBody);
             tab.setGravity(android.view.Gravity.CENTER_VERTICAL);
             tab.setPadding(0, 0, dp(20), 0);
@@ -3239,14 +3171,14 @@ public class MainActivity extends Activity {
     private android.graphics.drawable.GradientDrawable cellBorder() {
         android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
         bg.setColor(android.graphics.Color.TRANSPARENT);
-        bg.setStroke(dp(1), UI_LINE);
+        bg.setStroke(dp(1), UiPalette.LINE);
         return bg;
     }
 
     private android.graphics.drawable.GradientDrawable cardBorder(boolean active) {
         android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-        bg.setColor(UI_GROUND);
-        bg.setStroke(dp(1), active ? UI_BLUE : UI_LINE);
+        bg.setColor(UiPalette.GROUND);
+        bg.setStroke(dp(1), active ? UiPalette.BLUE : UiPalette.LINE);
         return bg;
     }
 
@@ -3558,10 +3490,10 @@ public class MainActivity extends Activity {
         card.setPadding(dp(1), dp(1), dp(1), dp(1));
 
         android.widget.FrameLayout imageBox = new android.widget.FrameLayout(this);
-        imageBox.setBackgroundColor(original ? UI_PAPER : UI_GROUND);
+        imageBox.setBackgroundColor(original ? UiPalette.PAPER : UiPalette.GROUND);
         filmCardImages.put(id, imageBox);
         if (original) {
-            TextView mark = label("—", 22, UI_MUTED, tfDisplay);
+            TextView mark = label("—", 22, UiPalette.MUTED, tfDisplay);
             mark.setGravity(android.view.Gravity.CENTER);
             imageBox.addView(mark, new android.widget.FrameLayout.LayoutParams(-1, -1));
         } else if (beforeBitmap == null) {
@@ -3589,10 +3521,10 @@ public class MainActivity extends Activity {
         }
         card.addView(imageBox, new LinearLayout.LayoutParams(-1, dp(67)));
 
-        TextView name = label(text, 7.5f, active ? UI_BLUE : UI_INK, tfHan);
+        TextView name = label(text, 7.5f, active ? UiPalette.BLUE : UiPalette.INK, tfHan);
         name.setMaxLines(2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        name.setBackgroundColor(UI_PAPER);
+        name.setBackgroundColor(UiPalette.PAPER);
         name.setPadding(dp(6), dp(4), dp(5), dp(2));
         name.setGravity(android.view.Gravity.TOP);
         card.addView(name, new LinearLayout.LayoutParams(-1, dp(27)));
@@ -3641,7 +3573,7 @@ public class MainActivity extends Activity {
             card.setBackground(cardBorder(active));
             android.view.ViewGroup group = (android.view.ViewGroup) card;
             if (group.getChildCount() > 1) {
-                ((TextView) group.getChildAt(1)).setTextColor(active ? UI_BLUE : UI_INK);
+                ((TextView) group.getChildAt(1)).setTextColor(active ? UiPalette.BLUE : UiPalette.INK);
             }
             if (active) target = card;
         }
@@ -3694,10 +3626,10 @@ public class MainActivity extends Activity {
         if (paperValue == null) return;
         if (isPositiveStock(filmStock)) {
             paperValue.setText(tr("film.no_paper_direct_scan"));
-            paperValue.setTextColor(UI_MUTED);
+            paperValue.setTextColor(UiPalette.MUTED);
             return;
         }
-        paperValue.setTextColor(UI_INK);
+        paperValue.setTextColor(UiPalette.INK);
         int i = printIds.indexOf(printStock);
         paperValue.setText(i >= 0 && i < printLabels.size()
                 ? shortStockName(printLabels.get(i)) : printStock);
@@ -4085,7 +4017,7 @@ public class MainActivity extends Activity {
         // film mode"; he read the silence as a missing feature. This line is the
         // cheap half of that answer.
         viewLockNote = label(tr("optics.choose_a_film_first_these"),
-                8.5f, UI_MUTED, tfHan);
+                8.5f, UiPalette.MUTED, tfHan);
         viewLockNote.setPadding(dp(2), dp(4), dp(2), dp(8));
         panel.addView(viewLockNote, new LinearLayout.LayoutParams(-1, -2));
 
@@ -4095,7 +4027,7 @@ public class MainActivity extends Activity {
         viewCatChips = new TextView[cats.length];
         for (int i = 0; i < cats.length; ++i) {
             final int page = i;
-            final TextView chip = label(cats[i], 8, i == 0 ? UI_BLUE : UI_MUTED, tfBody);
+            final TextView chip = label(cats[i], 8, i == 0 ? UiPalette.BLUE : UiPalette.MUTED, tfBody);
             chip.setGravity(android.view.Gravity.CENTER);
             chip.setOnClickListener(v -> showViewPage(page));
             catRow.addView(chip, new LinearLayout.LayoutParams(0, dp(26), 1f));
@@ -4140,7 +4072,7 @@ public class MainActivity extends Activity {
             final boolean on = i == page;
             if (viewPages[i] != null) viewPages[i].setVisibility(on ? View.VISIBLE : View.GONE);
             if (viewScrolls[i] != null) viewScrolls[i].setVisibility(on ? View.VISIBLE : View.GONE);
-            if (viewCatChips != null) viewCatChips[i].setTextColor(on ? UI_BLUE : UI_MUTED);
+            if (viewCatChips != null) viewCatChips[i].setTextColor(on ? UiPalette.BLUE : UiPalette.MUTED);
         }
     }
 
@@ -4161,8 +4093,8 @@ public class MainActivity extends Activity {
         final LinearLayout line = new LinearLayout(this);
         line.setOrientation(LinearLayout.HORIZONTAL);
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        line.addView(label(title, 9, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView value = label("", 9, UI_BLUE, tfBody);
+        line.addView(label(title, 9, UiPalette.INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView value = label("", 9, UiPalette.BLUE, tfBody);
         // Tap the number to type one, as Lightroom does.
         value.setOnClickListener(v -> editNumber(title, lo, hi, get.get(), set));
         line.addView(value);
@@ -4235,7 +4167,7 @@ public class MainActivity extends Activity {
         });
         box.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
         if (hint != null) {
-            final TextView note = label(hint, 7.5f, UI_MUTED, tfHan);
+            final TextView note = label(hint, 7.5f, UiPalette.MUTED, tfHan);
             note.setMaxLines(2);
             box.addView(note, new LinearLayout.LayoutParams(-1, dp(18)));
         }
@@ -4257,7 +4189,7 @@ public class MainActivity extends Activity {
         wbDecodeBox = new LinearLayout(this);
         wbDecodeBox.setOrientation(LinearLayout.VERTICAL);
         page.addView(wbDecodeBox, new LinearLayout.LayoutParams(-1, -2));
-        wbDecodeBox.addView(label(tr("optics.raw_white_balance"), 8, UI_INK, tfHan),
+        wbDecodeBox.addView(label(tr("optics.raw_white_balance"), 8, UiPalette.INK, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(22)));
         final String[] names = {tr("optics.as_shot"), tr("optics.daylight"), tr("optics.cloudy"), tr("optics.shade"), tr("optics.tungsten"), tr("optics.fluorescent"), tr("optics.custom")};
         final LinearLayout row = new LinearLayout(this);
@@ -4267,13 +4199,13 @@ public class MainActivity extends Activity {
         final TextView[] chips = new TextView[names.length];
         for (int i = 0; i < names.length; ++i) {
             final int preset = i;
-            final TextView chip = label(names[i], 8, i == 0 ? UI_BLUE : UI_MUTED, tfBody);
+            final TextView chip = label(names[i], 8, i == 0 ? UiPalette.BLUE : UiPalette.MUTED, tfBody);
             chip.setGravity(android.view.Gravity.CENTER);
             chip.setBackground(outlineBox(i == 0));
             chip.setOnClickListener(v -> {
                 wbPreset = preset;
                 for (int k = 0; k < chips.length; ++k) {
-                    chips[k].setTextColor(k == preset ? UI_BLUE : UI_MUTED);
+                    chips[k].setTextColor(k == preset ? UiPalette.BLUE : UiPalette.MUTED);
                     chips[k].setBackground(outlineBox(k == preset));
                 }
                 redecodeWithWhiteBalance();
@@ -4286,7 +4218,7 @@ public class MainActivity extends Activity {
         scroll.addView(row, new android.widget.FrameLayout.LayoutParams(-2, -1));
         wbDecodeBox.addView(scroll, new LinearLayout.LayoutParams(-1, dp(36)));
         wbDecodeNote = label(tr("optics.these_controls_set_the_light")
-                + tr("optics.changing_them_decodes_the_image"), 7.5f, UI_MUTED, tfHan);
+                + tr("optics.changing_them_decodes_the_image"), 7.5f, UiPalette.MUTED, tfHan);
         wbDecodeNote.setMaxLines(2);
         wbDecodeBox.addView(wbDecodeNote, new LinearLayout.LayoutParams(-1, dp(32)));
         adjustRow(wbDecodeBox, tr("optics.raw_temperature"), 2000f, 12000f, () -> wbKelvin, v -> wbKelvin = v, true,
@@ -4304,7 +4236,7 @@ public class MainActivity extends Activity {
         // The histogram's own switch. It changes no pixels, so it must not go
         // through `applyParams` -- it shows or hides the plate on the canvas,
         // and the choice outlives the photograph.
-        final Square histMark = new Square(this, UI_BLUE, uiToggleOff());
+        final Square histMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         toggleCell(toneGrid, tr("optics.histogram"), tr("optics.show"), histMark, () -> histogramOn, on -> {
             histogramOn = on;
             getSharedPreferences("ui", MODE_PRIVATE).edit().putBoolean("histogram", on).apply();
@@ -4319,7 +4251,7 @@ public class MainActivity extends Activity {
         // from 1.5.1 through 1.6.6a, after an import that came back at 2/255
         // looked like a black rectangle -- but it also hides the picture's own
         // exposure, and it ran 2.54 EV above Lightroom on the reference DNG.
-        final Square levelMark = new Square(this, UI_BLUE, uiToggleOff());
+        final Square levelMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         toggleCell(toneGrid, tr("optics.original_brightness"), tr("meter.auto"), levelMark, () -> rawAutoBright, on -> {
             rawAutoBright = on;
             getSharedPreferences("ui", MODE_PRIVATE).edit()
@@ -4342,11 +4274,11 @@ public class MainActivity extends Activity {
         // LightCraft's Color tab opens on the white balance: the presets, then
         // the two decode-time numbers, then the print-side ones.
         buildWhiteBalancePage(page);
-        page.addView(label(tr("optics.color_2"), 8, UI_INK, tfHan),
+        page.addView(label(tr("optics.color_2"), 8, UiPalette.INK, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(24)));
         final TextView wbNote = label(
                 tr("optics.the_controls_above_re_decode")
-                + tr("optics.including_its_highlights"), 7.5f, UI_MUTED, tfHan);
+                + tr("optics.including_its_highlights"), 7.5f, UiPalette.MUTED, tfHan);
         wbNote.setMaxLines(2);
         page.addView(wbNote, new LinearLayout.LayoutParams(-1, dp(32)));
         adjustRow(page, tr("optics.temperature"), -100f, 100f, () -> viewTemperature, v -> viewTemperature = v, false,
@@ -4368,12 +4300,12 @@ public class MainActivity extends Activity {
         final TextView[] zoneChips = new TextView[zones.length];
         for (int i = 0; i < zones.length; ++i) {
             final int zone = i;
-            final TextView chip = label(zones[i], 8, i == 0 ? UI_BLUE : UI_MUTED, tfBody);
+            final TextView chip = label(zones[i], 8, i == 0 ? UiPalette.BLUE : UiPalette.MUTED, tfBody);
             chip.setGravity(android.view.Gravity.CENTER);
             chip.setOnClickListener(v -> {
                 cbZone = zone;
                 for (int k = 0; k < zoneChips.length; ++k)
-                    zoneChips[k].setTextColor(k == zone ? UI_BLUE : UI_MUTED);
+                    zoneChips[k].setTextColor(k == zone ? UiPalette.BLUE : UiPalette.MUTED);
                 if (colorWheel != null) colorWheel.invalidate();
                 cbReadout = null;
                 refreshViewPanel();
@@ -4388,7 +4320,7 @@ public class MainActivity extends Activity {
         colorWheel = new ColorWheel();
         page.addView(colorWheel, new LinearLayout.LayoutParams(-1, dp(196)));
 
-        cbReadout = label("", 8, UI_MUTED, tfBody);
+        cbReadout = label("", 8, UiPalette.MUTED, tfBody);
         cbReadout.setGravity(android.view.Gravity.CENTER);
         page.addView(cbReadout, new LinearLayout.LayoutParams(-1, dp(20)));
         refreshCbReadout();
@@ -4492,7 +4424,7 @@ public class MainActivity extends Activity {
             final android.graphics.Paint ring = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
             ring.setStyle(android.graphics.Paint.Style.STROKE);
             ring.setStrokeWidth(dp(2));
-            ring.setColor(UI_INK);
+            ring.setColor(UiPalette.INK);
             canvas.drawCircle(px, py, dp(9), ring);
             final android.graphics.Paint ring2 = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
             ring2.setStyle(android.graphics.Paint.Style.STROKE);
@@ -4503,7 +4435,7 @@ public class MainActivity extends Activity {
             final android.graphics.Paint centre = new android.graphics.Paint();
             centre.setStyle(android.graphics.Paint.Style.STROKE);
             centre.setStrokeWidth(dp(1));
-            centre.setColor(UI_LINE);
+            centre.setColor(UiPalette.LINE);
             canvas.drawCircle(cx, cy, dp(4), centre);
         }
 
@@ -4582,7 +4514,7 @@ public class MainActivity extends Activity {
     private void buildEffectsPage(LinearLayout page) {
         adjustRow(page, tr("optics.vignette"), -100f, 100f, () -> viewVignette, v -> viewVignette = v, false);
         page.addView(label(tr("optics.lens_blur_halation_and_glare")
-                + tr("optics.rather_than_grading_the_finished"), 7.5f, UI_MUTED, tfHan),
+                + tr("optics.rather_than_grading_the_finished"), 7.5f, UiPalette.MUTED, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(30)));
     }
 
@@ -4593,12 +4525,12 @@ public class MainActivity extends Activity {
         final TextView[] chips = new TextView[channels.length];
         for (int i = 0; i < channels.length; ++i) {
             final int ch = i;
-            final TextView chip = label(channels[i], 8, i == 0 ? UI_BLUE : UI_MUTED, tfBody);
+            final TextView chip = label(channels[i], 8, i == 0 ? UiPalette.BLUE : UiPalette.MUTED, tfBody);
             chip.setGravity(android.view.Gravity.CENTER);
             chip.setOnClickListener(v -> {
                 curveChannel = ch;
                 for (int k = 0; k < chips.length; ++k)
-                    chips[k].setTextColor(k == ch ? UI_BLUE : UI_MUTED);
+                    chips[k].setTextColor(k == ch ? UiPalette.BLUE : UiPalette.MUTED);
                 if (curveView != null) curveView.invalidate();
             });
             final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(26), 1f);
@@ -4609,7 +4541,7 @@ public class MainActivity extends Activity {
         page.addView(row, new LinearLayout.LayoutParams(-1, dp(28)));
         curveView = new CurveView();
         page.addView(curveView, new LinearLayout.LayoutParams(-1, dp(150)));
-        page.addView(label(tr("optics.drag_the_control_points_or"), 7.5f, UI_MUTED, tfHan),
+        page.addView(label(tr("optics.drag_the_control_points_or"), 7.5f, UiPalette.MUTED, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(18)));
     }
 
@@ -4648,7 +4580,7 @@ public class MainActivity extends Activity {
         box.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
         box.setCornerRadius(0f);
         box.setColor(0x00000000);
-        box.setStroke(dp(selected ? 2 : 1), selected ? UI_BLUE : UI_LINE);
+        box.setStroke(dp(selected ? 2 : 1), selected ? UiPalette.BLUE : UiPalette.LINE);
         return box;
     }
 
@@ -4980,7 +4912,7 @@ public class MainActivity extends Activity {
             drawHistogramBackdrop(canvas, Math.max(1f, getWidth() - padL - padR),
                     Math.max(1f, getHeight() - padT - padB));
             final android.graphics.Paint grid = new android.graphics.Paint();
-            grid.setColor(UI_LINE);
+            grid.setColor(UiPalette.LINE);
             grid.setStrokeWidth(1f);
             grid.setStyle(android.graphics.Paint.Style.STROKE);
             for (int i = 1; i < 4; ++i) {
@@ -4991,7 +4923,7 @@ public class MainActivity extends Activity {
             }
             // The plot's own frame: without it the ticks float next to nothing.
             final android.graphics.Paint frame = new android.graphics.Paint();
-            frame.setColor(UI_LINE);
+            frame.setColor(UiPalette.LINE);
             frame.setStrokeWidth(1f);
             frame.setStyle(android.graphics.Paint.Style.STROKE);
             canvas.drawRect(padL, padT, padL + (getWidth() - padL - padR),
@@ -5002,7 +4934,7 @@ public class MainActivity extends Activity {
             // scale a photographer expects; a bare grid is not.
             final android.graphics.Paint tick = new android.graphics.Paint(
                     android.graphics.Paint.ANTI_ALIAS_FLAG);
-            tick.setColor(UI_MUTED);
+            tick.setColor(UiPalette.MUTED);
             tick.setTextSize(dp(7));
             tick.setTypeface(tfBody);
             final int[] levels = {0, 64, 128, 192, 255};
@@ -5028,7 +4960,7 @@ public class MainActivity extends Activity {
 
             final java.util.List<float[]> pts = curvePoints[curveChannel];
             final android.graphics.Paint line = new android.graphics.Paint();
-            line.setColor(UI_BLUE);
+            line.setColor(UiPalette.BLUE);
             line.setStrokeWidth(dp(2));
             line.setStyle(android.graphics.Paint.Style.STROKE);
             final android.graphics.Path path = new android.graphics.Path();
@@ -5039,7 +4971,7 @@ public class MainActivity extends Activity {
             }
             canvas.drawPath(path, line);
             final android.graphics.Paint dot = new android.graphics.Paint();
-            dot.setColor(UI_INK);
+            dot.setColor(UiPalette.INK);
             for (float[] q : pts) {
                 final android.graphics.PointF p = toScreen(q[0], q[1]);
                 canvas.drawRect(p.x - dp(4), p.y - dp(4), p.x + dp(4), p.y + dp(4), dot);
@@ -5053,7 +4985,7 @@ public class MainActivity extends Activity {
                 final int out = Math.round(pts.get(dragging)[1] * 255f);
                 final android.graphics.Paint read = new android.graphics.Paint(
                         android.graphics.Paint.ANTI_ALIAS_FLAG);
-                read.setColor(UI_BLUE);
+                read.setColor(UiPalette.BLUE);
                 read.setTextSize(dp(8));
                 read.setTypeface(tfBody);
                 read.setTextAlign(android.graphics.Paint.Align.RIGHT);
@@ -5129,19 +5061,19 @@ public class MainActivity extends Activity {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        knobTitle = label("", 9, UI_INK, tfHan);
+        knobTitle = label("", 9, UiPalette.INK, tfHan);
         head.addView(knobTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        knobValue = label("", 9, UI_BLUE, tfBody);
+        knobValue = label("", 9, UiPalette.BLUE, tfBody);
         head.addView(knobValue);
         panel.addView(head, new LinearLayout.LayoutParams(-1, dp(20)));
         // What the knob does, in one line: twenty-two parameter names are a
         // vocabulary, not an explanation, and the engine's own names ("层间抑制")
         // are the least self-evident of them.
-        knobHintView = label("", 7.5f, UI_MUTED, tfHan);
+        knobHintView = label("", 7.5f, UiPalette.MUTED, tfHan);
         knobHintView.setMaxLines(1);
         knobHintView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         panel.addView(knobHintView, new LinearLayout.LayoutParams(-1, dp(15)));
-        knobCost = label("", 7.5f, UI_MUTED, tfHan);
+        knobCost = label("", 7.5f, UiPalette.MUTED, tfHan);
         knobCost.setGravity(android.view.Gravity.END);
         panel.addView(knobCost, new LinearLayout.LayoutParams(-1, dp(14)));
 
@@ -5253,7 +5185,7 @@ public class MainActivity extends Activity {
         LinearLayout gridTop = new LinearLayout(this);
         gridTop.setOrientation(LinearLayout.HORIZONTAL);
         choiceCell(gridTop, tr("print.color_timing"), tr("print.rebalance_print"), tv -> resolvePrinting());
-        edrMark = new Square(this, UI_BLUE, uiToggleOff());
+        edrMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         toggleCell(gridTop, tr("print.dynamic_range"), "EDR", edrMark,
                 () -> edrOn > 0.5f,
                 on -> {
@@ -5264,7 +5196,7 @@ public class MainActivity extends Activity {
                         renderImage();
                     }
                 });
-        hueOwnMark = new Square(this, UI_BLUE, uiToggleOff());
+        hueOwnMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         toggleCell(gridTop, tr("print.film_hue"), tr("print.keep_film_colors"), hueOwnMark,
                 () -> hueFixUnsupported(filmStock) || hueCorrection < 0.5f,
                 on -> {
@@ -5353,17 +5285,17 @@ public class MainActivity extends Activity {
         // A rectangle, not a ring: the glyphs are letters (E, H, S, G...), and
         // a letter reads better in a box than on a circle. It is also the
         // shape the rest of this app's controls use.
-        TextView key = label(glyph, 12, UI_INK, tfBody);
+        TextView key = label(glyph, 12, UiPalette.INK, tfBody);
         key.setGravity(android.view.Gravity.CENTER);
         android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
         box.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
         box.setCornerRadius(0f);
         box.setColor(0x00000000);
-        box.setStroke(dp(1), UI_LINE);
+        box.setStroke(dp(1), UiPalette.LINE);
         key.setBackground(box);
         chip.addView(key, new LinearLayout.LayoutParams(dp(52), dp(34)));
 
-        TextView name = label(tr(label), 7.5f, UI_MUTED, tfHan);
+        TextView name = label(tr(label), 7.5f, UiPalette.MUTED, tfHan);
         name.setGravity(android.view.Gravity.CENTER);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -5412,7 +5344,7 @@ public class MainActivity extends Activity {
         if (knobCost != null) {
             knobCost.setText(k.heavy ? tr("print.recalculates_the_film_about_0")
                                      : tr("print.reprints_only_about_0_03"));
-            knobCost.setTextColor(k.heavy ? 0xFFC8741E : UI_MUTED);
+            knobCost.setTextColor(k.heavy ? 0xFFC8741E : UiPalette.MUTED);
         }
     }
 
@@ -5422,17 +5354,17 @@ public class MainActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.addView(label(title, 9, UI_MUTED, tfHan));
+        row.addView(label(title, 9, UiPalette.MUTED, tfHan));
 
         LinearLayout button = new LinearLayout(this);
         button.setOrientation(LinearLayout.HORIZONTAL);
         button.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
-        final TextView tv = label(value, 9.5f, UI_INK, tfHan);
+        final TextView tv = label(value, 9.5f, UiPalette.INK, tfHan);
         tv.setGravity(android.view.Gravity.END);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         button.addView(tv, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView arrow = label("↓", 9.5f, UI_BLUE, tfBody);
+        TextView arrow = label("↓", 9.5f, UiPalette.BLUE, tfBody);
         LinearLayout.LayoutParams arrowLp = new LinearLayout.LayoutParams(-2, -2);
         arrowLp.leftMargin = dp(7);
         button.addView(arrow, arrowLp);
@@ -5452,8 +5384,8 @@ public class MainActivity extends Activity {
         cell.setGravity(android.view.Gravity.CENTER_VERTICAL);
         cell.setPadding(dp(9), dp(4), dp(6), dp(4));
         cell.setBackground(cellBorder());
-        cell.addView(label(title, 8f, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
-        final TextView tv = label(value, 9f, UI_INK, tfHan);
+        cell.addView(label(title, 8f, UiPalette.MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
+        final TextView tv = label(value, 9f, UiPalette.INK, tfHan);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams tvLp = new LinearLayout.LayoutParams(-1, -2);
@@ -5475,11 +5407,11 @@ public class MainActivity extends Activity {
         cell.setGravity(android.view.Gravity.CENTER_VERTICAL);
         cell.setPadding(dp(9), dp(4), dp(6), dp(4));
         cell.setBackground(cellBorder());
-        cell.addView(label(title, 8f, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
+        cell.addView(label(title, 8f, UiPalette.MUTED, tfHan), new LinearLayout.LayoutParams(-1, -2));
         LinearLayout line = new LinearLayout(this);
         line.setOrientation(LinearLayout.HORIZONTAL);
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView tv = label(valueText, 9f, UI_INK, tfHan);
+        TextView tv = label(valueText, 9f, UiPalette.INK, tfHan);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         line.addView(tv, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -5539,13 +5471,13 @@ public class MainActivity extends Activity {
         final android.app.Dialog dialog = newDialog();
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setBackgroundColor(UI_PAPER);
+        sheet.setBackgroundColor(UiPalette.PAPER);
 
         View cap = new View(this);
-        cap.setBackgroundColor(UI_BLUE);
+        cap.setBackgroundColor(UiPalette.BLUE);
         sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
-        TextView head = label(title, 10.5f, UI_INK, tfHan);
+        TextView head = label(title, 10.5f, UiPalette.INK, tfHan);
         LinearLayout.LayoutParams headLp = new LinearLayout.LayoutParams(-1, -2);
         headLp.setMargins(dp(16), dp(14), dp(16), dp(6));
         sheet.addView(head, headLp);
@@ -5553,7 +5485,7 @@ public class MainActivity extends Activity {
         final android.widget.EditText input = new android.widget.EditText(this);
         input.setText(initial == null ? "" : initial);
         input.setTextSize(13);
-        input.setTextColor(UI_INK);
+        input.setTextColor(UiPalette.INK);
         input.setSingleLine(true);
         if (numeric) input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         input.setBackground(null);
@@ -5561,17 +5493,17 @@ public class MainActivity extends Activity {
         sheet.addView(input, new LinearLayout.LayoutParams(-1, -2));
 
         View line = new View(this);
-        line.setBackgroundColor(UI_LINE);
+        line.setBackgroundColor(UiPalette.LINE);
         sheet.addView(line, new LinearLayout.LayoutParams(-1, dp(1)));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = label(tr("editor.cancel"), 10, UI_MUTED, tfHan);
+        TextView cancel = label(tr("editor.cancel"), 10, UiPalette.MUTED, tfHan);
         cancel.setGravity(android.view.Gravity.CENTER);
         cancel.setPadding(0, dp(14), 0, dp(14));
         cancel.setOnClickListener(v -> dialog.dismiss());
         actions.addView(cancel, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView ok = label(tr("optics.ok"), 10, UI_BLUE, tfHan);
+        TextView ok = label(tr("optics.ok"), 10, UiPalette.BLUE, tfHan);
         ok.setGravity(android.view.Gravity.CENTER);
         ok.setPadding(0, dp(14), 0, dp(14));
         ok.setOnClickListener(v -> {
@@ -5677,10 +5609,10 @@ public class MainActivity extends Activity {
             box.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
             box.setCornerRadius(0f);
             box.setColor(active ? 0x141C2AA5 : 0x00000000);
-            box.setStroke(dp(active ? 2 : 1), active ? UI_BLUE : UI_LINE);
+            box.setStroke(dp(active ? 2 : 1), active ? UiPalette.BLUE : UiPalette.LINE);
             key.setBackground(box);
-            key.setTextColor(active ? UI_BLUE : UI_INK);
-            name.setTextColor(active ? UI_BLUE : UI_MUTED);
+            key.setTextColor(active ? UiPalette.BLUE : UiPalette.INK);
+            name.setTextColor(active ? UiPalette.BLUE : UiPalette.MUTED);
         }
     }
 
@@ -5721,7 +5653,7 @@ public class MainActivity extends Activity {
     }
 
     private TextView composeTabView(String text, int page) {
-        final TextView tv = label(text, 12, UI_MUTED, tfHan);
+        final TextView tv = label(text, 12, UiPalette.MUTED, tfHan);
         tv.setGravity(android.view.Gravity.CENTER);
         tv.setOnClickListener(v -> showComposePage(page));
         return tv;
@@ -5736,8 +5668,8 @@ public class MainActivity extends Activity {
     private void showComposePage(int page) {
         composeSubPage = page;
         if (composeBody == null) return;
-        composeCropTab.setTextColor(page == 0 ? UI_INK : UI_MUTED);
-        composeRotateTab.setTextColor(page == 1 ? UI_INK : UI_MUTED);
+        composeCropTab.setTextColor(page == 0 ? UiPalette.INK : UiPalette.MUTED);
+        composeRotateTab.setTextColor(page == 1 ? UiPalette.INK : UiPalette.MUTED);
         underline(composeCropTab, page == 0);
         underline(composeRotateTab, page == 1);
         if (cropScroll != null) cropScrollX = cropScroll.getScrollX();
@@ -5789,15 +5721,15 @@ public class MainActivity extends Activity {
             card.setBackground(cardBorder(active));
             card.setPadding(dp(3), dp(6), dp(3), dp(4));
 
-            card.addView(new RatioMark(this, ratio, active ? UI_BLUE : UI_INK),
+            card.addView(new RatioMark(this, ratio, active ? UiPalette.BLUE : UiPalette.INK),
                     new LinearLayout.LayoutParams(-1, dp(44)));
 
             final TextView caption = label(original ? tr("compose.original") : EDGE_RATIO_LABELS[i],
-                    8.5f, active ? UI_INK : UI_MUTED, tfBody);
+                    8.5f, active ? UiPalette.INK : UiPalette.MUTED, tfBody);
             caption.setGravity(android.view.Gravity.CENTER);
             card.addView(caption, new LinearLayout.LayoutParams(-1, -2));
 
-            final TextView gate = label(original ? tr("compose.full_frame") : EDGE_LABELS[i], 6.5f, UI_MUTED, tfHan);
+            final TextView gate = label(original ? tr("compose.full_frame") : EDGE_LABELS[i], 6.5f, UiPalette.MUTED, tfHan);
             gate.setGravity(android.view.Gravity.CENTER);
             card.addView(gate, new LinearLayout.LayoutParams(-1, -2));
 
@@ -5816,13 +5748,13 @@ public class MainActivity extends Activity {
             card.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
             card.setBackground(cardBorder(active));
             card.setPadding(dp(3), dp(6), dp(3), dp(4));
-            card.addView(new RatioMark(this, ratio, active ? UI_BLUE : UI_INK),
+            card.addView(new RatioMark(this, ratio, active ? UiPalette.BLUE : UiPalette.INK),
                     new LinearLayout.LayoutParams(-1, dp(44)));
             final TextView caption = label(PORTRAIT_LABELS[i], 8.5f,
-                    active ? UI_INK : UI_MUTED, tfBody);
+                    active ? UiPalette.INK : UiPalette.MUTED, tfBody);
             caption.setGravity(android.view.Gravity.CENTER);
             card.addView(caption, new LinearLayout.LayoutParams(-1, -2));
-            final TextView gate = label(tr("compose.portrait"), 6.5f, UI_MUTED, tfHan);
+            final TextView gate = label(tr("compose.portrait"), 6.5f, UiPalette.MUTED, tfHan);
             gate.setGravity(android.view.Gravity.CENTER);
             card.addView(gate, new LinearLayout.LayoutParams(-1, -2));
 
@@ -5854,12 +5786,12 @@ public class MainActivity extends Activity {
         final LinearLayout footRow = new LinearLayout(this);
         footRow.setOrientation(LinearLayout.HORIZONTAL);
         footRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        final TextView foot = label(cropSummary(), 8.5f, UI_MUTED, tfHan);
+        final TextView foot = label(cropSummary(), 8.5f, UiPalette.MUTED, tfHan);
         footRow.addView(foot, new LinearLayout.LayoutParams(0, -2, 1f));
 
         // **Nothing happens to the picture until 应用.** 取消 throws the
         // proposal away; the frame goes back to the whole canvas.
-        final TextView cancel = label(tr("editor.cancel"), 9, UI_MUTED, tfHan);
+        final TextView cancel = label(tr("editor.cancel"), 9, UiPalette.MUTED, tfHan);
         cancel.setGravity(android.view.Gravity.CENTER);
         cancel.setBackground(cardBorder(false));
         cancel.setOnClickListener(v -> {
@@ -5872,7 +5804,7 @@ public class MainActivity extends Activity {
         cancelLp.rightMargin = dp(6);
         footRow.addView(cancel, cancelLp);
 
-        final TextView apply = label(tr("compose.apply_crop"), 9, UI_BLUE, tfHan);
+        final TextView apply = label(tr("compose.apply_crop"), 9, UiPalette.BLUE, tfHan);
         apply.setGravity(android.view.Gravity.CENTER);
         apply.setBackground(cardBorder(true));
         apply.setOnClickListener(v -> commitPendingCrop());
@@ -5888,7 +5820,7 @@ public class MainActivity extends Activity {
         // Nearly opaque white in both themes: it floats over the photograph,
         // and a translucent disc picked up whatever was behind it.
         bg.setColor(on ? 0xFFFFFFFF : 0xF2FFFFFF);
-        bg.setStroke(dp(on ? 2 : 1), on ? UI_BLUE : UI_LINE);
+        bg.setStroke(dp(on ? 2 : 1), on ? UiPalette.BLUE : UiPalette.LINE);
         return bg;
     }
 
@@ -5899,7 +5831,7 @@ public class MainActivity extends Activity {
         comparePill.setVisibility(can ? View.VISIBLE : View.GONE);
         if (!can && compare != null && compare.isSplitMode()) compare.setSplitMode(false);
         final boolean on = compare != null && compare.isSplitMode();
-        comparePill.setTextColor(on ? UI_BLUE : UI_ON_WHITE);
+        comparePill.setTextColor(on ? UiPalette.BLUE : UiPalette.ON_WHITE);
         comparePill.setBackground(comparePillBg(on));
     }
 
@@ -6022,7 +5954,7 @@ public class MainActivity extends Activity {
         rotateArc = arc;
         android.widget.FrameLayout arcBox = new android.widget.FrameLayout(this);
         arcBox.addView(arc, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        final TextView gridChip = label("", 8f, UI_BLUE, tfHan);
+        final TextView gridChip = label("", 8f, UiPalette.BLUE, tfHan);
         final Runnable paintChip = () -> gridChip.setText(rotateGridOn ? tr("compose.guides_on") : tr("compose.guides_off"));
         paintChip.run();
         gridChip.setPadding(dp(8), dp(4), dp(8), dp(4));
@@ -6040,7 +5972,7 @@ public class MainActivity extends Activity {
         arcBox.addView(gridChip, chipLp);
         composeBody.addView(arcBox, new LinearLayout.LayoutParams(-1, dp(70)));
         final TextView tip = label(tr("compose.drag_the_dial_or_image"),
-                7.5f, UI_MUTED, tfHan);
+                7.5f, UiPalette.MUTED, tfHan);
         tip.setGravity(android.view.Gravity.CENTER);
         composeBody.addView(tip, new LinearLayout.LayoutParams(-1, dp(14)));
 
@@ -6274,7 +6206,7 @@ public class MainActivity extends Activity {
                 final float x = cx + (float) (r * Math.sin(phi));
                 final float y = cy + (float) (r * Math.cos(phi));
                 if (k % 5 == 0) {
-                    ink.setColor(UI_INK);
+                    ink.setColor(UiPalette.INK);
                     ink.setAlpha(190);
                     ink.setStrokeWidth(dp(1.6f));
                     final float len = dp(7);
@@ -6282,7 +6214,7 @@ public class MainActivity extends Activity {
                             x + (float) (len * Math.sin(phi)),
                             y + (float) (len * Math.cos(phi)), ink);
                 } else {
-                    ink.setColor(UI_INK);
+                    ink.setColor(UiPalette.INK);
                     ink.setAlpha(120);
                     canvas.drawCircle(x, y, dp(1.1f), ink);
                 }
@@ -6290,12 +6222,12 @@ public class MainActivity extends Activity {
 
             // The pointer: fixed at the middle, longer than any tick, pointing
             // away from the centre the way the ruler does.
-            ink.setColor(UI_INK);
+            ink.setColor(UiPalette.INK);
             ink.setAlpha(235);
             ink.setStrokeWidth(dp(1.8f));
             canvas.drawLine(cx, baseY, cx, baseY + dp(7), ink);
 
-            labelPaint.setColor(UI_INK);
+            labelPaint.setColor(UiPalette.INK);
             labelPaint.setTextSize(dp(13));
             canvas.drawText(String.format(java.util.Locale.US, "%.2f°", angle),
                     cx, baseY - dp(20), labelPaint);
@@ -6307,18 +6239,18 @@ public class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
 
-        final TextView circle = label(glyph, 15, UI_INK, tfBody);
+        final TextView circle = label(glyph, 15, UiPalette.INK, tfBody);
         circle.setGravity(android.view.Gravity.CENTER);
         final android.graphics.drawable.GradientDrawable ring =
                 new android.graphics.drawable.GradientDrawable();
         ring.setShape(android.graphics.drawable.GradientDrawable.OVAL);
         ring.setColor(0x00000000);
-        ring.setStroke(dp(1), UI_LINE);
+        ring.setStroke(dp(1), UiPalette.LINE);
         circle.setBackground(ring);
         circle.setOnClickListener(v -> tap.run());
         box.addView(circle, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        final TextView name = label(caption, 7.5f, UI_MUTED, tfHan);
+        final TextView name = label(caption, 7.5f, UiPalette.MUTED, tfHan);
         name.setGravity(android.view.Gravity.CENTER);
         name.setOnClickListener(v -> tap.run());
         box.addView(name, new LinearLayout.LayoutParams(-1, -2));
@@ -6683,9 +6615,9 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        formatFootLabel = label(tr("border.physical_film_size_crop_and"), 8.5f, UI_MUTED, tfHan);
+        formatFootLabel = label(tr("border.physical_film_size_crop_and"), 8.5f, UiPalette.MUTED, tfHan);
         foot.addView(formatFootLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        formatFootValue = label("36 mm", 9, UI_BLUE, tfBody);
+        formatFootValue = label("36 mm", 9, UiPalette.BLUE, tfBody);
         foot.addView(formatFootValue);
         panel.addView(foot, new LinearLayout.LayoutParams(-1, dp(28)));
 
@@ -6756,34 +6688,34 @@ public class MainActivity extends Activity {
             valueRow.setOrientation(LinearLayout.HORIZONTAL);
             valueRow.setGravity(android.view.Gravity.BOTTOM);
             TextView value = label(String.format(java.util.Locale.US, "%.0f", FORMAT_MM[i]),
-                    23, active ? UI_BLUE : UI_MUTED, tfDisplay);
+                    23, active ? UiPalette.BLUE : UiPalette.MUTED, tfDisplay);
             value.setLetterSpacing(-0.05f);
             valueRow.addView(value);
-            TextView unit = label("mm", 8, active ? UI_BLUE : UI_MUTED, tfBody);
+            TextView unit = label("mm", 8, active ? UiPalette.BLUE : UiPalette.MUTED, tfBody);
             LinearLayout.LayoutParams unitLp = new LinearLayout.LayoutParams(-2, -2);
             unitLp.leftMargin = dp(2);
             unitLp.bottomMargin = dp(2);
             valueRow.addView(unit, unitLp);
             top.addView(valueRow);
 
-            TextView kind = label(i == 2 || i >= 8 ? tr("border.wide") : tr("border.standard"), 7, UI_MUTED, tfHan);
+            TextView kind = label(i == 2 || i >= 8 ? tr("border.wide") : tr("border.standard"), 7, UiPalette.MUTED, tfHan);
             LinearLayout.LayoutParams kindLp = new LinearLayout.LayoutParams(-2, -2);
             kindLp.topMargin = dp(4);
             top.addView(kind, kindLp);
             card.addView(top, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
-            TextView name = label(FORMAT_NAMES[i], 8.5f, active ? UI_BLUE : UI_INK, tfHan);
+            TextView name = label(FORMAT_NAMES[i], 8.5f, active ? UiPalette.BLUE : UiPalette.INK, tfHan);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             name.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            name.setBackgroundColor(UI_PAPER);
+            name.setBackgroundColor(UiPalette.PAPER);
             name.setPadding(dp(8), 0, dp(7), 0);
             card.addView(name, new android.widget.FrameLayout.LayoutParams(
                     -1, dp(34), android.view.Gravity.BOTTOM));
 
             if (active) {
                 View mark = new View(this);
-                mark.setBackgroundColor(UI_BLUE);
+                mark.setBackgroundColor(UiPalette.BLUE);
                 android.widget.FrameLayout.LayoutParams markLp = new android.widget.FrameLayout.LayoutParams(
                         dp(6), dp(6), android.view.Gravity.TOP | android.view.Gravity.END);
                 markLp.topMargin = dp(4);
@@ -6879,21 +6811,21 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(9), dp(12), dp(7));
         android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-        bg.setColor(UI_PAPER);
+        bg.setColor(UiPalette.PAPER);
         bg.setCornerRadius(0f);
-        bg.setStroke(dp(1), UI_LINE);
+        bg.setStroke(dp(1), UiPalette.LINE);
         card.setBackground(bg);
 
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView name = mixedLabel(title + "  " + subtitle, 8.5f, UI_INK);
+        TextView name = mixedLabel(title + "  " + subtitle, 8.5f, UiPalette.INK);
         name.setLetterSpacing(0.06f);
         titleRow.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
-        titleRow.addView(label("›", 12f, UI_MUTED, tfBody));
+        titleRow.addView(label("›", 12f, UiPalette.MUTED, tfBody));
         card.addView(titleRow);
 
-        final TextView lines = label("", 7.5f, UI_MUTED, tfHan);
+        final TextView lines = label("", 7.5f, UiPalette.MUTED, tfHan);
         lines.setMaxLines(2);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
         lp.topMargin = dp(4);
@@ -6971,7 +6903,7 @@ public class MainActivity extends Activity {
         edgePage = new LinearLayout(this);
         edgePage.setOrientation(LinearLayout.VERTICAL);
         edgePage.addView(pageHead(tr("border.film_border_2")), new LinearLayout.LayoutParams(-1, dp(38)));
-        overscanMark = new Square(this, UI_BLUE, uiToggleOff());
+        overscanMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         overscanRow = toggleRow(tr("border.enable_film_border"), overscanMark, () -> overscanOn, on -> {
             if (on && edgeIds.isEmpty()) {
                 overscanMark.setLit(false);
@@ -7021,7 +6953,7 @@ public class MainActivity extends Activity {
         });
         edgePage.addView(gateRow, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        edgeTextMark = new Square(this, UI_BLUE, uiToggleOff());
+        edgeTextMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         edgeInner.addView(toggleRow(tr("border.edge_markings_brand_frame_number"), edgeTextMark, () -> edgeTextOn, on -> {
             edgeTextOn = on;
             redraw.accept(null);
@@ -7090,7 +7022,7 @@ public class MainActivity extends Activity {
         datePage = new LinearLayout(this);
         datePage.setOrientation(LinearLayout.VERTICAL);
         datePage.addView(pageHead(tr("border.date_stamp_2")), new LinearLayout.LayoutParams(-1, dp(38)));
-        dateMark = new Square(this, UI_BLUE, uiToggleOff());
+        dateMark = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
         dateRow = toggleRow(tr("border.enable_date_stamp"), dateMark, () -> dateOn, on -> {
             dateOn = on;
             if (dateOn && dateText == null) dateText = imprintDate();
@@ -7163,7 +7095,7 @@ public class MainActivity extends Activity {
 
         TextView dateTip = label(
                 tr("border.for_an_in_image_stamp"),
-                7.5f, UI_MUTED, tfHan);
+                7.5f, UiPalette.MUTED, tfHan);
         dateTip.setLineSpacing(dp(1), 1f);
         dateInner.addView(dateTip, new LinearLayout.LayoutParams(-1, -2));
         this.dateInner = dateInner;
@@ -7213,11 +7145,11 @@ public class MainActivity extends Activity {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView back = label(tr("border.back"), 10f, UI_BLUE, tfHan);
+        TextView back = label(tr("border.back"), 10f, UiPalette.BLUE, tfHan);
         back.setPadding(0, dp(8), dp(16), dp(8));
         back.setOnClickListener(v -> openEdgePage(-1));
         head.addView(back);
-        TextView name = mixedLabel(title, 9f, UI_MUTED);
+        TextView name = mixedLabel(title, 9f, UiPalette.MUTED);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
         lp.leftMargin = dp(8);
         head.addView(name, lp);
@@ -7416,17 +7348,17 @@ public class MainActivity extends Activity {
     private View buildTabs() {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setBackgroundColor(UI_PAPER);
+        tabs.setBackgroundColor(UiPalette.PAPER);
         final String[] names = {tr("navigation.film"), tr("navigation.print"), tr("navigation.optics"), tr("navigation.scale"), tr("navigation.compose"), tr("navigation.border")};
         for (int i = 0; i < names.length; ++i) {
             final int index = i;
             android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            TextView name = mixedLabel(names[i], 12, UI_MUTED);
+            TextView name = mixedLabel(names[i], 12, UiPalette.MUTED);
             if (i == 4) name.setContentDescription(tr("navigation.composition"));
             name.setGravity(android.view.Gravity.CENTER);
             cell.addView(name, new android.widget.FrameLayout.LayoutParams(-1, -1));
             View bar = new View(this);
-            bar.setBackgroundColor(UI_BLUE);
+            bar.setBackgroundColor(UiPalette.BLUE);
             bar.setVisibility(View.INVISIBLE);
             cell.addView(bar, new android.widget.FrameLayout.LayoutParams(
                     dp(26), dp(3), android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL));
@@ -7503,32 +7435,32 @@ public class MainActivity extends Activity {
         final android.app.Dialog dialog = newDialog();
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setBackgroundColor(UI_PAPER);
+        sheet.setBackgroundColor(UiPalette.PAPER);
         View cap = new View(this);
-        cap.setBackgroundColor(UI_BLUE);
+        cap.setBackgroundColor(UiPalette.BLUE);
         sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        head.addView(label(tr("preset.presets"), 12, UI_INK, tfHan),
+        head.addView(label(tr("preset.presets"), 12, UiPalette.INK, tfHan),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UiPalette.MUTED, tfHan);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
         head.addView(close);
         sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(54)));
 
         TextView note = label(tr("preset.presets_store_film_exposure_optics"),
-                8.5f, UI_MUTED, tfHan);
+                8.5f, UiPalette.MUTED, tfHan);
         note.setPadding(dp(16), 0, dp(16), dp(10));
         sheet.addView(note);
 
         LinearLayout rows = new LinearLayout(this);
         rows.setOrientation(LinearLayout.VERTICAL);
         if (list.length() == 0) {
-            TextView empty = label(tr("preset.no_presets_yet_edit_a"), 9, UI_MUTED, tfHan);
+            TextView empty = label(tr("preset.no_presets_yet_edit_a"), 9, UiPalette.MUTED, tfHan);
             empty.setPadding(dp(16), dp(12), dp(16), dp(12));
             rows.addView(empty);
         }
@@ -7540,12 +7472,12 @@ public class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(android.view.Gravity.CENTER_VERTICAL);
             row.setPadding(dp(16), 0, dp(10), 0);
-            TextView name = label(p.optString("name", tr("preset.preset")), 10, UI_INK, tfHan);
+            TextView name = label(p.optString("name", tr("preset.preset")), 10, UiPalette.INK, tfHan);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             row.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
 
-            TextView apply = label(tr("preset.apply"), 8.5f, UI_BLUE, tfHan);
+            TextView apply = label(tr("preset.apply"), 8.5f, UiPalette.BLUE, tfHan);
             apply.setPadding(dp(8), dp(12), dp(8), dp(12));
             apply.setOnClickListener(v -> {
                 dialog.dismiss();
@@ -7553,12 +7485,12 @@ public class MainActivity extends Activity {
             });
             row.addView(apply);
 
-            TextView share = label(tr("editor.share"), 8.5f, UI_MUTED, tfHan);
+            TextView share = label(tr("editor.share"), 8.5f, UiPalette.MUTED, tfHan);
             share.setPadding(dp(8), dp(12), dp(8), dp(12));
             share.setOnClickListener(v -> sharePreset(p));
             row.addView(share);
 
-            TextView del = label(tr("preset.delete"), 8.5f, UI_MUTED, tfHan);
+            TextView del = label(tr("preset.delete"), 8.5f, UiPalette.MUTED, tfHan);
             del.setPadding(dp(8), dp(12), dp(4), dp(12));
             del.setOnClickListener(v -> {
                 final org.json.JSONArray next = new org.json.JSONArray();
@@ -7579,21 +7511,21 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setPadding(dp(10), dp(6), dp(10), dp(10));
-        TextView save = label(tr("preset.save_current_settings"), 8.5f, UI_BLUE, tfHan);
+        TextView save = label(tr("preset.save_current_settings"), 8.5f, UiPalette.BLUE, tfHan);
         save.setGravity(android.view.Gravity.CENTER);
         save.setOnClickListener(v -> {
             dialog.dismiss();
             saveCurrentPreset();
         });
         foot.addView(save, new LinearLayout.LayoutParams(0, dp(34), 1f));
-        TextView pull = label(tr("preset.import_from_clipboard"), 8.5f, UI_INK, tfHan);
+        TextView pull = label(tr("preset.import_from_clipboard"), 8.5f, UiPalette.INK, tfHan);
         pull.setGravity(android.view.Gravity.CENTER);
         pull.setOnClickListener(v -> {
             dialog.dismiss();
             importPresetFromClipboard();
         });
         foot.addView(pull, new LinearLayout.LayoutParams(0, dp(34), 1f));
-        TextView push = label(tr("preset.share_current_settings"), 8.5f, UI_INK, tfHan);
+        TextView push = label(tr("preset.share_current_settings"), 8.5f, UiPalette.INK, tfHan);
         push.setGravity(android.view.Gravity.CENTER);
         push.setOnClickListener(v -> {
             dialog.dismiss();
@@ -7829,23 +7761,23 @@ public class MainActivity extends Activity {
         final android.app.Dialog dialog = newDialog();
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setBackgroundColor(UI_PAPER);
+        sheet.setBackgroundColor(UiPalette.PAPER);
         View cap = new View(this);
-        cap.setBackgroundColor(UI_BLUE);
+        cap.setBackgroundColor(UiPalette.BLUE);
         sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        head.addView(label(title, 12, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
+        head.addView(label(title, 12, UiPalette.INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView close = label(tr("crash.close"), 9, UiPalette.MUTED, tfHan);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
         head.addView(close);
         sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(54)));
         if (note != null && !note.isEmpty()) {
-            TextView noteView = label(note, 8.5f, UI_MUTED, tfHan);
+            TextView noteView = label(note, 8.5f, UiPalette.MUTED, tfHan);
             noteView.setPadding(dp(16), 0, dp(16), dp(10));
             sheet.addView(noteView);
         }
@@ -7860,12 +7792,12 @@ public class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(android.view.Gravity.CENTER_VERTICAL);
             row.setPadding(dp(16), 0, dp(16), 0);
-            final Square sq = new Square(this, UI_BLUE, uiToggleOff());
+            final Square sq = new Square(this, UiPalette.BLUE, UiPalette.toggleOff());
             marks[i] = sq;
             LinearLayout.LayoutParams sqLp = new LinearLayout.LayoutParams(dp(20), dp(20));
             sqLp.rightMargin = dp(12);
             row.addView(sq, sqLp);
-            TextView name = label(labels[i], 10, UI_INK, tfHan);
+            TextView name = label(labels[i], 10, UiPalette.INK, tfHan);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             row.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -7880,7 +7812,7 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setPadding(dp(10), dp(6), dp(10), dp(10));
-        final TextView all = label(tr("preset.select_all"), 9, UI_MUTED, tfHan);
+        final TextView all = label(tr("preset.select_all"), 9, UiPalette.MUTED, tfHan);
         all.setGravity(android.view.Gravity.CENTER);
         all.setOnClickListener(v -> {
             final boolean want = !all.isSelected();
@@ -7892,7 +7824,7 @@ public class MainActivity extends Activity {
             }
         });
         foot.addView(all, new LinearLayout.LayoutParams(0, dp(34), 1f));
-        TextView apply = label(tr("preset.apply"), 9, UI_BLUE, tfHan);
+        TextView apply = label(tr("preset.apply"), 9, UiPalette.BLUE, tfHan);
         apply.setGravity(android.view.Gravity.CENTER);
         apply.setOnClickListener(v -> {
             final java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
@@ -7960,16 +7892,16 @@ public class MainActivity extends Activity {
         final android.app.Dialog dialog = newDialog();
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setBackgroundColor(UI_PAPER);
+        sheet.setBackgroundColor(UiPalette.PAPER);
         View cap = new View(this);
-        cap.setBackgroundColor(UI_BLUE);
+        cap.setBackgroundColor(UiPalette.BLUE);
         sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        final TextView titleView = label(title, 12, UI_INK, tfHan);
+        final TextView titleView = label(title, 12, UiPalette.INK, tfHan);
         if (onTitleLongPress != null) {
             titleView.setOnLongClickListener(v -> {
                 dialog.dismiss();
@@ -7978,7 +7910,7 @@ public class MainActivity extends Activity {
             });
         }
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UiPalette.MUTED, tfHan);
         close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
@@ -7987,7 +7919,7 @@ public class MainActivity extends Activity {
 
         final int pinHeight;
         if (pinned != null && !pinned.isEmpty()) {
-            final TextView pinView = label(pinned, 9f, UI_BLUE, tfHan);
+            final TextView pinView = label(pinned, 9f, UiPalette.BLUE, tfHan);
             pinView.setTextIsSelectable(true);
             pinView.setPadding(dp(16), 0, dp(16), dp(10));
             sheet.addView(pinView);
@@ -7996,7 +7928,7 @@ public class MainActivity extends Activity {
             pinHeight = 0;
         }
         if (note != null && !note.isEmpty()) {
-            TextView noteView = label(note, 8.5f, UI_MUTED, tfHan);
+            TextView noteView = label(note, 8.5f, UiPalette.MUTED, tfHan);
             noteView.setPadding(dp(16), 0, dp(16), dp(12));
             // **A long note has to scroll.** The sheet is `WRAP_CONTENT`, so a
             // full changelog (seventy lines) pushed the title and the action
@@ -8024,7 +7956,7 @@ public class MainActivity extends Activity {
         }
         for (int i = 0; i < items.length; ++i) {
             final int index = i;
-            TextView row = label(items[i], 11, UI_INK, tfHan);
+            TextView row = label(items[i], 11, UiPalette.INK, tfHan);
             row.setGravity(android.view.Gravity.CENTER_VERTICAL);
             row.setPadding(dp(16), 0, dp(16), 0);
             row.setOnClickListener(v -> {
@@ -8068,18 +8000,18 @@ public class MainActivity extends Activity {
         final android.app.Dialog dialog = newDialog();
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackgroundColor(UI_PAPER);
+        card.setBackgroundColor(UiPalette.PAPER);
         View cap = new View(this);
-        cap.setBackgroundColor(UI_BLUE);
+        cap.setBackgroundColor(UiPalette.BLUE);
         card.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        head.addView(mixedLabel(tr("feedback.feedback_community"), 8, UI_BLUE),
+        head.addView(mixedLabel(tr("feedback.feedback_community"), 8, UiPalette.BLUE),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UiPalette.MUTED, tfHan);
         close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
@@ -8089,10 +8021,10 @@ public class MainActivity extends Activity {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(16), 0, dp(16), 4);
-        TextView title = label(tr("feedback.need_help_or_want_to"), 17, UI_INK, tfHan);
+        TextView title = label(tr("feedback.need_help_or_want_to"), 17, UiPalette.INK, tfHan);
         body.addView(title);
         TextView copyText = label(tr("feedback.use_the_group_to_report")
-                + tr("feedback.if_you_can_reproduce_the"), 10, UI_MUTED, tfHan);
+                + tr("feedback.if_you_can_reproduce_the"), 10, UiPalette.MUTED, tfHan);
         copyText.setLineSpacing(dp(4), 1f);
         LinearLayout.LayoutParams copyTextLp = new LinearLayout.LayoutParams(-1, -2);
         copyTextLp.topMargin = dp(9);
@@ -8116,12 +8048,12 @@ public class MainActivity extends Activity {
         final LinearLayout wxText = new LinearLayout(this);
         wxText.setOrientation(LinearLayout.VERTICAL);
         wxText.setPadding(dp(14), 0, 0, 0);
-        wxText.addView(label(tr("feedback.wechat_group"), 15, UI_INK, tfHan));
-        TextView wxHint = label(tr("feedback.scan_with_wechat_to_join"), 9.5f, UI_MUTED, tfHan);
+        wxText.addView(label(tr("feedback.wechat_group"), 15, UiPalette.INK, tfHan));
+        TextView wxHint = label(tr("feedback.scan_with_wechat_to_join"), 9.5f, UiPalette.MUTED, tfHan);
         LinearLayout.LayoutParams wxHintLp = new LinearLayout.LayoutParams(-1, -2);
         wxHintLp.topMargin = dp(4);
         wxText.addView(wxHint, wxHintLp);
-        TextView wxHint2 = label(tr("feedback.if_the_qr_code_has"), 8.5f, UI_MUTED, tfHan);
+        TextView wxHint2 = label(tr("feedback.if_the_qr_code_has"), 8.5f, UiPalette.MUTED, tfHan);
         wxHint2.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams wxHint2Lp = new LinearLayout.LayoutParams(-1, -2);
         wxHint2Lp.topMargin = dp(4);
@@ -8130,17 +8062,17 @@ public class MainActivity extends Activity {
         body.addView(wxRow, wxRowLp);
 
         View divider = new View(this);
-        divider.setBackgroundColor(UI_LINE);
+        divider.setBackgroundColor(UiPalette.LINE);
         LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(-1, dp(1));
         dividerLp.topMargin = dp(16);
         body.addView(divider, dividerLp);
 
-        TextView number = label(QQ_GROUP, 20, UI_BLUE, tfDisplay);
+        TextView number = label(QQ_GROUP, 20, UiPalette.BLUE, tfDisplay);
         number.setLetterSpacing(-0.02f);
         LinearLayout.LayoutParams numberLp = new LinearLayout.LayoutParams(-1, -2);
         numberLp.topMargin = dp(16);
         body.addView(number, numberLp);
-        TextView hint = label(tr("feedback.copy_the_group_id_below"), 9, UI_MUTED, tfHan);
+        TextView hint = label(tr("feedback.copy_the_group_id_below"), 9, UiPalette.MUTED, tfHan);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(-1, -2);
         hintLp.topMargin = dp(5);
         body.addView(hint, hintLp);
@@ -8150,21 +8082,21 @@ public class MainActivity extends Activity {
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setPadding(dp(16), dp(16), dp(16), dp(16));
 
-        TextView open = label(tr("feedback.open_qq"), 10, UI_BLUE, tfHan);
+        TextView open = label(tr("feedback.open_qq"), 10, UiPalette.BLUE, tfHan);
         open.setGravity(android.view.Gravity.CENTER);
         android.graphics.drawable.GradientDrawable openBg = new android.graphics.drawable.GradientDrawable();
-        openBg.setColor(UI_PAPER);
-        openBg.setStroke(dp(1), UI_BLUE);
+        openBg.setColor(UiPalette.PAPER);
+        openBg.setStroke(dp(1), UiPalette.BLUE);
         open.setBackground(openBg);
         open.setOnClickListener(v -> openQqGroup());
         LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(0, dp(42), 1f);
         openLp.rightMargin = dp(8);
         actions.addView(open, openLp);
 
-        TextView copy = label(tr("feedback.copy_group_id"), 10, UI_PAPER, tfHan);
+        TextView copy = label(tr("feedback.copy_group_id"), 10, UiPalette.PAPER, tfHan);
         copy.setGravity(android.view.Gravity.CENTER);
         android.graphics.drawable.GradientDrawable copyBg = new android.graphics.drawable.GradientDrawable();
-        copyBg.setColor(UI_BLUE);
+        copyBg.setColor(UiPalette.BLUE);
         copy.setBackground(copyBg);
         copy.setOnClickListener(v -> {
             if (copyToClipboard(tr("feedback.spektralab_feedback_group"), QQ_GROUP)) {
@@ -8182,7 +8114,7 @@ public class MainActivity extends Activity {
         card.addView(actions, new LinearLayout.LayoutParams(-1, -2));
 
         if (auto) {
-            TextView mute = label(tr("feedback.don_t_show_automatically"), 8.5f, UI_MUTED, tfHan);
+            TextView mute = label(tr("feedback.don_t_show_automatically"), 8.5f, UiPalette.MUTED, tfHan);
             mute.setGravity(android.view.Gravity.CENTER);
             mute.setPaintFlags(mute.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
             mute.setPadding(0, 0, 0, dp(14));
@@ -8269,17 +8201,17 @@ public class MainActivity extends Activity {
         final android.app.Dialog dialog = newDialog();
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setBackgroundColor(UI_PAPER);
+        sheet.setBackgroundColor(UiPalette.PAPER);
         View cap = new View(this);
-        cap.setBackgroundColor(UI_BLUE);
+        cap.setBackgroundColor(UiPalette.BLUE);
         sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        head.addView(label(title, 12, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
+        head.addView(label(title, 12, UiPalette.INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView close = label(tr("crash.close"), 9, UiPalette.MUTED, tfHan);
         close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
@@ -8309,12 +8241,12 @@ public class MainActivity extends Activity {
 
             LinearLayout column = new LinearLayout(this);
             column.setOrientation(LinearLayout.VERTICAL);
-            TextView text = label(name, 11, !enabled ? UI_MUTED : (active ? UI_BLUE : UI_INK), tfHan);
+            TextView text = label(name, 11, !enabled ? UiPalette.MUTED : (active ? UiPalette.BLUE : UiPalette.INK), tfHan);
             text.setMaxLines(1);
             text.setEllipsize(android.text.TextUtils.TruncateAt.END);
             column.addView(text, new LinearLayout.LayoutParams(-1, -2));
             if (note != null && !note.isEmpty()) {
-                TextView sub = label(note, 8.5f, UI_MUTED, tfHan);
+                TextView sub = label(note, 8.5f, UiPalette.MUTED, tfHan);
                 sub.setMaxLines(1);
                 sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(-1, -2);
@@ -8326,8 +8258,8 @@ public class MainActivity extends Activity {
             View dot = new View(this);
             android.graphics.drawable.GradientDrawable dotBg = new android.graphics.drawable.GradientDrawable();
             dotBg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-            dotBg.setColor(active ? UI_BLUE : 0x00000000);
-            dotBg.setStroke(dp(1), active ? UI_BLUE : UI_MUTED);
+            dotBg.setColor(active ? UiPalette.BLUE : 0x00000000);
+            dotBg.setStroke(dp(1), active ? UiPalette.BLUE : UiPalette.MUTED);
             dot.setBackground(dotBg);
             LinearLayout.LayoutParams dotLp = new LinearLayout.LayoutParams(dp(13), dp(13));
             dotLp.leftMargin = dp(10);
@@ -8403,7 +8335,7 @@ public class MainActivity extends Activity {
         if (meterChip == null) return;
         final boolean on = meterMethod != null && !meterMethod.isEmpty();
         meterChip.setText(meterName(meterMethod));
-        meterChip.setTextColor(on ? UI_BLUE : UI_MUTED);
+        meterChip.setTextColor(on ? UiPalette.BLUE : UiPalette.MUTED);
         meterChip.setBackground(outlineBox(on));
     }
 
@@ -9235,7 +9167,7 @@ public class MainActivity extends Activity {
         // describes.
         row.setMinimumHeight(dp(48));
         row.setPadding(0, dp(6), 0, dp(6));
-        row.addView(label(labelText, 8, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(label(labelText, 8, UiPalette.INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
         mark.setLit(isOn.getAsBoolean());
         row.addView(mark, new LinearLayout.LayoutParams(dp(18), dp(18)));
         row.setOnClickListener(v -> {
@@ -9280,14 +9212,14 @@ public class MainActivity extends Activity {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        head.addView(label(name, 8, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView value = label(String.format(java.util.Locale.US, "%.2f", initial), 8, UI_BLUE, tfBody);
+        head.addView(label(name, 8, UiPalette.INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView value = label(String.format(java.util.Locale.US, "%.2f", initial), 8, UiPalette.BLUE, tfBody);
         head.addView(value);
         LinearLayout.LayoutParams headLp = new LinearLayout.LayoutParams(-1, -2);
         headLp.bottomMargin = dp(2);
         row.addView(head, headLp);
         if (hint != null && !hint.isEmpty()) {
-            TextView note = label(hint, 7.5f, UI_MUTED, tfHan);
+            TextView note = label(hint, 7.5f, UiPalette.MUTED, tfHan);
             note.setMaxLines(1);
             note.setEllipsize(android.text.TextUtils.TruncateAt.END);
             LinearLayout.LayoutParams noteLp = new LinearLayout.LayoutParams(-1, -2);
@@ -9342,10 +9274,10 @@ public class MainActivity extends Activity {
         final int thickness = dp(3);
         android.graphics.drawable.ShapeDrawable back = new android.graphics.drawable.ShapeDrawable(
                 new android.graphics.drawable.shapes.RectShape());
-        back.getPaint().setColor(UI_LINE);
+        back.getPaint().setColor(UiPalette.LINE);
         android.graphics.drawable.ShapeDrawable fill = new android.graphics.drawable.ShapeDrawable(
                 new android.graphics.drawable.shapes.RectShape());
-        fill.getPaint().setColor(UI_BLUE);
+        fill.getPaint().setColor(UiPalette.BLUE);
         android.graphics.drawable.ClipDrawable clip = new android.graphics.drawable.ClipDrawable(
                 fill, android.view.Gravity.LEFT, android.graphics.drawable.ClipDrawable.HORIZONTAL);
         android.graphics.drawable.LayerDrawable layers = new android.graphics.drawable.LayerDrawable(
@@ -9360,7 +9292,7 @@ public class MainActivity extends Activity {
 
         android.graphics.drawable.ShapeDrawable thumb = new android.graphics.drawable.ShapeDrawable(
                 new android.graphics.drawable.shapes.RectShape());
-        thumb.getPaint().setColor(UI_BLUE);
+        thumb.getPaint().setColor(UiPalette.BLUE);
         thumb.setIntrinsicWidth(dp(9));
         thumb.setIntrinsicHeight(dp(9));
         bar.setThumb(thumb);
@@ -9387,7 +9319,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < panels.length; ++i) {
             panels[i].setVisibility(i == active ? View.VISIBLE : View.GONE);
             tabBars[i].setVisibility(i == active ? View.VISIBLE : View.INVISIBLE);
-            if (tabLabels[i] != null) tabLabels[i].setTextColor(i == active ? UI_BLUE : UI_MUTED);
+            if (tabLabels[i] != null) tabLabels[i].setTextColor(i == active ? UiPalette.BLUE : UiPalette.MUTED);
         }
     }
 
@@ -10216,7 +10148,7 @@ public class MainActivity extends Activity {
             canvas.drawRect(x - r, cy - r, x + r, cy + r, paint);
             paint.setStyle(android.graphics.Paint.Style.STROKE);
             paint.setStrokeWidth(Math.max(1f, density));
-            paint.setColor(darkTheme ? 0xFFFFFFFF : 0xFF1C2AA5);
+            paint.setColor(UiPalette.dark() ? 0xFFFFFFFF : 0xFF1C2AA5);
             canvas.drawRect(x - r, cy - r, x + r, cy + r, paint);
             paint.setStyle(android.graphics.Paint.Style.FILL);
         }
@@ -10832,54 +10764,43 @@ public class MainActivity extends Activity {
 
     /** Reads assets/resources/stock_catalog.json (generated from the engine's profiles). */
     private void loadStockCatalog() {
-        try (InputStream in = getAssets().open("resources/stock_catalog.json")) {
-            byte[] buf = new byte[in.available()];
-            int off = 0, n;
-            while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
-            org.json.JSONObject root = new org.json.JSONObject(new String(buf, java.nio.charset.StandardCharsets.UTF_8));
-            filmTargetPrints.clear();
-            readStocks(root.optJSONArray("films"), filmIds, filmLabels, filmTypes, filmTargetPrints);
-            readStocks(root.optJSONArray("prints"), printIds, printLabels, null, null);
-        } catch (Throwable t) {
-            android.util.Log.w("SpektraLab", "stock catalog: " + t);
+        final app.spektralab.domain.StockCatalog catalog = stockCatalogRepository.load(getAssets());
+        filmTargetPrints.clear();
+        filmIds.clear();
+        filmLabels.clear();
+        filmTypes.clear();
+        printIds.clear();
+        printLabels.clear();
+        for (int i = 0; i < catalog.filmIds.size(); ++i) {
+            filmIds.add(catalog.filmIds.get(i));
+            filmLabels.add(decorateStockLabel(catalog.filmIds.get(i),
+                    catalog.filmLabels.get(i),
+                    catalog.filmTypes.get(i),
+                    catalog.filmUses.get(i)));
+            filmTypes.add(catalog.filmTypes.get(i));
         }
-        if (filmIds.isEmpty()) { filmIds.add("kodak_portra_400"); filmLabels.add("Kodak Portra 400"); }
-        if (printIds.isEmpty()) { printIds.add("kodak_portra_endura"); printLabels.add("Kodak Portra Endura"); }
-
+        for (int i = 0; i < catalog.printIds.size(); ++i) {
+            printIds.add(catalog.printIds.get(i));
+            printLabels.add(decorateStockLabel(catalog.printIds.get(i),
+                    catalog.printLabels.get(i),
+                    "", catalog.printUses.get(i)));
+        }
+        filmTargetPrints.putAll(catalog.filmTargetPrints);
         rebuildBrandRow();
         rebuildFilmCards();
         refreshPaperLabel();
     }
 
-    private static void readStocks(org.json.JSONArray array, List<String> ids, List<String> labels,
-                                   List<String> types, java.util.Map<String, String> targets) {
-        if (array == null) return;
-        for (int i = 0; i < array.length(); i++) {
-            org.json.JSONObject o = array.optJSONObject(i);
-            if (o == null) continue;
-            String id = o.optString("id");
-            if (id.isEmpty()) continue;
-            String name = o.optString("name", id);
-            StringBuilder label = new StringBuilder(name);
-            String type = o.optString("type", "");
-            String use = o.optString("use", "");
-            if ("positive".equals(type)) label.append(tr("film.slide"));
-            // A silver stock is a `negative` in this catalogue like any other,
-            // so without this the four black-and-white films wear "· 负片"
-            // and nothing says which ones they are. "Black and white" is the
-            // only label a user looks for them by.
-            else if (isMonochromeStock(id)) label.append(tr("film.b_w"));
-            else if ("negative".equals(type)) label.append(tr("import.negative"));
-            if ("cine".equals(use)) label.append(tr("import.cinema"));
-            ids.add(id);
-            labels.add(label.toString());
-            if (types != null) types.add(type);
-            if (targets != null) {
-                final String target = o.optString("targetPrint", "");
-                if (!target.isEmpty()) targets.put(id, target);
-            }
-        }
+    /** Translation stays in the UI layer; the repository only parses data. */
+    private String decorateStockLabel(String id, String name, String type, String use) {
+        final StringBuilder label = new StringBuilder(name);
+        if ("positive".equals(type)) label.append(tr("film.slide"));
+        else if (isMonochromeStock(id)) label.append(tr("film.b_w"));
+        else if ("negative".equals(type)) label.append(tr("import.negative"));
+        if ("cine".equals(use)) label.append(tr("import.cinema"));
+        return label.toString();
     }
+
 
     private int getStatusBarHeight() {
         int result = 0;
@@ -12305,19 +12226,19 @@ public class MainActivity extends Activity {
             final android.app.Dialog dialog = newDialog();
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
-            card.setBackgroundColor(UI_PAPER);
+            card.setBackgroundColor(UiPalette.PAPER);
             View cap = new View(this);
-            cap.setBackgroundColor(UI_BLUE);
+            cap.setBackgroundColor(UiPalette.BLUE);
             card.addView(cap, new LinearLayout.LayoutParams(-1, dp(3)));
 
             LinearLayout head = new LinearLayout(this);
             head.setOrientation(LinearLayout.HORIZONTAL);
             head.setGravity(android.view.Gravity.CENTER_VERTICAL);
             head.setPadding(dp(16), 0, dp(16), 0);
-            TextView kicker = mixedLabel(tr("import.error_details"), 8, UI_BLUE);
+            TextView kicker = mixedLabel(tr("import.error_details"), 8, UiPalette.BLUE);
             kicker.setLetterSpacing(0.08f);
             head.addView(kicker, new LinearLayout.LayoutParams(0, -2, 1f));
-            TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
+            TextView close = label(tr("crash.close"), 9, UiPalette.MUTED, tfHan);
             close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
             close.setPadding(dp(12), dp(14), 0, dp(14));
             close.setOnClickListener(v -> dialog.dismiss());
@@ -12328,10 +12249,10 @@ public class MainActivity extends Activity {
             LinearLayout bodyBox = new LinearLayout(this);
             bodyBox.setOrientation(LinearLayout.VERTICAL);
             bodyBox.setPadding(dp(16), 0, dp(16), 4);
-            TextView titleView = label(shownTitle, 18, UI_INK, tfHan);
+            TextView titleView = label(shownTitle, 18, UiPalette.INK, tfHan);
             titleView.setLetterSpacing(-0.02f);
             bodyBox.addView(titleView);
-            TextView advice = label(tr("import.copy_the_full_details_below") + DebugSink.REF, 10, UI_MUTED, tfHan);
+            TextView advice = label(tr("import.copy_the_full_details_below") + DebugSink.REF, 10, UiPalette.MUTED, tfHan);
             LinearLayout.LayoutParams adviceLp = new LinearLayout.LayoutParams(-1, -2);
             adviceLp.topMargin = dp(8);
             bodyBox.addView(advice, adviceLp);
@@ -12352,20 +12273,20 @@ public class MainActivity extends Activity {
             LinearLayout actions = new LinearLayout(this);
             actions.setOrientation(LinearLayout.HORIZONTAL);
             actions.setPadding(dp(16), dp(14), dp(16), dp(16));
-            TextView closeAction = label(tr("crash.close"), 10, UI_BLUE, tfHan);
+            TextView closeAction = label(tr("crash.close"), 10, UiPalette.BLUE, tfHan);
             closeAction.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable closeBg = new android.graphics.drawable.GradientDrawable();
-            closeBg.setColor(UI_PAPER);
-            closeBg.setStroke(dp(1), UI_BLUE);
+            closeBg.setColor(UiPalette.PAPER);
+            closeBg.setStroke(dp(1), UiPalette.BLUE);
             closeAction.setBackground(closeBg);
             closeAction.setOnClickListener(v -> dialog.dismiss());
             LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(0, dp(42), 1f);
             closeLp.rightMargin = dp(8);
             actions.addView(closeAction, closeLp);
-            TextView copy = label(tr("import.copy_error_details"), 10, UI_PAPER, tfHan);
+            TextView copy = label(tr("import.copy_error_details"), 10, UiPalette.PAPER, tfHan);
             copy.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable copyBg = new android.graphics.drawable.GradientDrawable();
-            copyBg.setColor(UI_BLUE);
+            copyBg.setColor(UiPalette.BLUE);
             copy.setBackground(copyBg);
             copy.setOnClickListener(v -> {
                 try {
