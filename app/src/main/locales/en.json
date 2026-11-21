@@ -699,6 +699,8 @@
     "update.update_available": "Update available: ",
     "update.you_re_up_to_date": "You're up to date: ",
     "settings.diagnostics_consent_note": " The switch below also controls the automatic error report; nothing is uploaded until you turn it on. Manual 'send recent activity' always asks first.",
-    "export.stopped": "Export stopped"
+    "export.stopped": "Export stopped",
+    "settings.diagnostics_on": "Diagnostics: on (device + error reports)",
+    "settings.diagnostics_off": "Diagnostics: off (nothing uploaded)"
   }
 }

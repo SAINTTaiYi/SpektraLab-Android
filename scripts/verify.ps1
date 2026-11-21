@@ -29,6 +29,10 @@ Write-Host '== prebuilt native payload =='
 & $py "$root\app\build\check-prebuilt.py"
 Report 'check-prebuilt' ($LASTEXITCODE -eq 0)
 
+Write-Host '== build-tool tests =='
+& $py "$root\app\build\test_build_tools.py"
+Report 'test_build_tools' ($LASTEXITCODE -eq 0)
+
 Write-Host '== Java compilation =='
 $jdk = (Get-ChildItem "$BuildHome\jdk-17*" -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -First 1).FullName
@@ -52,6 +56,12 @@ if (Test-Path $clang) {
     $obj = Join-Path ([IO.Path]::GetTempPath()) 'spektralab-view_adjust_test.o'
     & $clang --target=aarch64-linux-android24 -std=c++20 -O0 -I"$root\app\src\main\cpp" -c $test -o $obj
     Report 'view_adjust_test compile' ($LASTEXITCODE -eq 0)
+    $jpegSrc = Join-Path $BuildHome 'libjpeg-turbo-3.1.2\src'
+    $jpegBuild = Join-Path $BuildHome 'jpeg-android'
+    $meta = "$root\app\build\native-tests\export_metadata_test.cpp"
+    & $clang --target=aarch64-linux-android24 -std=c++20 -O0 -I"$root\app\src\main\cpp" `
+        "-I$jpegBuild" "-I$jpegSrc" -c $meta -o (Join-Path ([IO.Path]::GetTempPath()) 'spk_export_metadata_test.o')
+    Report 'export_metadata_test compile' ($LASTEXITCODE -eq 0)
 } else {
     Write-Host '  SKIP  clang++ not found'
 }

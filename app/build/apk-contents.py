@@ -49,10 +49,21 @@ def pack(apk, stage):
             target_info.compress_type = entry.compress_type
             with source.open(entry) as data, target.open(target_info, 'w') as out:
                 shutil.copyfileobj(data, out)
+        def add_deflated(path, name):
+            # The published APK deflates its native libraries (compress_type 8).
+            # zipfile.write() defaults to ZIP_STORED, which made local builds
+            # 27 MB instead of 15.9 MB. Keep the original timestamp too.
+            info = zipfile.ZipInfo(name, __import__('datetime').datetime.fromtimestamp(
+                path.stat().st_mtime).timetuple()[:6])
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            with path.open('rb') as data, target.open(info, 'w') as out:
+                shutil.copyfileobj(data, out)
+
         for dex in sorted((stage / 'dex').glob('classes*.dex')):
-            target.write(dex, dex.name)
+            add_deflated(dex, dex.name)
         for lib in sorted((stage / 'lib/arm64-v8a').glob('*.so')):
-            target.write(lib, lib.relative_to(stage).as_posix())
+            add_deflated(lib, lib.relative_to(stage).as_posix())
 
 
 if __name__ == '__main__':

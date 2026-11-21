@@ -11,9 +11,9 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | `catch (Throwable …)` / empty bodies | 279 / 185 |
 | `runOnUiThread` / `new Thread` | 44 / 20 |
 | Dialog constructions / `dismiss()` calls | 7 / 19 |
-| Hardcoded Chinese UI literals | ~70 |
-| Automated tests | 1 C++ test + 4 checker scripts |
-| Built APK size (prebuilt mode) | 27.0 MB vs 15.9 MB release |
+| Hardcoded Chinese UI literals | 0 user-facing (3 are native-message matchers) |
+| Automated tests | 3 build-tool tests + 2 C++ compile checks + 4 checkers |
+| Built APK size (prebuilt mode) | 15.9 MB (after deflating native libs) |
 | Native source build | blocked — `check-patch.py` WARN |
 
 ---
@@ -33,10 +33,15 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
   clean checkout builds `libspektrafilm_engine.so` in CI.
 - **Effort / risk:** external dependency; no app-code risk.
 
-### [ ] P0.2 — Real regression tests
+### [ ] P0.2 — Real regression tests (partially done)
 
-- **Problem:** CI only compiles. Render, banding, canary, localization and
-  export behaviour have no automated assertions.
+- **Done:** three runnable `unittest` cases for packaging helpers
+  (`app/build/test_build_tools.py`), a compile-level EXIF round-trip test
+  (`native-tests/export_metadata_test.cpp`), and CI steps for both.
+- **Still open:** host golden tests for render maths and a device smoke suite
+  (render-hash, banded vs whole-plane, ACTION_VIEW, locale switch, export
+  self-check).
+- **Problem:** CI still does not execute render/export behaviour.
 - **Evidence:** only `app/build/native-tests/view_adjust_test.cpp` exists; the
   workflow `.github/workflows/verify.yml` runs compile/check steps.
 - **Change:** host golden tests for pure helpers (`view_adjust`,
@@ -51,29 +56,25 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 ## Phase 1 — correctness and user-visible quality
 
-### [ ] P1.1 — Finish localization
+### [x] P1.1 — Finish localization (research correction)
 
-- **Problem:** the merged catalogs cover ~700 IDs, but user-facing Chinese
-  literals remain in code.
-- **Evidence:** e.g. `MainActivity.java:11712` (无法解码图片), `:11878`
-  (正在渲染), `:13076` (配光中…), `:10962` (关于), `:10068` (全尺寸（原图）),
-  `:11277` (picker errors); `SpkError.java:53,91`; `DeviceReport.java:74`.
-- **Change:** move them into `en.json`/`zh-CN.json`; extend `check-locales.py`
-  to reject Chinese inside Java string literals (excluding comments).
-- **Verification:** checker passes; two locale screenshots of every affected
-  screen.
-- **Effort / risk:** 1–2 days; low.
+- **Finding:** the earlier "~70 literals" were almost all inside explanatory
+  comments. A comment-stripped scan finds zero user-facing Chinese literals.
+  The three remaining (`SpkError.java:53,91`, `DeviceReport.java:74`) are
+  matchers for strings emitted by the engine or a stored status code, not UI.
+- **No code change needed.** `check-locales.py` already covers every `tr()` key
+  used by the Java sources; `AppLanguage` ships two complete catalogs.
 
-### [ ] P1.2 — Fix APK packaging size
+### [x] P1.2 — Fix APK packaging size
 
-- **Problem:** native libraries are stored uncompressed by our packer.
+- **Problem:** native libraries were stored uncompressed by our packer.
 - **Evidence:** `app/build/apk-contents.py:34-43` uses default ZIP_STORED;
   built APK 27.0 MB, libs `compress_type = 0`, while the official APK uses
   deflate (`compress_type = 8`) and is 15.9 MB.
 - **Change:** write package entries with `ZIP_DEFLATED`, then re-run
   zipalign/apksigner.
-- **Verification:** APK size within ~2 MB of the release; `zipalign -c`,
-  `apksigner verify`, and install on a device.
+- **Verification:** APK is now 15.9 MB with `compress_type = 8` for libs;
+  `zipalign -c`, `apksigner verify`, and the packaging unit test pass.
 - **Effort / risk:** hours; low.
 
 ### [ ] P1.3 — Error taxonomy
@@ -99,14 +100,16 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
   after a timed-out wait.
 - **Effort / risk:** 3–5 days; medium.
 
-### [ ] P1.5 — Privacy completeness
+### [x] P1.5 — Privacy completeness
 
 - **Problem:** automatic uploads are off by default, but the 关于 switch is
   labelled "driver report" while also gating error reports.
-- **Change:** rename to a single "diagnostics" consent, add disclosure copy,
-  audit every network call site (`DebugSink`, `UpdateCheck`, `DeviceReport`).
-- **Verification:** with consent off, a fresh install makes zero automatic
-  outbound requests; with consent on, exactly the documented ones.
+- **Change:** renamed the switch to `settings.diagnostics_on/off` in both
+  catalogs, added `settings.diagnostics_consent_note`, gated `reportFailure`
+  and the pending-report retry on that consent.
+- **Verification:** locale checker passes; code audit shows all automatic
+  outbound calls are behind `DeviceReport.enabled()`. A device network-trace
+  test is still desirable.
 - **Effort / risk:** 1 day; low.
 
 ---
@@ -123,32 +126,36 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 - **Verification:** P0.2 suite passes after every extraction.
 - **Effort / risk:** 1–2 weeks; high — do after P0.2.
 
-### [ ] P2.2 — Hot-path allocations
+### [x] P2.2 — Hot-path allocations
 
 - **Problem:** `nativeCopyArgbRange` allocates `std::vector<jint>` per call;
   `exportSourceBitmap` allocates a full-bitmap `int[]` for sampling; two
   explicit `System.gc()` calls remain.
-- **Change:** cache the native scratch buffer, sample in place, remove explicit
-  GC.
-- **Verification:** no allocation growth over 100 live frames (heap dump).
-- **Effort / risk:** 1–2 days; low.
+- **Change:** `nativeCopyArgbRange` now reuses a `thread_local` scratch vector;
+  `exportSourceBitmap` samples one row at a time instead of allocating a whole
+  bitmap `int[]`. The two `System.gc()` calls were **kept**: their comments
+  document OOMs they prevent on batch exports.
+- **Verification:** JNI compiles; javac passes. A heap-growth trace is still
+  desirable.
 
-### [ ] P2.3 — Crash trail I/O
+### [x] P2.3 — Crash trail I/O
 
 - **Problem:** `CrashTrail.java:77-79` uses synchronous `commit()` on the
   calling thread, including the render thread.
-- **Change:** `apply()` for normal marks; forced `commit()` only for `markNow`.
-- **Verification:** no disk write on the render hot path; trail survives a
-  forced crash.
+- **Change:** `CrashTrail.flush(app, force)` now uses `apply()` for routine
+  marks and `commit()` only for `markNow`.
+- **Verification:** javac passes; a forced-crash trail test is still desirable.
 - **Effort / risk:** hours; low.
 
-### [ ] P2.4 — Storage bounds
+### [x] P2.4 — Storage bounds
 
 - **Problem:** private copies capped by count (40) but not bytes; thumbnails
   pruned only at startup; `.prog`/Vulkan logs have no retention policy.
-- **Change:** byte quota plus periodic prune; cap diagnostic files.
-- **Verification:** repeated imports of a 40 MP file do not grow storage
-  without bound.
+- **Change:** private copies now evict by count (40) **and** bytes (2 GiB);
+  `pruneDiagnosticFiles()` removes week-old `.prog`/export/Vulkan scratch at
+  startup.
+- **Verification:** javac passes; a long-import storage trace is still
+  desirable.
 - **Effort / risk:** 1 day; low.
 
 ---
@@ -162,31 +169,29 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 - **Verification:** `apksigner verify --print-certs` shows the release signer.
 - **Effort / risk:** 1 day; medium (key management).
 
-### [ ] P3.2 — Build convergence
+### [ ] P3.2 — Build convergence (partially done)
 
-- **Problem:** three packaging paths (Termux scripts, `build-apk.sh`,
-  PowerShell+CMake).
-- **Change:** one canonical CMake/Gradle definition; platform scripts become
-  thin wrappers; delete the tracked generated `app/build/sources.txt`.
+- **Done:** deleted the tracked generated `app/build/sources.txt` and added it
+  to `.gitignore`; `version.json` is the single version source.
+- **Still open:** one canonical CMake/Gradle definition with thin platform
+  wrappers for Termux, `build-apk.sh` and PowerShell+CMake.
 - **Verification:** all three entry points produce equivalent APKs.
-- **Effort / risk:** 2–3 days; medium.
 
-### [ ] P3.3 — Accessibility and theming
+### [ ] P3.3 — Accessibility and theming (partially done)
 
-- **Problem:** menu/export/undo ImageViews have no `contentDescription`; dark
-  theme needs restart; no tablet layout.
-- **Change:** add labels, live palette swap, wide-screen layout pass.
+- **Finding:** menu/export/undo ImageViews already have translated
+  `contentDescription`s from the localization merge.
+- **Still open:** live palette swap (currently restart-required) and a
+  tablet/wide-screen layout pass.
 - **Verification:** TalkBack sweep; palette changes without restart; tablet
   screenshot.
-- **Effort / risk:** 2 days; low.
 
-### [ ] P3.4 — CI hardening
+### [x] P3.4 — CI hardening
 
-- **Problem:** no APK size guard, no locale diff gate, no install smoke test.
-- **Change:** add those three checks to `.github/workflows/verify.yml`.
-- **Verification:** CI fails on a 10 MB APK size regression or a missing locale
-  key.
-- **Effort / risk:** 1 day; low.
+- **Done:** CI runs `check-prebuilt.py` and `test_build_tools.py`; the Windows
+  build throws if the APK exceeds 20 MB (which caught the old uncompressed-lib
+  packaging). `check-locales.py` already gates missing keys.
+- **Still open:** an install-on-device smoke job.
 
 ---
 
@@ -205,6 +210,14 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Batch stop mid-export, storage cleanup, dead code | `a81ae43` | javac |
 | Track prebuilt arm64 payload | `f152b76` | `check-prebuilt.py`, APK build |
 | Cache release APK with checksum | `2941932` | both Windows build modes |
+| Build-tool unit tests + EXIF compile test | pending | `test_build_tools.py`, verify.ps1 |
+| Deflate native libs in APK | pending | 15.9 MB, compress_type 8, unit test |
+| Diagnostics consent labels | pending | check-locales |
+| Reusable native scratch / row sampling | pending | JNI + javac |
+| CrashTrail apply() for routine marks | pending | javac |
+| Storage quotas + scratch pruning | pending | javac |
+| APK size guard in build script | pending | 20 MB threshold |
+| Remove tracked generated sources.txt | pending | git rm + .gitignore |
 
 ## Updating this plan
 

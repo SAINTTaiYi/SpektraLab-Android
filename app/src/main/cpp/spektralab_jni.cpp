@@ -851,7 +851,10 @@ JNI(jint, nativeCopyArgbRange)(JNIEnv* env, jclass, jintArray dst, jint rowOffse
         curve_base = std::pow(2.0, std::clamp(g_source_baseline_ev, -6.0, 6.0));
     }
 
-    std::vector<jint> tmp(size_t(rows) * w);
+    // One scratch buffer per thread, reused: this runs at ~11 Hz for a live
+    // frame and allocating ~1.7 MB each time churns the native heap.
+    static thread_local std::vector<jint> tmp;
+    tmp.resize(size_t(rows) * w);
     const uint16_t* px = g_result.rgba16;
     for (uint32_t y = 0; y < rows; ++y) {
         const uint16_t* src = px + size_t(rowOffset + y) * g_result.row_stride_px * 4;

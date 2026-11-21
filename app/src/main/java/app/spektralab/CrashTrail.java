@@ -65,17 +65,23 @@ final class CrashTrail {
             final long now = android.os.SystemClock.uptimeMillis();
             if (!force && now - lastFlush < FLUSH_MS) return;
             lastFlush = now;
-            flush(app);
+            flush(app, force);
         }
     }
 
-    /** Caller holds {@link #LOCK}. */
-    private static void flush(Context app) {
+    /** Caller holds {@link #LOCK}. Forced marks commit; routine marks apply. */
+    private static void flush(Context app, boolean force) {
         try {
             final StringBuilder b = new StringBuilder(RING.size() * 56);
             for (String s : RING) b.append(s).append('\n');
-            app.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .edit().putString(KEY, b.toString()).commit();
+            final android.content.SharedPreferences.Editor editor =
+                    app.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                            .edit().putString(KEY, b.toString());
+            // commit() here blocked the render thread for every tick. Only a
+            // mark that brackets a possible death needs the disk write to be
+            // synchronous; `apply()` is persisted before the process is killed
+            // in the ordinary case and never stalls a frame.
+            if (force) editor.commit(); else editor.apply();
         } catch (Throwable ignored) { }
     }
 

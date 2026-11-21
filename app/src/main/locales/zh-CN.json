@@ -699,6 +699,8 @@
     "update.update_available": "发现新版本 ",
     "update.you_re_up_to_date": "已是最新版本 ",
     "settings.diagnostics_consent_note": "下方开关同时控制自动错误上报；不打开时不会上传任何内容。手动「导出最近的步骤」始终会先询问。",
-    "export.stopped": "导出已停止"
+    "export.stopped": "导出已停止",
+    "settings.diagnostics_on": "诊断上报：开（设备信息 + 错误报告）",
+    "settings.diagnostics_off": "诊断上报：关（不上传任何内容）"
   }
 }

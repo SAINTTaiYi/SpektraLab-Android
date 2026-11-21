@@ -191,7 +191,11 @@ try {
     $outputDir = New-Item -ItemType Directory -Path $OutputDirectory -Force
     $output = Join-Path $outputDir.FullName "SpektraLab-$suffix.apk"
     Copy-Item "$stage\aligned.apk" $output -Force
-    Write-Host "APK: $output"
+    # A regression in packaging (e.g. storing libs instead of deflating them)
+    # used to double the APK. Keep the guard next to the artifact.
+    $apkSize = (Get-Item -LiteralPath $output).Length
+    if ($apkSize -gt 20MB) { throw "APK is $([math]::Round($apkSize/1MB,1)) MB; expected under 20 MB." }
+    Write-Host "APK: $output ($([math]::Round($apkSize/1MB,1)) MB)"
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force
 }

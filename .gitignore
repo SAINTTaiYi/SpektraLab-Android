@@ -3,6 +3,7 @@ app/build/native/
 app/build/classes/
 app/build/dex/
 app/build/apk/
+app/build/sources.txt
 app/build/*.apk
 *.apk
 *.apk.idsig

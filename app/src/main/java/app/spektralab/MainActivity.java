@@ -432,6 +432,7 @@ public class MainActivity extends Activity {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
             restoreSessionState();
             pruneThumbFiles();
+            pruneDiagnosticFiles();
             // The manifest advertises "open with" for image/* content and file
             // URIs. Consume the launch intent only after the saved strip has
             // come back, so an external photograph is not overwritten by the
@@ -1060,6 +1061,15 @@ public class MainActivity extends Activity {
     private java.io.File thumbFile(Uri uri) {
         return new java.io.File(getCacheDir(),
                 "thumb_" + Integer.toHexString(uri.toString().hashCode()) + ".png");
+    }
+
+    /** Drop export/Vulkan scratch files older than a week. */
+    private void pruneDiagnosticFiles() {
+        final long cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000;
+        final java.io.File[] files = getCacheDir().listFiles((dir, name) ->
+                name.endsWith(".prog") || name.startsWith("export_") || name.startsWith("vk"));
+        if (files == null) return;
+        for (java.io.File f : files) if (f.isFile() && f.lastModified() < cutoff) f.delete();
     }
 
     /** Drop thumbnails whose frame was deleted or whose grant expired. */
@@ -11097,7 +11107,7 @@ public class MainActivity extends Activity {
                 // screenshot. One tap copies the same ring a crash would have
                 // left behind.
                 tr("settings.send_recent_activity_log_to"),
-                reporting ? tr("settings.driver_report_on_weekly_model") : tr("settings.driver_report_off"),
+                reporting ? tr("settings.diagnostics_on") : tr("settings.diagnostics_off"),
                 dark ? tr("settings.theme_dark_orange_restart_to") : tr("settings.theme_blue_and_white_restart"),
                 tr("settings.feedback_groups_wechat_qq"), tr("settings.open_github")
         }, which -> {
@@ -11468,10 +11478,18 @@ public class MainActivity extends Activity {
             // forty (a long batch import); the strip keeps its
             // URIs and a lost copy only means one re-pick, not lost work.
             final java.io.File[] old = dir.listFiles();
-            if (old != null && old.length > 40) {
+            if (old != null) {
                 java.util.Arrays.sort(old, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-                for (int i = 0; i < old.length - 40; ++i) {
-                    if (!old[i].equals(dir)) old[i].delete();
+                long total = 0;
+                int count = 0;
+                for (java.io.File f : old) if (f.isFile()) { total += f.length(); ++count; }
+                // Evict oldest until both the count and the byte budget hold.
+                for (java.io.File f : old) {
+                    if (count <= 40 && total <= (2L << 30)) break;
+                    if (f.isFile() && f.delete()) {
+                        total -= f.length();
+                        --count;
+                    }
                 }
             }
             dst = new java.io.File(dir,
@@ -12174,16 +12192,21 @@ public class MainActivity extends Activity {
                 // it off the frame budget.
                 String means = "";
                 if (bitmap != null) {
-                    final int[] sample = new int[bitmap.getWidth() * bitmap.getHeight()];
-                    bitmap.getPixels(sample, 0, bitmap.getWidth(), 0, 0,
-                            bitmap.getWidth(), bitmap.getHeight());
+                    // Sample a row at a time: a full int[] of a 2048-tier frame
+                    // is 16 MB on the heap just to read every 97th pixel.
+                    final int w = bitmap.getWidth(), h = bitmap.getHeight();
+                    final int[] row = new int[w];
                     long sr = 0, sg = 0, sb = 0;
-                    int n = 0;
-                    for (int i = 0; i < sample.length; i += 97) {
-                        sr += (sample[i] >> 16) & 0xFF;
-                        sg += (sample[i] >> 8) & 0xFF;
-                        sb += sample[i] & 0xFF;
-                        ++n;
+                    int n = 0, index = 0;
+                    for (int y = 0; y < h; ++y) {
+                        bitmap.getPixels(row, 0, w, 0, y, w, 1);
+                        for (int x = 0; x < w; ++x, ++index) {
+                            if (index % 97 != 0) continue;
+                            sr += (row[x] >> 16) & 0xFF;
+                            sg += (row[x] >> 8) & 0xFF;
+                            sb += row[x] & 0xFF;
+                            ++n;
+                        }
                     }
                     if (n > 0) means = " mean=" + (sr / n) + "/" + (sg / n) + "/" + (sb / n);
                 }
