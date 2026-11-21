@@ -239,7 +239,7 @@ work and its device measurement and regression plan.
 | Custom Views to ui/ + package-rule checker | `1092b87` | check-package-rules + emulator golden |
 | More Views to ui/ (RatioMark, GuideView, HistogramView) | `686e546` | javac + emulator golden |
 | RotateScale + CropOverlay extraction with delegates | `8590764` | emulator Compose page + golden |
-| All stateful Views extracted + onNewIntent test-hook fix | pending | emulator Optics/Compose + golden |
+| All stateful Views extracted + onNewIntent test-hook fix | `09e7505` | emulator Optics/Compose + golden |
 
 ## Updating this plan
 
