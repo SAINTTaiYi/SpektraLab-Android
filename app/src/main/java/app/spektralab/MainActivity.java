@@ -1,5 +1,7 @@
 package app.spektralab;
 
+import static app.spektralab.AppLanguage.tr;
+
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -225,17 +227,8 @@ public class MainActivity extends Activity {
     private static final String[] METER_IDS = {
             "", "balanced", "protect_highlights", "protect_shadows",
             "center", "center_weighted", "average", "median"};
-    private static final String[] METER_NAMES = {
-            "关闭", "平衡", "保护高光", "保留暗部", "中心", "中心加权", "平均", "中位数"};
-    private static final String[] METER_NOTES = {
-            "不测光，用文件自己的曝光",
-            "全幅中位数对准中灰；暗场景会被提亮好几挡",
-            "平衡再压住高光两挡；有灯的画面不会糊成一片白",
-            "平衡再抬起暗部；阴影留住，亮部跟着走",
-            "只按画面中心测，忽略四周",
-            "中心高斯加权后取平均——旧版默认，最容易被高光带跑",
-            "整幅算术平均，完全不加权",
-            "整幅中位亮度，最不容易被单个亮斑左右"};
+    private String[] METER_NAMES;
+    private String[] METER_NOTES;
 
     // ── undo ──────────────────────────────────────────────────────
     /** One JSON snapshot per settled edit, newest first. */
@@ -352,9 +345,40 @@ public class MainActivity extends Activity {
     /// Where `reportPreviousExit` left the file, if there was one this launch.
     private String lastCrashFile = null;
 
+    private void loadLocalizedLabels() {
+        METER_NAMES = new String[] {
+                tr("meter.off"), tr("meter.balanced"), tr("meter.protect_highlights"), tr("meter.protect_shadows"), tr("meter.center"), tr("meter.center_weighted"), tr("meter.average"), tr("meter.median")};
+        METER_NOTES = new String[] {
+                tr("meter.skip_metering_and_use_the"),
+                tr("meter.align_the_full_frame_median"),
+                tr("meter.start_with_balanced_and_hold"),
+                tr("meter.start_with_balanced_and_lift"),
+                tr("meter.meter_only_the_center_of"),
+                tr("meter.average_with_gaussian_center_weighting"),
+                tr("meter.take_the_unweighted_average_across"),
+                tr("meter.take_the_median_luminance_across")};
+        MODE_LABELS = new String[] {tr("meter.full_strip"), tr("meter.filed_edge")};
+        GATE_LABELS = new String[] {tr("meter.auto"), tr("meter.square"), tr("meter.rounded"), tr("meter.tabbed"), tr("meter.shouldered"), tr("meter.notched")};
+        HOLES_LABELS = new String[] {tr("meter.white_sprocket_holes_scan"), tr("meter.black_sprocket_holes_darkroom")};
+        CARRIER_LABELS = new String[] {tr("meter.none"), tr("meter.black_holder"), tr("meter.open")};
+        PLACE_LABELS = new String[] {tr("meter.in_image"), tr("meter.on_film_border")};
+        STYLE_LABELS = new String[] {tr("meter.seven_segment_lcd"), tr("meter.dot_matrix"), tr("meter.shooting_data")};
+        CORNER_LABELS = new String[] {tr("meter.bottom_right"), tr("meter.bottom_left"), tr("meter.top_right"), tr("meter.top_left")};
+        EDGE_LABELS = new String[] {
+                tr("meter.35_mm_full_frame"), tr("meter.35_mm_half_frame"), "135 XPan", "645",
+                "6×6", "6×7", "6×8", "6×9", "6×12", "6×17"};
+        BRAND_NAMES = new String[] {tr("meter.all"), "KODAK", "FUJIFILM", "ILFORD", "CINESTILL"};
+        FORMAT_NAMES = EDGE_LABELS;
+        FILTER_LABELS = new String[] {tr("meter.none"), tr("meter.w8_yellow"), tr("meter.w11_yellow_green"), tr("meter.w12_deep_yellow"), tr("meter.w15_deep_yellow"),
+                tr("meter.w21_orange"), tr("meter.w25_red"), tr("meter.w47_blue"), tr("meter.w58_green")};
+        NORM_LABELS = new String[] {tr("meter.power"), tr("meter.luminance_y"), tr("meter.peak_max")};
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        AppLanguage.load(this);
+        loadLocalizedLabels();
         // **Before anything logs, and before anything reports.** The ring lives
         // in memory; init only opens the one-slot retry file. A crash report
         // shipped from `uploadCrashFiles` needs that file when the network is
@@ -562,19 +586,19 @@ public class MainActivity extends Activity {
     private LinearLayout edgeRoot, edgePage, datePage, edgeInner, dateInner;
     private int edgePageIndex = -1;
     private static final String[] MODE_IDS = {"strip", "filed"};
-    private static final String[] MODE_LABELS = {"整条 strip", "窄边 filed"};
+    private String[] MODE_LABELS;
     private static final String[] GATE_IDS = {"auto", "square", "rounded", "eared", "shouldered", "kicked"};
-    private static final String[] GATE_LABELS = {"自动", "方角", "圆角", "带耳", "带肩", "踢角"};
+    private String[] GATE_LABELS;
     private static final String[] HOLES_IDS = {"white", "black"};
-    private static final String[] HOLES_LABELS = {"白齿孔（扫描）", "黑齿孔（暗房）"};
+    private String[] HOLES_LABELS;
     private static final String[] CARRIER_IDS = {"none", "black", "open"};
-    private static final String[] CARRIER_LABELS = {"无", "黑色片夹", "开放"};
+    private String[] CARRIER_LABELS;
     private static final String[] PLACE_IDS = {"frame", "rebate"};
-    private static final String[] PLACE_LABELS = {"画面内", "片边"};
+    private String[] PLACE_LABELS;
     private static final String[] CORNER_IDS = {"br", "bl", "tr", "tl"};
     private static final String[] STYLE_IDS = {"lcd", "dots", "data"};
-    private static final String[] STYLE_LABELS = {"LCD 七段", "点阵 dots", "拍摄数据 data"};
-    private static final String[] CORNER_LABELS = {"右下", "左下", "右上", "左上"};
+    private String[] STYLE_LABELS;
+    private String[] CORNER_LABELS;
     private LinearLayout opticsPanel;
     private boolean opticsUnlocked = false;
 
@@ -587,9 +611,7 @@ public class MainActivity extends Activity {
     private Square overscanMark, dateMark;
 
     /** 片边: the ten carriers the engine's overscan knows. */
-    private static final String[] EDGE_LABELS = {
-            "135 全画幅", "135 半格", "135 XPan", "645",
-            "6×6", "6×7", "6×8", "6×9", "6×12", "6×17"};
+    private String[] EDGE_LABELS;
     private static final String[] EDGE_IDS = {
             "135", "135_half", "135_xpan", "120_645",
             "120_6x6", "120_6x7", "120_6x8", "120_6x9", "120_6x12", "120_6x17"};
@@ -663,7 +685,7 @@ public class MainActivity extends Activity {
         return best;
     }
 
-    private static String gateLabelsFallback(String id) {
+    private String gateLabelsFallback(String id) {
         for (int i = 0; i < EDGE_IDS.length; ++i) if (EDGE_IDS[i].equals(id)) return EDGE_LABELS[i];
         return id;
     }
@@ -1260,7 +1282,7 @@ public class MainActivity extends Activity {
                 try {
                     DebugSink.text("session", "dropped " + dropped + " unreadable frames");
                 } catch (Throwable ignored) { }
-                showInAppToast(dropped + " 张照片的读取权限已失效，已从照片栏移除");
+                showInAppToast(dropped + tr("frame.photos_were_removed_from_the"));
             }
             if (frames.isEmpty()) return false;
             // The saved index was an index into the old list. The frame itself
@@ -1489,14 +1511,14 @@ public class MainActivity extends Activity {
     private static final String PROMO_MUTED = "qq_group_muted";
 
     private static final String[] BRAND_IDS = {"all", "kodak", "fujifilm", "ilford", "cinestill"};
-    private static final String[] BRAND_NAMES = {"全部", "KODAK", "FUJIFILM", "ILFORD", "CINESTILL"};
+    private String[] BRAND_NAMES;
     // **One card per gate, in the gates' own order.** This used to be a
     // separate ladder (36/24/65/56/56/70/84/120/170) that only resembled the
     // gates: 6x8 had no card, 6x12 and 6x17 were 120/170, and 56 appeared twice
     // with nothing to say which was which -- so "645" and "135 半格" could not be
     // told apart from "6x6", and two of the ten gates had no card at all. Now
     // index i is EDGE_IDS[i], which is what `applyGate` needs.
-    private static final String[] FORMAT_NAMES = EDGE_LABELS;
+    private String[] FORMAT_NAMES;
     private static final float[] FORMAT_MM = EDGE_MM;
     private final View[] tabCells = new View[6];
     private final View[] tabBars = new View[6];
@@ -1753,7 +1775,7 @@ public class MainActivity extends Activity {
         load.setBackgroundColor(UI_PAPER);
         load.setPadding(dp(18), 0, dp(18), 0);
         load.setOnClickListener(v -> showImportMenu());
-        load.addView(label("选择照片", 9, UI_BLUE, tfHan));
+        load.addView(label(tr("frame.choose_photos"), 9, UI_BLUE, tfHan));
         ArrowView loadArrow = new ArrowView(this, UI_BLUE);
         LinearLayout.LayoutParams arrowLp = new LinearLayout.LayoutParams(dp(14), dp(14));
         arrowLp.leftMargin = dp(8);
@@ -1767,7 +1789,7 @@ public class MainActivity extends Activity {
         raw.setGravity(android.view.Gravity.CENTER);
         raw.setPadding(dp(24), dp(16), dp(24), dp(16));
         raw.setVisibility(View.GONE);
-        TextView rawTitle = label("RAW LOADED", 34, uiOnCanvas(), tfDisplay);
+        TextView rawTitle = label(tr("frame.raw_loaded"), 34, uiOnCanvas(), tfDisplay);
         rawTitle.setLetterSpacing(-0.055f);
         raw.addView(rawTitle);
         rawName = label("", 9, uiOnCanvas(), tfHan);
@@ -1782,7 +1804,7 @@ public class MainActivity extends Activity {
 
         // On the canvas, so it is the canvas's contrast colour -- `UI_PAPER`
         // is the *panel* colour and went black on the dark theme.
-        busyLabel = label("RENDERING", 18, darkTheme ? UI_BLUE : uiOnCanvas(), tfDisplay);
+        busyLabel = label(tr("frame.rendering"), 18, darkTheme ? UI_BLUE : uiOnCanvas(), tfDisplay);
         busyLabel.setLetterSpacing(0.14f);
         busyLabel.setGravity(android.view.Gravity.CENTER);
         // **The rendering plate, and it was a literal of the blue canvas.**
@@ -2065,7 +2087,7 @@ public class MainActivity extends Activity {
                 // **Silence here is what made the first report unreadable.** An
                 // exit row that cannot be read looks exactly like one that was
                 // never written, and the two mean opposite things.
-                body.append("exit: 读不到 ApplicationExitInfo（").append(e).append("）\n");
+                body.append(tr("crash.exit_could_not_read_applicationexitinfo")).append(e).append(")\n");
             }
         }
         // **A non-crashing exit reason leaves nothing to ask about.**
@@ -2119,8 +2141,8 @@ public class MainActivity extends Activity {
     private static String exitReasonName(int reason) {
         switch (reason) {
             case 1:  return "exit_self";
-            case 2:  return "SIGNALED 被信号杀死";
-            case 3:  return "LOW_MEMORY 系统内存不足回收";
+            case 2:  return tr("crash.signaled_terminated_by_a_signal");
+            case 3:  return tr("crash.low_memory_reclaimed_by_android");
             case 4:  return "Java crash";
             case 5:  return "native crash";
             case 6:  return "ANR";
@@ -2143,15 +2165,15 @@ public class MainActivity extends Activity {
             // neither is a defect in the code path the trail names, and calling
             // both "异常退出" is how a 600 MB import reads as a mystery crash.
             final boolean reclaimed = lastExitReason == 3 || lastExitReason == 2;
-            b.setTitle(reclaimed ? "上次被系统回收了" : "上次启动异常退出");
+            b.setTitle(reclaimed ? tr("crash.android_closed_the_app_last") : tr("crash.the_app_closed_unexpectedly_last"));
             b.setMessage(reclaimed
-                    ? "最后一步：" + where
-                        + "\n\n系统当时内存不够，把应用回收了——多半是这张图太大，不是程序出错。"
-                        + "\n\n把这份记录发我可以确认尺寸；也可以直接重开，导入时选「缩到建议尺寸」。"
-                    : "最后一步：" + where
-                        + "\n\n这台机器的崩溃日志对定位很关键。要不要发我一份？");
-            b.setPositiveButton("发送日志", (d, w) -> shareCrashReport());
-            b.setNegativeButton("关闭", null);
+                    ? tr("crash.last_step") + where
+                        + tr("crash.android_ran_low_on_memory")
+                        + tr("crash.you_can_send_this_report")
+                    : tr("crash.last_step") + where
+                        + tr("crash.would_you_like_to_send"));
+            b.setPositiveButton(tr("crash.send_log"), (d, w) -> shareCrashReport());
+            b.setNegativeButton(tr("crash.close"), null);
             b.show();
         } catch (Throwable ignored) { }
     }
@@ -2159,7 +2181,7 @@ public class MainActivity extends Activity {
     private void shareCrashReport() {
         try {
             final String body = lastCrashFile == null ? "" : readTextFile(lastCrashFile, 32768);
-            final StringBuilder text = new StringBuilder("SpektraLab 崩溃报告\n");
+            final StringBuilder text = new StringBuilder(tr("crash.spektralab_crash_report"));
             text.append("build=").append(SpektraLabEngine.buildInfo()).append('\n');
             // `probe` is filled by `ensureEngine()`, and this report is offered
             // on the launch *after* the exit -- before the user has imported
@@ -2170,11 +2192,11 @@ public class MainActivity extends Activity {
             text.append(body);
             final Intent send = new Intent(Intent.ACTION_SEND);
             send.setType("text/plain");
-            send.putExtra(Intent.EXTRA_SUBJECT, "SpektraLab 崩溃报告");
+            send.putExtra(Intent.EXTRA_SUBJECT, tr("crash.spektralab_crash_report_2"));
             send.putExtra(Intent.EXTRA_TEXT, text.toString());
-            startActivity(Intent.createChooser(send, "发送崩溃报告"));
+            startActivity(Intent.createChooser(send, tr("crash.send_crash_report")));
         } catch (Throwable t) {
-            if (statusText != null) statusText.setText("没有可发送的内容");
+            if (statusText != null) statusText.setText(tr("crash.nothing_to_send"));
         }
     }
 
@@ -2392,7 +2414,7 @@ public class MainActivity extends Activity {
     private String deviceLine() {
         if (probe != null && probe.valid) return probe.describe();
         final String last = getSharedPreferences("ui", MODE_PRIVATE).getString("last_device", null);
-        return last == null ? "(engine not created this launch)" : last + " · 上次启动";
+        return last == null ? "(engine not created this launch)" : last + tr("editor.previous_launch");
     }
 
     private void rememberDevice() {
@@ -2514,7 +2536,7 @@ public class MainActivity extends Activity {
                 "ic_menu_white", "drawable", getPackageName()));
         menuPill.setAlpha(0.85f);
         menuPill.setPadding(dp(6), dp(6), dp(6), dp(6));
-        menuPill.setContentDescription("设置");
+        menuPill.setContentDescription(tr("editor.settings"));
         menuPill.setOnClickListener(v -> showAbout());
         // **Left of the wordmark, not between it and the version.** The menu
         // belongs at the edge of the bar, where every other app puts it;
@@ -2543,12 +2565,13 @@ public class MainActivity extends Activity {
         undoPill.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
         undoPill.setPadding(dp(7), dp(4), dp(7), dp(4));
         undoPill.setVisibility(View.GONE);
+        undoPill.setContentDescription(tr("editor.undo"));
         undoPill.setOnClickListener(v -> undoStep());
         LinearLayout.LayoutParams undoLp = new LinearLayout.LayoutParams(-2, dp(32));
         undoLp.rightMargin = dp(6);
         top.addView(undoPill, undoLp);
 
-        sharePill = label("分享", 11, uiOnCanvas(), tfHan);
+        sharePill = label(tr("editor.share"), 11, uiOnCanvas(), tfHan);
         sharePill.setGravity(android.view.Gravity.CENTER);
         sharePill.setShadowLayer(dp(3), 0, dp(1), 0xCC000000);
         sharePill.setBackground(null);
@@ -2565,6 +2588,7 @@ public class MainActivity extends Activity {
         export.setImageResource(getResources().getIdentifier(
                 "ic_export_white", "drawable", getPackageName()));
         export.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
+        export.setContentDescription(tr("editor.export"));
         export.setOnClickListener(v -> showExportDialog());
         top.addView(export, new LinearLayout.LayoutParams(dp(26), dp(26)));
 
@@ -2604,14 +2628,14 @@ public class MainActivity extends Activity {
         foot.setPadding(dp(16), 0, dp(16), 0);
         foot.setClickable(false);
 
-        fileLabel = label("未选择照片", 7, uiOnCanvas(), tfHan);
+        fileLabel = label(tr("editor.no_photo_selected"), 7, uiOnCanvas(), tfHan);
         fileLabel.setAlpha(0.76f);
         fileLabel.setSingleLine(true);
         fileLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
         fileLabel.setShadowLayer(dp(2), 0, dp(1), 0x99000000);
         foot.addView(fileLabel, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        statusText = label("等待导入", 7, uiOnCanvas(), tfHan);
+        statusText = label(tr("editor.waiting_for_import"), 7, uiOnCanvas(), tfHan);
         statusText.setSingleLine(true);
         statusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
         statusText.setGravity(android.view.Gravity.END);
@@ -2623,7 +2647,7 @@ public class MainActivity extends Activity {
         statusLp.leftMargin = dp(12);
         foot.addView(statusText, statusLp);
 
-        abortBatchPill = label("停止", 7, 0xFFFFFFFF, tfHan);
+        abortBatchPill = label(tr("editor.stop"), 7, 0xFFFFFFFF, tfHan);
         abortBatchPill.setGravity(android.view.Gravity.CENTER);
         android.graphics.drawable.GradientDrawable abortBg =
                 new android.graphics.drawable.GradientDrawable();
@@ -2635,7 +2659,7 @@ public class MainActivity extends Activity {
         abortBatchPill.setOnClickListener(v -> {
             if (!batchExportRunning) return;
             batchExportAbort = true;
-            statusText.setText("正在停止…（当前这张写完就停）");
+            statusText.setText(tr("editor.stopping_after_the_current_photo"));
         });
         LinearLayout.LayoutParams abortLp = new LinearLayout.LayoutParams(-2, -2);
         abortLp.leftMargin = dp(8);
@@ -3202,7 +3226,7 @@ public class MainActivity extends Activity {
             // SIGSEGV at 7.6 GB RSS. One toast is cheaper than that.
             box.setOnClickListener(v -> {
                 if (batchExportRunning) {
-                    showInAppToast("批量导出中，等它跑完再换图");
+                    showInAppToast(tr("editor.wait_for_batch_export_to"));
                     return;
                 }
                 reopenFrame(index);
@@ -3211,20 +3235,20 @@ public class MainActivity extends Activity {
                 // Deleting a frame mid-batch is the same race from the other
                 // side: the loop reads `frames.get(index)` after every await.
                 if (batchExportRunning) {
-                    showInAppToast("批量导出中，等它跑完再改动照片栏");
+                    showInAppToast(tr("editor.wait_for_batch_export_to_2"));
                     return true;
                 }
-                showActionSheet(frame.name == null ? "这张照片" : frame.name,
-                        "参数是每张照片各自的：复制过去只改这条栏里的设置，文件不动。",
-                        new String[]{"把这张的参数应用到其它照片…", "删掉其中几张…",
-                                "删除这张", "取消"}, which -> {
+                showActionSheet(frame.name == null ? tr("editor.this_photo") : frame.name,
+                        tr("editor.settings_are_per_photo_applying"),
+                        new String[]{tr("editor.apply_edits_to_other_photos"), tr("editor.delete_selected_photos"),
+                                tr("editor.delete_this_photo"), tr("editor.cancel")}, which -> {
                             if (which == 0) showApplyLookSheet(index);
                             else if (which == 1) showBatchDeleteSheet();
                             else if (which == 2) removeFrame(index);
                         });
                 return true;
             });
-            box.setContentDescription(frame.name == null ? "照片" : frame.name);
+            box.setContentDescription(frame.name == null ? tr("editor.photo") : frame.name);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(42), dp(42));
             lp.rightMargin = dp(6);
             thumbStrip.addView(box, lp);
@@ -3276,7 +3300,7 @@ public class MainActivity extends Activity {
             beforeBitmap = null;
             showingOriginal = false;
             setStage(0, null);
-            statusText.setText("等待导入");
+            statusText.setText(tr("editor.waiting_for_import"));
             // No frame, no chain: the same state a reset lands in.
             filmStock = null;
             renderEpoch++;
@@ -3335,7 +3359,7 @@ public class MainActivity extends Activity {
         TextView titleView = mixedLabel(title, 8.5f, UI_INK);
         titleView.setLetterSpacing(0.06f);
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView resetView = label("重置当前页", 8.5f, UI_MUTED, tfHan);
+        TextView resetView = label(tr("editor.reset_this_page"), 8.5f, UI_MUTED, tfHan);
         resetView.setPaintFlags(resetView.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         resetView.setPadding(dp(8), dp(10), 0, dp(10));
         resetView.setOnClickListener(v -> reset.run());
@@ -3447,12 +3471,12 @@ public class MainActivity extends Activity {
     private View buildFilmPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        final LinearLayout filmHead = sectionHead("FILM & PAPER / 胶片与相纸", this::resetFilmPanel);
+        final LinearLayout filmHead = sectionHead(tr("film.film_paper"), this::resetFilmPanel);
         // **The "As Shot" switch, where the original app puts the same choice.**
         // On: the meter decides the film exposure. Off: the frame keeps the
         // exposure the camera recorded, which is the only way a lamp in a dark
         // room comes back dark instead of being lifted five stops onto Dmax.
-        final TextView meterLabel = label("测光", 8.5f, UI_MUTED, tfHan);
+        final TextView meterLabel = label(tr("film.metering"), 8.5f, UI_MUTED, tfHan);
         meterChip = label("", 8.5f, UI_INK, tfHan);
         meterChip.setGravity(android.view.Gravity.CENTER);
         // **48dp, not 40x20.** The old chip was smaller than the minimum touch
@@ -3494,7 +3518,7 @@ public class MainActivity extends Activity {
         LinearLayout paperRow = new LinearLayout(this);
         paperRow.setOrientation(LinearLayout.HORIZONTAL);
         paperRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        paperRow.addView(label("相纸 / 拷贝片", 9, UI_MUTED, tfHan));
+        paperRow.addView(label(tr("film.paper_print_film"), 9, UI_MUTED, tfHan));
         LinearLayout paperChoice = new LinearLayout(this);
         paperChoice.setOrientation(LinearLayout.HORIZONTAL);
         paperChoice.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
@@ -3569,8 +3593,8 @@ public class MainActivity extends Activity {
         // mark has to be put back here -- this is the only place a card's text
         // is decided, and it used to put back only the slide mark.
         final String base = shortStockName(filmLabels.get(index));
-        if (index < filmTypes.size() && "positive".equals(filmTypes.get(index))) return base + " · 反转";
-        if (index < filmIds.size() && isMonochromeStock(filmIds.get(index))) return base + " · 黑白";
+        if (index < filmTypes.size() && "positive".equals(filmTypes.get(index))) return base + tr("film.slide");
+        if (index < filmIds.size() && isMonochromeStock(filmIds.get(index))) return base + tr("film.b_w");
         return base;
     }
 
@@ -3871,7 +3895,7 @@ public class MainActivity extends Activity {
         filmCardStrip.removeAllViews();
         filmCards.clear();
         filmCardImages.clear();
-        addFilmCard("original", "原图", -1);
+        addFilmCard("original", tr("film.original"), -1);
         for (int i = 0; i < filmIds.size(); ++i) {
             final String id = filmIds.get(i);
             if (!"all".equals(brandFilter) && !brandFilter.equals(brandOf(id))) continue;
@@ -4033,7 +4057,7 @@ public class MainActivity extends Activity {
     private void refreshPaperLabel() {
         if (paperValue == null) return;
         if (isPositiveStock(filmStock)) {
-            paperValue.setText("无相纸 · 直接扫描");
+            paperValue.setText(tr("film.no_paper_direct_scan"));
             paperValue.setTextColor(UI_MUTED);
             return;
         }
@@ -4046,7 +4070,7 @@ public class MainActivity extends Activity {
     private void showPaperPicker() {
         if (printIds.isEmpty()) return;
         if (isPositiveStock(filmStock)) {
-            showInAppToast("反转片直接扫描，没有相纸这一步");
+            showInAppToast(tr("film.slide_film_is_scanned_directly"));
             return;
         }
         // The current paper, by its **label**: this sheet matched the id
@@ -4056,7 +4080,7 @@ public class MainActivity extends Activity {
         for (String id : printIds) notes.add(paperNote(id));
         final boolean filmKnown = filmStock != null;
         final boolean filmMono = isMonochromeStock(filmStock);
-        showChoiceSheet("选择相纸 / 拷贝片", printLabels, notes,
+        showChoiceSheet(tr("film.choose_paper_or_print_film"), printLabels, notes,
                 current >= 0 && current < printLabels.size() ? printLabels.get(current) : null,
                 i -> !filmKnown || paperFitsFilm(printIds.get(i), filmMono),
                 picked -> {
@@ -4089,15 +4113,15 @@ public class MainActivity extends Activity {
     private static String paperNote(String id) {
         if (id == null) return null;
         switch (id) {
-            case "kodak_portra_endura":  return "中性 · 黑位偏亮 · 人像常用";
-            case "kodak_endura_premier": return "更亮 · 深黑 · 对比高";
-            case "kodak_supra_endura":   return "中性 · 对比适中";
-            case "kodak_ultra_endura":   return "中性偏冷 · 对比适中";
-            case "kodak_ektacolor_edge": return "低饱和 · 柔和";
-            case "fujifilm_crystal_archive_typeii": return "偏青 · 富士色调";
-            case "ilford_multigrade_iv_rc": return "黑白相纸 · 可变反差";
-            case "kodak_2383":  return "偏暖 · 深黑 · 电影感";
-            case "kodak_2393":  return "最深黑 · 高饱和";
+            case "print.knob.kodak_portra_endura":  return tr("film.neutral_lifted_blacks_good_for");
+            case "print.knob.kodak_endura_premier": return tr("film.brighter_deep_blacks_high_contrast");
+            case "print.knob.kodak_supra_endura":   return tr("film.neutral_moderate_contrast");
+            case "print.knob.kodak_ultra_endura":   return tr("film.cool_neutral_moderate_contrast");
+            case "print.knob.kodak_ektacolor_edge": return tr("film.low_saturation_soft");
+            case "print.knob.fujifilm_crystal_archive_typeii": return tr("film.cyan_bias_fuji_tones");
+            case "print.knob.ilford_multigrade_iv_rc": return tr("film.b_w_paper_variable_contrast");
+            case "print.knob.kodak_2383":  return tr("film.warm_deep_blacks_cinematic");
+            case "print.knob.kodak_2393":  return tr("film.deepest_blacks_high_saturation");
             default: return null;
         }
     }
@@ -4414,7 +4438,7 @@ public class MainActivity extends Activity {
         final LinearLayout panel = new LinearLayout(this);
         viewRoot = panel;
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead("OPTICS / 光学调整", this::resetViewPanel),
+        panel.addView(sectionHead(tr("optics.optics"), this::resetViewPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
         // **Say why, instead of letting a live page do nothing.**
         //
@@ -4424,12 +4448,12 @@ public class MainActivity extends Activity {
         // A dead page with no explanation is what made a user ask for a "no
         // film mode"; he read the silence as a missing feature. This line is the
         // cheap half of that answer.
-        viewLockNote = label("选一张胶片后可用 · 光学是叠在成片之上的调色，不改变胶片本身",
+        viewLockNote = label(tr("optics.choose_a_film_first_these"),
                 8.5f, UI_MUTED, tfHan);
         viewLockNote.setPadding(dp(2), dp(4), dp(2), dp(8));
         panel.addView(viewLockNote, new LinearLayout.LayoutParams(-1, -2));
 
-        final String[] cats = {"亮度", "颜色", "效果", "曲线", "分级"};
+        final String[] cats = {tr("optics.light"), tr("optics.color"), tr("optics.effects"), tr("optics.curves"), tr("optics.grading")};
         final LinearLayout catRow = new LinearLayout(this);
         catRow.setOrientation(LinearLayout.HORIZONTAL);
         viewCatChips = new TextView[cats.length];
@@ -4597,9 +4621,9 @@ public class MainActivity extends Activity {
         wbDecodeBox = new LinearLayout(this);
         wbDecodeBox.setOrientation(LinearLayout.VERTICAL);
         page.addView(wbDecodeBox, new LinearLayout.LayoutParams(-1, -2));
-        wbDecodeBox.addView(label("白平衡（解码）/ WHITE BALANCE", 8, UI_INK, tfHan),
+        wbDecodeBox.addView(label(tr("optics.raw_white_balance"), 8, UI_INK, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(22)));
-        final String[] names = {"原照", "日光", "阴天", "阴影", "钨丝", "荧光", "自定义"};
+        final String[] names = {tr("optics.as_shot"), tr("optics.daylight"), tr("optics.cloudy"), tr("optics.shade"), tr("optics.tungsten"), tr("optics.fluorescent"), tr("optics.custom")};
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         final HorizontalScrollView scroll = new HorizontalScrollView(this);
@@ -4625,14 +4649,14 @@ public class MainActivity extends Activity {
         }
         scroll.addView(row, new android.widget.FrameLayout.LayoutParams(-2, -1));
         wbDecodeBox.addView(scroll, new LinearLayout.LayoutParams(-1, dp(36)));
-        wbDecodeNote = label("这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
-                + "所以每次都按当前尺寸重新解码一次。", 7.5f, UI_MUTED, tfHan);
+        wbDecodeNote = label(tr("optics.these_controls_set_the_light")
+                + tr("optics.changing_them_decodes_the_image"), 7.5f, UI_MUTED, tfHan);
         wbDecodeNote.setMaxLines(2);
         wbDecodeBox.addView(wbDecodeNote, new LinearLayout.LayoutParams(-1, dp(32)));
-        adjustRow(wbDecodeBox, "解码色温", 2000f, 12000f, () -> wbKelvin, v -> wbKelvin = v, true,
-                "光源的色温。3200K 钨丝、5500K 日光；数值越低画面越暖");
-        adjustRow(wbDecodeBox, "解码色调", -150f, 150f, () -> wbTint, v -> wbTint = v, true,
-                "绿-品红轴。日光灯发绿就往正值拖");
+        adjustRow(wbDecodeBox, tr("optics.raw_temperature"), 2000f, 12000f, () -> wbKelvin, v -> wbKelvin = v, true,
+                tr("optics.light_source_temperature_3200_k"));
+        adjustRow(wbDecodeBox, tr("optics.raw_tint"), -150f, 150f, () -> wbTint, v -> wbTint = v, true,
+                tr("optics.green_magenta_balance_increase_to"));
     }
 
     private void buildTonePage(LinearLayout page) {
@@ -4645,12 +4669,12 @@ public class MainActivity extends Activity {
         // through `applyParams` -- it shows or hides the plate on the canvas,
         // and the choice outlives the photograph.
         final Square histMark = new Square(this, UI_BLUE, uiToggleOff());
-        toggleCell(toneGrid, "直方图", "显示", histMark, () -> histogramOn, on -> {
+        toggleCell(toneGrid, tr("optics.histogram"), tr("optics.show"), histMark, () -> histogramOn, on -> {
             histogramOn = on;
             getSharedPreferences("ui", MODE_PRIVATE).edit().putBoolean("histogram", on).apply();
             if (histogram != null) histogram.setVisibility(on ? View.VISIBLE : View.GONE);
         });
-        choiceCell(toneGrid, "复位", "全部归零", tv -> resetViewPanel());
+        choiceCell(toneGrid, tr("optics.reset"), tr("optics.reset_all"), tv -> resetViewPanel());
 
         // **How the canvas reads the decode, not what the engine gets.**
         // Off: the numbers exactly as LibRaw handed them, through sRGB only.
@@ -4660,7 +4684,7 @@ public class MainActivity extends Activity {
         // looked like a black rectangle -- but it also hides the picture's own
         // exposure, and it ran 2.54 EV above Lightroom on the reference DNG.
         final Square levelMark = new Square(this, UI_BLUE, uiToggleOff());
-        toggleCell(toneGrid, "原图提亮", "自动", levelMark, () -> rawAutoBright, on -> {
+        toggleCell(toneGrid, tr("optics.original_brightness"), tr("meter.auto"), levelMark, () -> rawAutoBright, on -> {
             rawAutoBright = on;
             getSharedPreferences("ui", MODE_PRIVATE).edit()
                     .putBoolean("raw_auto_bright", on).apply();
@@ -4668,41 +4692,41 @@ public class MainActivity extends Activity {
         });
         page.addView(toneGrid, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        adjustRow(page, "相机曝光", -4f, 4f, () -> cameraEv, v -> cameraEv = v, false);
-        adjustRow(page, "曝光", -3f, 3f, () -> viewExposure, v -> viewExposure = v, false);
-        adjustRow(page, "对比", -100f, 100f, () -> viewContrast, v -> viewContrast = v, false);
-        adjustRow(page, "亮度", -100f, 100f, () -> viewBrightness, v -> viewBrightness = v, false);
-        adjustRow(page, "高光", -100f, 100f, () -> viewHighlights, v -> viewHighlights = v, false);
-        adjustRow(page, "阴影", -100f, 100f, () -> viewShadows, v -> viewShadows = v, false);
-        adjustRow(page, "黑场", 0f, 50f, () -> viewBlack, v -> viewBlack = v, false);
-        adjustRow(page, "白场", 0f, 50f, () -> viewWhite, v -> viewWhite = v, false);
+        adjustRow(page, tr("optics.camera_exposure"), -4f, 4f, () -> cameraEv, v -> cameraEv = v, false);
+        adjustRow(page, tr("optics.exposure"), -3f, 3f, () -> viewExposure, v -> viewExposure = v, false);
+        adjustRow(page, tr("optics.contrast"), -100f, 100f, () -> viewContrast, v -> viewContrast = v, false);
+        adjustRow(page, tr("optics.brightness"), -100f, 100f, () -> viewBrightness, v -> viewBrightness = v, false);
+        adjustRow(page, tr("optics.highlights"), -100f, 100f, () -> viewHighlights, v -> viewHighlights = v, false);
+        adjustRow(page, tr("optics.shadows"), -100f, 100f, () -> viewShadows, v -> viewShadows = v, false);
+        adjustRow(page, tr("optics.blacks"), 0f, 50f, () -> viewBlack, v -> viewBlack = v, false);
+        adjustRow(page, tr("optics.whites"), 0f, 50f, () -> viewWhite, v -> viewWhite = v, false);
     }
 
     private void buildColourPage(LinearLayout page) {
         // LightCraft's Color tab opens on the white balance: the presets, then
         // the two decode-time numbers, then the print-side ones.
         buildWhiteBalancePage(page);
-        page.addView(label("调色 / TONE", 8, UI_INK, tfHan),
+        page.addView(label(tr("optics.color_2"), 8, UI_INK, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(24)));
         final TextView wbNote = label(
-                "上面两个 = 解码时改（等于换一种光拍，会重新解码）；下面两个 = 冲印后再偏色（立刻生效，"
-                + "亮部会跟着平移）。", 7.5f, UI_MUTED, tfHan);
+                tr("optics.the_controls_above_re_decode")
+                + tr("optics.including_its_highlights"), 7.5f, UI_MUTED, tfHan);
         wbNote.setMaxLines(2);
         page.addView(wbNote, new LinearLayout.LayoutParams(-1, dp(32)));
-        adjustRow(page, "色温", -100f, 100f, () -> viewTemperature, v -> viewTemperature = v, false,
-                "冲印完成后的整体偏暖偏冷。不动解码，改的是这张照片");
-        adjustRow(page, "色调", -100f, 100f, () -> viewTint, v -> viewTint = v, false,
-                "冲印完成后的绿-品红，同上，只影响已经出好的图");
-        adjustRow(page, "饱和度", -100f, 100f, () -> viewSaturation, v -> viewSaturation = v, false);
-        adjustRow(page, "自然饱和度", -100f, 100f, () -> viewVibrance, v -> viewVibrance = v, false,
-                "只提暗中带色的部分，已经很艳的不动");
+        adjustRow(page, tr("optics.temperature"), -100f, 100f, () -> viewTemperature, v -> viewTemperature = v, false,
+                tr("optics.warm_or_cool_the_finished"));
+        adjustRow(page, tr("optics.tint"), -100f, 100f, () -> viewTint, v -> viewTint = v, false,
+                tr("optics.adjust_the_finished_print_s"));
+        adjustRow(page, tr("optics.saturation"), -100f, 100f, () -> viewSaturation, v -> viewSaturation = v, false);
+        adjustRow(page, tr("optics.vibrance"), -100f, 100f, () -> viewVibrance, v -> viewVibrance = v, false,
+                tr("optics.boost_muted_colors_in_darker"));
 
     }
 
     private void buildGradingPage(LinearLayout page) {
         // Four zones, one wheel -- Lightroom's shape: pick the tonal range,
         // then drag a dot. Hue is the angle, saturation the distance from grey.
-        final String[] zones = {"主", "阴影", "中间调", "高光"};
+        final String[] zones = {tr("optics.global"), tr("optics.shadows"), tr("optics.midtones"), tr("optics.highlights")};
         final LinearLayout zoneRow = new LinearLayout(this);
         zoneRow.setOrientation(LinearLayout.HORIZONTAL);
         final TextView[] zoneChips = new TextView[zones.length];
@@ -4733,8 +4757,8 @@ public class MainActivity extends Activity {
         page.addView(cbReadout, new LinearLayout.LayoutParams(-1, dp(20)));
         refreshCbReadout();
 
-        adjustRow(page, "明亮度", -1f, 1f, () -> cbLum[cbZone], v -> cbLum[cbZone] = v, false,
-                "这个明暗区间整体提亮或压暗");
+        adjustRow(page, tr("optics.luminance"), -1f, 1f, () -> cbLum[cbZone], v -> cbLum[cbZone] = v, false,
+                tr("optics.lighten_or_darken_this_tonal"));
     }
 
     private int cbZone = 0;
@@ -4744,8 +4768,7 @@ public class MainActivity extends Activity {
     private void refreshCbReadout() {
         if (cbReadout == null) return;
         final int hue = Math.round(cbHue[cbZone]);
-        cbReadout.setText(String.format(java.util.Locale.US,
-                "色相 %d°   饱和度 %.0f%%", hue, cbSat[cbZone] * 100f));
+        cbReadout.setText(AppLanguage.format("optics.hue_d_saturation_0f", hue, cbSat[cbZone] * 100f));
     }
 
     /**
@@ -4921,14 +4944,14 @@ public class MainActivity extends Activity {
     }
 
     private void buildEffectsPage(LinearLayout page) {
-        adjustRow(page, "暗角", -100f, 100f, () -> viewVignette, v -> viewVignette = v, false);
-        page.addView(label("镜头模糊、光晕、眩光在「冲印」页：它们属于胶片与镜头的物理过程，"
-                + "不是冲印之后的调色。", 7.5f, UI_MUTED, tfHan),
+        adjustRow(page, tr("optics.vignette"), -100f, 100f, () -> viewVignette, v -> viewVignette = v, false);
+        page.addView(label(tr("optics.lens_blur_halation_and_glare")
+                + tr("optics.rather_than_grading_the_finished"), 7.5f, UI_MUTED, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(30)));
     }
 
     private void buildCurvesPage(LinearLayout page) {
-        final String[] channels = {"RGB", "亮度", "R", "G", "B"};
+        final String[] channels = {"RGB", tr("optics.luminance_2"), "R", "G", "B"};
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         final TextView[] chips = new TextView[channels.length];
@@ -4950,7 +4973,7 @@ public class MainActivity extends Activity {
         page.addView(row, new LinearLayout.LayoutParams(-1, dp(28)));
         curveView = new CurveView();
         page.addView(curveView, new LinearLayout.LayoutParams(-1, dp(150)));
-        page.addView(label("拖动控制点；空白处点一下加点，最多 8 个", 7.5f, UI_MUTED, tfHan),
+        page.addView(label(tr("optics.drag_the_control_points_or"), 7.5f, UI_MUTED, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(18)));
     }
 
@@ -4967,7 +4990,7 @@ public class MainActivity extends Activity {
         new android.app.AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(input)
-                .setPositiveButton("确定", (d, w) -> {
+                .setPositiveButton(tr("optics.ok"), (d, w) -> {
                     try {
                         final float v = Float.parseFloat(input.getText().toString().trim());
                         apply.accept(Math.max(lo, Math.min(hi, v)));
@@ -4980,7 +5003,7 @@ public class MainActivity extends Activity {
                         }
                     } catch (Throwable ignored) { }
                 })
-                .setNegativeButton("取消", null)
+                .setNegativeButton(tr("editor.cancel"), null)
                 .show();
     }
 
@@ -5009,10 +5032,10 @@ public class MainActivity extends Activity {
             setEnabledDeepExcept(wbDecodeBox, raw, wbDecodeNote);
             if (wbDecodeNote != null) {
                 wbDecodeNote.setText(raw
-                        ? "这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
-                          + "所以每次都按当前尺寸重新解码一次。"
-                        : "JPEG 的白平衡已经烧进文件里，不能重解。要改色温请用下面的「色温」"
-                          + "「色调」——那是冲印后的偏色，立刻生效。");
+                        ? tr("optics.these_controls_set_the_light")
+                          + tr("optics.changing_them_decodes_the_image")
+                        : tr("optics.jpeg_white_balance_is_baked")
+                          + tr("optics.to_grade_the_finished_print"));
             }
         }
     }
@@ -5079,7 +5102,7 @@ public class MainActivity extends Activity {
         if (!isRawFile || rawFilePath == null) {
             // A JPEG has no negative to re-develop. Saying so once is better
             // than a control that silently does nothing.
-            showInAppToast("JPEG 的白平衡已经写在文件里，用下面的「色温」调整");
+            showInAppToast(tr("optics.jpeg_white_balance_is_baked_2"));
             return;
         }
         final SpektraLabEngine.Session current = session;
@@ -5094,7 +5117,7 @@ public class MainActivity extends Activity {
         final int edge = importCapPixels > 0 ? IMPORT_LONG_EDGE : 0;
         wbDecoding = true;
         runOnUiThread(() -> {
-            if (statusText != null) statusText.setText("重新解码…");
+            if (statusText != null) statusText.setText(tr("optics.decoding_again"));
         });
         new Thread(() -> {
             float[] mul = null;
@@ -5144,7 +5167,7 @@ public class MainActivity extends Activity {
                 wbDecoding = false;
                 runOnUiThread(() -> {
                     if (session == null) session = current;
-                    showErrorDialog("白平衡重解失败", describe(t));
+                    showErrorDialog(tr("optics.could_not_re_decode_with"), describe(t));
                 });
             }
         }).start();
@@ -5463,7 +5486,7 @@ public class MainActivity extends Activity {
         // version that was supposed to fix it.
         opticsPanel = panel;
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead("PRINT / 胶片冲印参数", this::resetOpticsPanel),
+        panel.addView(sectionHead(tr("print.print_settings"), this::resetOpticsPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
         // The readout: which slider this is, and what it is set to.
@@ -5547,42 +5570,42 @@ public class MainActivity extends Activity {
         // **Log travel.** 0.25 / 1.0 / 4.0 are equal stops, and 1.0 is the
         // neutral: on a linear bar it sat at 20 %, which is the "越右越暗" half
         // only. With a ratio scale the default is the middle of the track.
-        knob("放大曝光 越右越暗", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure, false, true);
-        knob("高光保护",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true);
-        knob("暗部保护",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true);
-        knob("颗粒",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount, true);
-        knob("光晕",       "○",  0.0f,  4.0f,   v -> halationAmount = v,  () -> halationAmount, true);
-        knob("光晕增强",   "+",  0.0f,  8.0f,   v -> halationBoost = v,   () -> halationBoost, true);
-        knob("乳剂散射",   "~",  0.0f,  1.0f,   v -> halationScatter = v, () -> halationScatter, true);
-        knob("散射半径",   "◍",  0.0f,  1.0f,   v -> scatterRadius = v,  () -> scatterRadius, true);
-        knob("眩光",       "✳",  0.0f,  12.0f,  v -> glareAmount = v,     () -> glareAmount);
-        knob("镜头模糊",   "◌",  0.0f,  200.0f, v -> lensBlur = v,        () -> lensBlur, true);
-        knob("黄滤镜",     "Y",  -1.0f, 1.0f,   v -> yFilter = v,         () -> yFilter);
-        knob("品红滤镜",   "M",  -1.0f, 1.0f,   v -> mFilter = v,         () -> mFilter);
-        knob("滤镜强度",   "C",  1.0f,  60.0f,  v -> filterScale = v,     () -> filterScale);
+        knob("print.knob.enlarger_exposure_right_is_darker", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure, false, true);
+        knob("print.knob.highlight_protection",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true);
+        knob("print.knob.shadow_protection",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true);
+        knob("print.knob.grain",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount, true);
+        knob("print.knob.halation",       "○",  0.0f,  4.0f,   v -> halationAmount = v,  () -> halationAmount, true);
+        knob("print.knob.halation_boost",   "+",  0.0f,  8.0f,   v -> halationBoost = v,   () -> halationBoost, true);
+        knob("print.knob.emulsion_scatter",   "~",  0.0f,  1.0f,   v -> halationScatter = v, () -> halationScatter, true);
+        knob("print.knob.scatter_radius",   "◍",  0.0f,  1.0f,   v -> scatterRadius = v,  () -> scatterRadius, true);
+        knob("print.knob.glare",       "✳",  0.0f,  12.0f,  v -> glareAmount = v,     () -> glareAmount);
+        knob("print.knob.lens_blur",   "◌",  0.0f,  200.0f, v -> lensBlur = v,        () -> lensBlur, true);
+        knob("print.knob.yellow_filter",     "Y",  -1.0f, 1.0f,   v -> yFilter = v,         () -> yFilter);
+        knob("print.knob.magenta_filter",   "M",  -1.0f, 1.0f,   v -> mFilter = v,         () -> mFilter);
+        knob("print.knob.filter_strength",   "C",  1.0f,  60.0f,  v -> filterScale = v,     () -> filterScale);
 
-        knob("预闪",       "⚡", 0.0f,  1.0f,   v -> preflash = v,        () -> preflash);
-        knob("曲线柔度",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff, true);
-        knob("提升上限",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift, true);
+        knob("print.knob.pre_flash",       "⚡", 0.0f,  1.0f,   v -> preflash = v,        () -> preflash);
+        knob("print.knob.curve_softness",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff, true);
+        knob("print.knob.maximum_shadow_lift",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift, true);
         // The switches, on a 0/1 slider: the panel has one slider by design,
         // and a second kind of control would be a second thing to explain.
-        knob("光晕开关",   "◐",  0.0f,  1.0f,   v -> halationOn = v,       () -> halationOn, true);
-        knob("去抗光晕",   "⊘",  0.0f,  1.0f,   v -> antihalationRemoved = v, () -> antihalationRemoved, true);
-        knob("颗粒开关",   "g",  0.0f,  1.0f,   v -> grainOn = v,          () -> grainOn, true);
-        knob("层间抑制",   "⧉",  0.0f,  1.0f,   v -> couplersOn = v,       () -> couplersOn, true);
-        knob("扫描白",     "W",  0.0f,  1.0f,   v -> scannerWhite = v,     () -> scannerWhite);
-        knob("扫描黑",     "B",  0.0f,  1.0f,   v -> scannerBlack = v,     () -> scannerBlack);
+        knob("print.knob.enable_halation",   "◐",  0.0f,  1.0f,   v -> halationOn = v,       () -> halationOn, true);
+        knob("print.knob.remove_anti_halation",   "⊘",  0.0f,  1.0f,   v -> antihalationRemoved = v, () -> antihalationRemoved, true);
+        knob("print.knob.enable_grain",   "g",  0.0f,  1.0f,   v -> grainOn = v,          () -> grainOn, true);
+        knob("print.knob.interlayer_inhibition",   "⧉",  0.0f,  1.0f,   v -> couplersOn = v,       () -> couplersOn, true);
+        knob("print.knob.scan_whites",     "W",  0.0f,  1.0f,   v -> scannerWhite = v,     () -> scannerWhite);
+        knob("print.knob.scan_blacks",     "B",  0.0f,  1.0f,   v -> scannerBlack = v,     () -> scannerBlack);
         // Six more that the schema has had all along and the panel never
         // showed. Booleans ride a 0..1 knob because the knob is the panel's
         // one control; the readout says "0.00" / "1.00" and the hint says
         // which end is which.
-        knob("眩光开关",   "☀",  0.0f,  1.0f,   v -> glareActive = v,      () -> glareActive);
-        knob("扫描仪模糊", "S",  0.0f, 20.0f,   v -> scannerLensBlur = v,  () -> scannerLensBlur);
-        knob("光晕余量",   "R",  0.0f,  8.0f,   v -> halationHeadroom = v, () -> halationHeadroom, true);
-        knob("浓度曲线",   "γ",  0.2f,  4.0f,   v -> densityGamma = v,     () -> densityGamma, true);
-        knob("数字中间片", "I",  0.0f,  1.0f,   v -> digitalIntermediate = v > 0.5f,
+        knob("print.knob.enable_glare",   "☀",  0.0f,  1.0f,   v -> glareActive = v,      () -> glareActive);
+        knob("print.knob.scanner_blur", "S",  0.0f, 20.0f,   v -> scannerLensBlur = v,  () -> scannerLensBlur);
+        knob("print.knob.halation_headroom",   "R",  0.0f,  8.0f,   v -> halationHeadroom = v, () -> halationHeadroom, true);
+        knob("print.knob.density_curve",   "γ",  0.2f,  4.0f,   v -> densityGamma = v,     () -> densityGamma, true);
+        knob("print.knob.digital_intermediate", "I",  0.0f,  1.0f,   v -> digitalIntermediate = v > 0.5f,
                                                                     () -> digitalIntermediate ? 1f : 0f);
-        knob("输出编码",   "E",  0.0f,  1.0f,   v -> outputCctf = v > 0.5f,
+        knob("print.knob.output_encoding",   "E",  0.0f,  1.0f,   v -> outputCctf = v > 0.5f,
                                                                     () -> outputCctf ? 1f : 0f);
 
 
@@ -5593,9 +5616,9 @@ public class MainActivity extends Activity {
         // alone above twenty-two knobs.
         LinearLayout gridTop = new LinearLayout(this);
         gridTop.setOrientation(LinearLayout.HORIZONTAL);
-        choiceCell(gridTop, "配光", "重新配光", tv -> resolvePrinting());
+        choiceCell(gridTop, tr("print.color_timing"), tr("print.rebalance_print"), tv -> resolvePrinting());
         edrMark = new Square(this, UI_BLUE, uiToggleOff());
-        toggleCell(gridTop, "动态范围", "EDR", edrMark,
+        toggleCell(gridTop, tr("print.dynamic_range"), "EDR", edrMark,
                 () -> edrOn > 0.5f,
                 on -> {
                     edrOn = on ? 1f : 0f;
@@ -5606,18 +5629,18 @@ public class MainActivity extends Activity {
                     }
                 });
         hueOwnMark = new Square(this, UI_BLUE, uiToggleOff());
-        toggleCell(gridTop, "胶片色相", "保留原色", hueOwnMark,
+        toggleCell(gridTop, tr("print.film_hue"), tr("print.keep_film_colors"), hueOwnMark,
                 () -> hueFixUnsupported(filmStock) || hueCorrection < 0.5f,
                 on -> {
                     if (hueFixUnsupported(filmStock)) {
                         // Pinned on for this stock: say why instead of silently
                         // flipping back, or the switch reads as broken.
                         refreshHueOwnMark();
-                        showActionSheet("这支胶片不支持色相校正",
-                                "它的光谱反演标定还不准：实测绿色偏差 20 到 30 度，"
-                                + "强行校正会比保留原色偏得更多。所以这支胶片的色相校正是固定的。"
-                                + "换一支胶片就能改。",
-                                new String[]{"知道了"}, which -> { });
+                        showActionSheet(tr("print.hue_correction_unavailable_for_this"),
+                                tr("print.this_stock_s_spectral_calibration")
+                            + tr("print.correction_would_shift_the_hues")
+                                + tr("print.choose_a_different_film_to"),
+                                new String[]{tr("print.ok")}, which -> { });
                         return;
                     }
                     hueCorrection = on ? 0f : 1f;
@@ -5631,8 +5654,8 @@ public class MainActivity extends Activity {
 
         LinearLayout gridBottom = new LinearLayout(this);
         gridBottom.setOrientation(LinearLayout.HORIZONTAL);
-        choiceCell(gridBottom, "镜头滤镜", labelOf(FILTER_LABELS, FILTER_IDS, cameraFilter), tv ->
-                showChoiceMapping("镜头滤镜（Wratten）", FILTER_LABELS, FILTER_IDS, cameraFilter, id -> {
+        choiceCell(gridBottom, tr("print.lens_filter"), labelOf(FILTER_LABELS, FILTER_IDS, cameraFilter), tv ->
+                showChoiceMapping(tr("print.lens_filter_wratten"), FILTER_LABELS, FILTER_IDS, cameraFilter, id -> {
                     cameraFilter = id;
                     tv.setText(labelOf(FILTER_LABELS, FILTER_IDS, id));
                     applyParams();
@@ -5641,17 +5664,17 @@ public class MainActivity extends Activity {
         // **What the canvas is drawn in.** Not a look parameter: it never
         // reaches a file, and two exports of the same frame in different
         // canvas spaces are the same bytes.
-        choiceCell(gridBottom, "预览色域", previewSpace, tv -> {
+        choiceCell(gridBottom, tr("print.preview_gamut"), previewSpace, tv -> {
             final java.util.List<String> labels = java.util.Arrays.asList(SPACES);
-            showChoiceSheet("预览色域（只影响屏幕；导出始终是 sRGB）", labels, previewSpace, picked -> {
+            showChoiceSheet(tr("print.preview_gamut_display_only_exports"), labels, previewSpace, picked -> {
                 final int index = labels.indexOf(picked);
                 if (index >= 0) previewSpace = SPACES[index];
                 tv.setText(previewSpace);
                 if (uiReady && session != null) { applyParams(); renderImage(); }
             });
         });
-        choiceCell(gridBottom, "保护基准", labelOf(NORM_LABELS, NORM_IDS, sceneNorm), tv ->
-                showChoiceMapping("高光/暗部保护按什么算", NORM_LABELS, NORM_IDS, sceneNorm, id -> {
+        choiceCell(gridBottom, tr("print.protection_basis"), labelOf(NORM_LABELS, NORM_IDS, sceneNorm), tv ->
+                showChoiceMapping(tr("print.basis_for_highlight_and_shadow"), NORM_LABELS, NORM_IDS, sceneNorm, id -> {
                     sceneNorm = id;
                     tv.setText(labelOf(NORM_LABELS, NORM_IDS, id));
                     applyParams();
@@ -5704,7 +5727,7 @@ public class MainActivity extends Activity {
         key.setBackground(box);
         chip.addView(key, new LinearLayout.LayoutParams(dp(52), dp(34)));
 
-        TextView name = label(label, 7.5f, UI_MUTED, tfHan);
+        TextView name = label(tr(label), 7.5f, UI_MUTED, tfHan);
         name.setGravity(android.view.Gravity.CENTER);
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -5748,11 +5771,11 @@ public class MainActivity extends Activity {
         final float v = k.get.get();
         knobBar.setProgress(Math.max(0, Math.min(1000, knobProgress(k, v))));
         knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
-        knobTitle.setText(k.label);
+        knobTitle.setText(tr(k.label));
         if (knobHintView != null) knobHintView.setText(knobHint(k.label));
         if (knobCost != null) {
-            knobCost.setText(k.heavy ? "这一项要重算胶片 · 约 0.1 秒一帧"
-                                     : "只重印 · 约 0.03 秒一帧");
+            knobCost.setText(k.heavy ? tr("print.recalculates_the_film_about_0")
+                                     : tr("print.reprints_only_about_0_03"));
             knobCost.setTextColor(k.heavy ? 0xFFC8741E : UI_MUTED);
         }
     }
@@ -5835,7 +5858,7 @@ public class MainActivity extends Activity {
             final boolean next = !isOn.getAsBoolean();
             Probe.log("toggle", title + " " + isOn.getAsBoolean() + " -> " + next);
             mark.setLit(next);
-            if (rendering) statusText.setText("渲染中…（这是胶片层参数，约 1–2 秒）");
+            if (rendering) statusText.setText(tr("print.rendering_film_settings_about_1"));
             onChange.accept(next);
         });
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
@@ -5907,12 +5930,12 @@ public class MainActivity extends Activity {
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView cancel = label("取消", 10, UI_MUTED, tfHan);
+        TextView cancel = label(tr("editor.cancel"), 10, UI_MUTED, tfHan);
         cancel.setGravity(android.view.Gravity.CENTER);
         cancel.setPadding(0, dp(14), 0, dp(14));
         cancel.setOnClickListener(v -> dialog.dismiss());
         actions.addView(cancel, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView ok = label("确定", 10, UI_BLUE, tfHan);
+        TextView ok = label(tr("optics.ok"), 10, UI_BLUE, tfHan);
         ok.setGravity(android.view.Gravity.CENTER);
         ok.setPadding(0, dp(14), 0, dp(14));
         ok.setOnClickListener(v -> {
@@ -5965,44 +5988,43 @@ public class MainActivity extends Activity {
     private String previewSpace = "sRGB";
 
     private static final String[] FILTER_IDS = {"", "w8", "w11", "w12", "w15", "w21", "w25", "w47", "w58"};
-    private static final String[] FILTER_LABELS = {"无", "W8 黄", "W11 黄绿", "W12 深黄", "W15 深黄",
-            "W21 橙", "W25 红", "W47 蓝", "W58 绿"};
+    private String[] FILTER_LABELS;
     private static final String[] NORM_IDS = {"power", "y", "max"};
-    private static final String[] NORM_LABELS = {"幂律 power", "亮度 y", "峰值 max"};
+    private String[] NORM_LABELS;
 
     /** One line per knob, short enough to fit the row. */
     private static String knobHint(String label) {
         if (label == null) return "";
         switch (label) {
-            case "放大曝光 越右越暗": return "放大机的曝光量。数值越小，印出来越亮";
-            case "高光保护": return "把高光折进相纸的肩部。拉得越高，压得越狠";
-            case "暗部保护": return "把暗部从趾部提起来。拉得越高，暗部越亮";
-            case "颗粒": return "银盐颗粒的强度。黑白片按各胶片自己的实测换算";
-            case "光晕": return "强光穿过片基、在背面反射回来形成的红晕。1 是胶片本来的量";
-            case "光晕增强": return "给被裁掉的高光补能量。只让光晕更亮，不改变它的范围";
-            case "乳剂散射": return "光在乳剂内部散射形成的雾。实测几乎无变化（<0.1%）";
-            case "眩光": return "相纸表面的那层光晕。抬高黑位、降低对比";
-            case "镜头模糊": return "镜头本身的光学模糊，单位微米。在胶片之前";
-            case "黄滤镜": return "放大机的黄旋钮。往负走偏黄，往正走偏蓝（冷）";
-            case "品红滤镜": return "放大机的品红旋钮。往负走偏绿，往正走偏品红";
-            case "滤镜强度": return "上面两个旋钮的 CC 刻度。太小了看不出效果";
-            case "预闪": return "印相前先给相纸一次均匀曝光，压一点暗部对比。满值只走引擎上限的 4%";
-            case "曲线柔度": return "高光/暗部保护曲线的圆滑程度。越大越缓";
-            case "提升上限": return "暗部最多能被提亮多少挡。实测 4→12 几乎无差别";
-            case "光晕开关": return "关掉就是一支完全没有光晕的胶片";
-            case "去抗光晕": return "把胶片当成撕掉抗光晕层。实测画面变化 <0.2%";
-            case "颗粒开关": return "关掉就是完全没有颗粒的画面";
-            case "层间抑制": return "染料层之间的相互抑制。往左颜色变淡，往右变浓";
-            case "眩光开关":   return "0 关掉相纸表面的那层光晕，1 保留";
-            case "扫描仪模糊": return "扫描仪镜头自己的模糊，单位微米。在整条管线最后";
-            case "光晕余量":   return "给光晕留的高光余量，单位挡。越大越不容易糊成一片";
-            case "浓度曲线":   return "胶片密度曲线的伽马。0.6 发灰发亮，1.35 偏红，默认 1";
-            case "数字中间片": return "跳过光学印相，走数码中间片那条路。0 关，1 开";
-            case "输出编码":   return "输出的传递函数。0 是相纸的，1 是显示器编码";
-            case "胶片原色":   return "往右保留胶片本来的偏色，往左把色相校回原图（绿色更准）";
-            case "扫描白": return "扫描时按片基的白点做校正";
-            case "扫描黑": return "扫描时按片基的黑点做校正";
-            case "动态范围": return "扩展动态范围，把高光往回拉一点";
+            case "print.knob.enlarger_exposure_right_is_darker": return tr("print.exposure_from_the_enlarger_smaller");
+            case "print.knob.highlight_protection": return tr("print.rolls_highlights_into_the_paper");
+            case "print.knob.shadow_protection": return tr("print.lifts_shadows_out_of_the");
+            case "print.knob.grain": return tr("print.strength_of_the_silver_halide");
+            case "print.knob.halation": return tr("print.red_glow_from_light_reflecting");
+            case "print.knob.halation_boost": return tr("print.restores_energy_to_clipped_highlights");
+            case "print.knob.emulsion_scatter": return tr("print.haze_caused_by_light_scattering");
+            case "print.knob.glare": return tr("print.light_scattered_by_the_paper");
+            case "print.knob.lens_blur": return tr("print.optical_lens_blur_in_micrometers");
+            case "print.knob.yellow_filter": return tr("print.enlarger_yellow_control_negative_is");
+            case "print.knob.magenta_filter": return tr("print.enlarger_magenta_control_negative_is");
+            case "print.knob.filter_strength": return tr("print.scales_the_two_filter_controls");
+            case "print.knob.pre_flash": return tr("print.gives_the_paper_a_uniform");
+            case "print.knob.curve_softness": return tr("print.smooths_the_highlight_and_shadow");
+            case "print.knob.maximum_shadow_lift": return tr("print.how_many_stops_shadows_can");
+            case "print.knob.enable_halation": return tr("print.turn_off_to_simulate_a");
+            case "print.knob.remove_anti_halation": return tr("print.simulates_removing_the_anti_halation");
+            case "print.knob.enable_grain": return tr("print.turn_off_for_a_grain");
+            case "print.knob.interlayer_inhibition": return tr("print.controls_how_dye_layers_inhibit");
+            case "print.knob.enable_glare":   return tr("print.set_to_0_to_remove");
+            case "print.knob.scanner_blur": return tr("print.scanner_lens_blur_in_micrometers");
+            case "print.knob.halation_headroom":   return tr("print.highlight_headroom_for_halation_in");
+            case "print.knob.density_curve":   return tr("print.film_density_curve_gamma_0");
+            case "print.knob.digital_intermediate": return tr("print.bypass_optical_printing_and_use");
+            case "print.knob.output_encoding":   return tr("print.output_transfer_function_0_uses");
+            case "print.knob.keep_film_colors":   return tr("print.move_right_to_keep_the");
+            case "print.knob.scan_whites": return tr("print.correct_the_scan_using_the");
+            case "print.knob.scan_blacks": return tr("print.correct_the_scan_using_the_2");
+            case "print.dynamic_range": return tr("print.extend_dynamic_range_to_recover");
             default: return "";
         }
     }
@@ -6044,13 +6066,13 @@ public class MainActivity extends Activity {
     private LinearLayout buildComposePanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead("COMPOSITION / 构图", this::resetComposePanel),
+        panel.addView(sectionHead(tr("compose.composition"), this::resetComposePanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
         LinearLayout sub = new LinearLayout(this);
         sub.setOrientation(LinearLayout.HORIZONTAL);
-        composeCropTab = composeTabView("裁切", 0);
-        composeRotateTab = composeTabView("旋转", 1);
+        composeCropTab = composeTabView(tr("compose.crop"), 0);
+        composeRotateTab = composeTabView(tr("compose.rotate"), 1);
         sub.addView(composeCropTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
         sub.addView(composeRotateTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
         panel.addView(sub, new LinearLayout.LayoutParams(-1, dp(32)));
@@ -6134,12 +6156,12 @@ public class MainActivity extends Activity {
             card.addView(new RatioMark(this, ratio, active ? UI_BLUE : UI_INK),
                     new LinearLayout.LayoutParams(-1, dp(44)));
 
-            final TextView caption = label(original ? "原始" : EDGE_RATIO_LABELS[i],
+            final TextView caption = label(original ? tr("compose.original") : EDGE_RATIO_LABELS[i],
                     8.5f, active ? UI_INK : UI_MUTED, tfBody);
             caption.setGravity(android.view.Gravity.CENTER);
             card.addView(caption, new LinearLayout.LayoutParams(-1, -2));
 
-            final TextView gate = label(original ? "整幅" : EDGE_LABELS[i], 6.5f, UI_MUTED, tfHan);
+            final TextView gate = label(original ? tr("compose.full_frame") : EDGE_LABELS[i], 6.5f, UI_MUTED, tfHan);
             gate.setGravity(android.view.Gravity.CENTER);
             card.addView(gate, new LinearLayout.LayoutParams(-1, -2));
 
@@ -6164,7 +6186,7 @@ public class MainActivity extends Activity {
                     active ? UI_INK : UI_MUTED, tfBody);
             caption.setGravity(android.view.Gravity.CENTER);
             card.addView(caption, new LinearLayout.LayoutParams(-1, -2));
-            final TextView gate = label("竖幅", 6.5f, UI_MUTED, tfHan);
+            final TextView gate = label(tr("compose.portrait"), 6.5f, UI_MUTED, tfHan);
             gate.setGravity(android.view.Gravity.CENTER);
             card.addView(gate, new LinearLayout.LayoutParams(-1, -2));
 
@@ -6201,7 +6223,7 @@ public class MainActivity extends Activity {
 
         // **Nothing happens to the picture until 应用.** 取消 throws the
         // proposal away; the frame goes back to the whole canvas.
-        final TextView cancel = label("取消", 9, UI_MUTED, tfHan);
+        final TextView cancel = label(tr("editor.cancel"), 9, UI_MUTED, tfHan);
         cancel.setGravity(android.view.Gravity.CENTER);
         cancel.setBackground(cardBorder(false));
         cancel.setOnClickListener(v -> {
@@ -6214,7 +6236,7 @@ public class MainActivity extends Activity {
         cancelLp.rightMargin = dp(6);
         footRow.addView(cancel, cancelLp);
 
-        final TextView apply = label("应用裁切", 9, UI_BLUE, tfHan);
+        final TextView apply = label(tr("compose.apply_crop"), 9, UI_BLUE, tfHan);
         apply.setGravity(android.view.Gravity.CENTER);
         apply.setBackground(cardBorder(true));
         apply.setOnClickListener(v -> commitPendingCrop());
@@ -6263,8 +6285,8 @@ public class MainActivity extends Activity {
 
     private String cropSummary() {
         if (pendingCropW >= 0.999f && pendingCropH >= 0.999f
-                && pendingCropX <= 0.001f && pendingCropY <= 0.001f) return "整幅 · 未裁切";
-        return String.format(java.util.Locale.US, "保留 %.0f%% × %.0f%%（按对角缩放）",
+                && pendingCropX <= 0.001f && pendingCropY <= 0.001f) return tr("compose.full_frame_uncropped");
+        return AppLanguage.format("compose.keep_0f_0f_scaled_by",
                 pendingCropW * 100, pendingCropH * 100);
     }
 
@@ -6309,7 +6331,7 @@ public class MainActivity extends Activity {
     private void commitPendingCrop() {
         if (pendingCropW >= 0.999f && pendingCropH >= 0.999f
                 && pendingCropX <= 0.001f && pendingCropY <= 0.001f) {
-            showInAppToast("还没有裁切");
+            showInAppToast(tr("compose.no_crop_applied"));
             return;
         }
         final float nw = geometryCropW * pendingCropW;
@@ -6365,7 +6387,7 @@ public class MainActivity extends Activity {
         android.widget.FrameLayout arcBox = new android.widget.FrameLayout(this);
         arcBox.addView(arc, new android.widget.FrameLayout.LayoutParams(-1, -1));
         final TextView gridChip = label("", 8f, UI_BLUE, tfHan);
-        final Runnable paintChip = () -> gridChip.setText(rotateGridOn ? "参考线 · 开" : "参考线 · 关");
+        final Runnable paintChip = () -> gridChip.setText(rotateGridOn ? tr("compose.guides_on") : tr("compose.guides_off"));
         paintChip.run();
         gridChip.setPadding(dp(8), dp(4), dp(8), dp(4));
         gridChip.setOnClickListener(v -> {
@@ -6381,7 +6403,7 @@ public class MainActivity extends Activity {
         chipLp.rightMargin = dp(6);
         arcBox.addView(gridChip, chipLp);
         composeBody.addView(arcBox, new LinearLayout.LayoutParams(-1, dp(70)));
-        final TextView tip = label("拖弧尺或画面转动 · 双击画面归零 · 松手吸附水平",
+        final TextView tip = label(tr("compose.drag_the_dial_or_image"),
                 7.5f, UI_MUTED, tfHan);
         tip.setGravity(android.view.Gravity.CENTER);
         composeBody.addView(tip, new LinearLayout.LayoutParams(-1, dp(14)));
@@ -6391,15 +6413,15 @@ public class MainActivity extends Activity {
         row.setPadding(0, dp(12), 0, 0);
 
         final LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, -2, 1f);
-        row.addView(circleAction("↺", "向左 90°", () -> turnBy(-1)), cell);
-        row.addView(circleAction("↻", "向右 90°", () -> turnBy(1)),
+        row.addView(circleAction("↺", tr("compose.left_90"), () -> turnBy(-1)), cell);
+        row.addView(circleAction("↻", tr("compose.right_90"), () -> turnBy(1)),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        row.addView(circleAction("⇆", "水平翻转", () -> {
+        row.addView(circleAction("⇆", tr("compose.flip_horizontally"), () -> {
             geometryFlipH = !geometryFlipH;
             showComposePage(1);
             commitCompose();
         }), new LinearLayout.LayoutParams(0, -2, 1f));
-        row.addView(circleAction("⇅", "垂直翻转", () -> {
+        row.addView(circleAction("⇅", tr("compose.flip_vertically"), () -> {
             geometryFlipV = !geometryFlipV;
             showComposePage(1);
             commitCompose();
@@ -7010,7 +7032,7 @@ public class MainActivity extends Activity {
     private LinearLayout buildFormatPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead("FRAME & SCALE / 构图尺度", this::resetFormatPanel),
+        panel.addView(sectionHead(tr("border.frame_scale"), this::resetFormatPanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.setHorizontalScrollBarEnabled(false);
@@ -7025,7 +7047,7 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        formatFootLabel = label("物理尺幅 · 裁切与旋转在「构图」页", 8.5f, UI_MUTED, tfHan);
+        formatFootLabel = label(tr("border.physical_film_size_crop_and"), 8.5f, UI_MUTED, tfHan);
         foot.addView(formatFootLabel, new LinearLayout.LayoutParams(0, -2, 1f));
         formatFootValue = label("36 mm", 9, UI_BLUE, tfBody);
         foot.addView(formatFootValue);
@@ -7055,8 +7077,8 @@ public class MainActivity extends Activity {
      */
     private void refreshFormatFoot() {
         if (formatFootLabel != null) {
-            formatFootLabel.setText(overscanOn ? "物理尺幅 · 由片门决定，点数字换片门"
-                                               : "物理尺幅 · 裁切与旋转在「构图」页");
+            formatFootLabel.setText(overscanOn ? tr("border.physical_film_size_tap_to")
+                                               : tr("border.physical_film_size_crop_and"));
         }
         if (formatFootValue == null) return;
         formatFootValue.setText(String.format(java.util.Locale.US, "%s mm",
@@ -7108,7 +7130,7 @@ public class MainActivity extends Activity {
             valueRow.addView(unit, unitLp);
             top.addView(valueRow);
 
-            TextView kind = label(i == 2 || i >= 8 ? "宽幅" : "常规", 7, UI_MUTED, tfHan);
+            TextView kind = label(i == 2 || i >= 8 ? tr("border.wide") : tr("border.standard"), 7, UI_MUTED, tfHan);
             LinearLayout.LayoutParams kindLp = new LinearLayout.LayoutParams(-2, -2);
             kindLp.topMargin = dp(4);
             top.addView(kind, kindLp);
@@ -7187,16 +7209,16 @@ public class MainActivity extends Activity {
         // into its own page -- not fifteen controls at once.
         LinearLayout home = new LinearLayout(this);
         home.setOrientation(LinearLayout.VERTICAL);
-        home.addView(sectionHead("FRAME & IMPRINT / 边框", this::resetEdgePanel),
+        home.addView(sectionHead(tr("border.frame_imprint"), this::resetEdgePanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
         HorizontalScrollView cardScroll = new HorizontalScrollView(this);
         cardScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout cardStrip = new LinearLayout(this);
         cardStrip.setOrientation(LinearLayout.HORIZONTAL);
-        cardStrip.addView(bigCard("片边", "REBATE", this::edgeSummary, () -> openEdgePage(0)),
+        cardStrip.addView(bigCard(tr("border.film_border"), "REBATE", this::edgeSummary, () -> openEdgePage(0)),
                 cardLp());
-        cardStrip.addView(bigCard("日期水印", "DATE BACK", this::dateSummary, () -> openEdgePage(1)),
+        cardStrip.addView(bigCard(tr("border.date_stamp"), "DATE BACK", this::dateSummary, () -> openEdgePage(1)),
                 cardLp());
         cardScroll.addView(cardStrip, new android.widget.FrameLayout.LayoutParams(-2, -2));
         home.addView(cardScroll, new LinearLayout.LayoutParams(-1, -2));
@@ -7270,15 +7292,15 @@ public class MainActivity extends Activity {
     }
 
     private String edgeSummary() {
-        if (!overscanOn) return "未开启 · 点进去设置";
+        if (!overscanOn) return tr("border.off_tap_to_configure");
         final int at = edgeIds.indexOf(overscanFormat);
         final String gate = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
-        return gate + " · 雾 " + fmt1(edgeFog) + " · 漏光 " + fmt1(edgeLeaks)
-                + " · 张数 " + (frameNumber < 0.5f ? "自动" : String.valueOf(Math.round(frameNumber)));
+        return gate + tr("border.fog") + fmt1(edgeFog) + tr("border.leak") + fmt1(edgeLeaks)
+                + tr("border.frame") + (frameNumber < 0.5f ? tr("meter.auto") : String.valueOf(Math.round(frameNumber)));
     }
 
     private String dateSummary() {
-        if (!dateOn) return "未开启 · 点进去设置";
+        if (!dateOn) return tr("border.off_tap_to_configure");
         return (dateText == null || dateText.isEmpty() ? imprintDate() : dateText)
                 + " · " + labelOf(STYLE_LABELS, STYLE_IDS, dateStyle)
                 + " " + labelOf(PLACE_LABELS, PLACE_IDS, datePlacement);
@@ -7312,15 +7334,15 @@ public class MainActivity extends Activity {
 
         edgePage = new LinearLayout(this);
         edgePage.setOrientation(LinearLayout.VERTICAL);
-        edgePage.addView(pageHead("片边 / REBATE"), new LinearLayout.LayoutParams(-1, dp(38)));
+        edgePage.addView(pageHead(tr("border.film_border_2")), new LinearLayout.LayoutParams(-1, dp(38)));
         overscanMark = new Square(this, UI_BLUE, uiToggleOff());
-        overscanRow = toggleRow("开启片边", overscanMark, () -> overscanOn, on -> {
+        overscanRow = toggleRow(tr("border.enable_film_border"), overscanMark, () -> overscanOn, on -> {
             if (on && edgeIds.isEmpty()) {
                 overscanMark.setLit(false);
                 // **Point at the way out.** A 16:9 frame has no gate at all, and
                 // this switch used to answer "does not correspond to any gate"
                 // while the picker that could fix it was dimmed a few rows down.
-                showInAppToast("先选一个片门（会自动把画面裁成它的比例）");
+                showInAppToast(tr("border.choose_a_film_gate_first"));
                 return;
             }
             overscanOn = on;
@@ -7347,7 +7369,7 @@ public class MainActivity extends Activity {
         {
             final int at = edgeIds.indexOf(overscanFormat);
             final String current = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
-            choiceCell(gateRow, "片门格式", current, tv -> {
+            choiceCell(gateRow, tr("border.film_gate_format"), current, tv -> {
                 edgeValue = tv;
                 showEdgePicker();
             });
@@ -7357,42 +7379,42 @@ public class MainActivity extends Activity {
         // -- so "turn the rebate" can only mean "turn the picture". That is one
         // quarter turn, and `commitCompose` then re-picks the gates for the new
         // shape. The rebate follows; the canvas shows both.
-        choiceCell(gateRow, "片边方向", "旋转 90°", tv -> {
+        choiceCell(gateRow, tr("border.border_orientation"), tr("border.rotate_90"), tv -> {
             turnBy(1);
-            showInAppToast("已转 90° · 片边方向跟着画面");
+            showInAppToast(tr("border.rotated_90_the_border_follows"));
         });
         edgePage.addView(gateRow, new LinearLayout.LayoutParams(-1, dp(46)));
 
         edgeTextMark = new Square(this, UI_BLUE, uiToggleOff());
-        edgeInner.addView(toggleRow("片边文字（厂标 / 张数）", edgeTextMark, () -> edgeTextOn, on -> {
+        edgeInner.addView(toggleRow(tr("border.edge_markings_brand_frame_number"), edgeTextMark, () -> edgeTextOn, on -> {
             edgeTextOn = on;
             redraw.accept(null);
         }), new LinearLayout.LayoutParams(-1, dp(52)));
-        edgeFogBar = rangeRow(edgeInner, "片基雾", "片基本身的灰雾。0 是完全透明，越大越脏",
+        edgeFogBar = rangeRow(edgeInner, tr("border.base_fog"), tr("border.haze_in_the_film_base"),
                 0.0f, 4.0f, edgeFog, v -> edgeFog = v);
-        edgeLeaksBar = rangeRow(edgeInner, "漏光", "卷轴漏进来的光，从片边渗向画面",
+        edgeLeaksBar = rangeRow(edgeInner, tr("border.light_leak"), tr("border.light_leaking_into_the_roll"),
                 0.0f, 4.0f, edgeLeaks, v -> edgeLeaks = v);
-        frameNoBar = rangeRow(edgeInner, "片边张数", "片边上印的张数。0 = 按 seed 随机",
+        frameNoBar = rangeRow(edgeInner, tr("border.frame_number"), tr("border.number_printed_on_the_film"),
                 0.0f, 99.0f, frameNumber, v -> frameNumber = v);
-        edgeFNumBar = rangeRow(edgeInner, "光圈值", "相机记录的 f 值。决定片门边缘的虚化。0 = 未知（按 f/5.6）",
+        edgeFNumBar = rangeRow(edgeInner, tr("border.aperture"), tr("border.recorded_f_number_affects_the"),
                 0.0f, 64.0f, edgeFNumber, v -> edgeFNumber = v);
 
         LinearLayout edgeShapeRow = new LinearLayout(this);
         edgeShapeRow.setOrientation(LinearLayout.HORIZONTAL);
-        choiceCell(edgeShapeRow, "片边模式", labelOf(MODE_LABELS, MODE_IDS, edgeMode), tv ->
-                showChoiceMapping("片边模式", MODE_LABELS, MODE_IDS, edgeMode, id -> {
+        choiceCell(edgeShapeRow, tr("border.border_style"), labelOf(MODE_LABELS, MODE_IDS, edgeMode), tv ->
+                showChoiceMapping(tr("border.border_style"), MODE_LABELS, MODE_IDS, edgeMode, id -> {
                     edgeMode = id;
                     tv.setText(labelOf(MODE_LABELS, MODE_IDS, id));
                     redraw.accept(null);
                 }));
-        choiceCell(edgeShapeRow, "片门形状", labelOf(GATE_LABELS, GATE_IDS, edgeGate), tv ->
-                showChoiceMapping("片门形状", GATE_LABELS, GATE_IDS, edgeGate, id -> {
+        choiceCell(edgeShapeRow, tr("border.gate_shape"), labelOf(GATE_LABELS, GATE_IDS, edgeGate), tv ->
+                showChoiceMapping(tr("border.gate_shape"), GATE_LABELS, GATE_IDS, edgeGate, id -> {
                     edgeGate = id;
                     tv.setText(labelOf(GATE_LABELS, GATE_IDS, id));
                     redraw.accept(null);
                 }));
-        choiceCell(edgeShapeRow, "齿孔", labelOf(HOLES_LABELS, HOLES_IDS, edgeHoles), tv ->
-                showChoiceMapping("齿孔里看到什么", HOLES_LABELS, HOLES_IDS, edgeHoles, id -> {
+        choiceCell(edgeShapeRow, tr("border.sprocket_holes"), labelOf(HOLES_LABELS, HOLES_IDS, edgeHoles), tv ->
+                showChoiceMapping(tr("border.what_appears_through_the_sprocket"), HOLES_LABELS, HOLES_IDS, edgeHoles, id -> {
                     edgeHoles = id;
                     tv.setText(labelOf(HOLES_LABELS, HOLES_IDS, id));
                     redraw.accept(null);
@@ -7401,20 +7423,20 @@ public class MainActivity extends Activity {
 
         LinearLayout edgeSeedRow = new LinearLayout(this);
         edgeSeedRow.setOrientation(LinearLayout.HORIZONTAL);
-        choiceCell(edgeSeedRow, "片夹", labelOf(CARRIER_LABELS, CARRIER_IDS, edgeCarrier), tv ->
-                showChoiceMapping("胶片两侧露出什么", CARRIER_LABELS, CARRIER_IDS, edgeCarrier, id -> {
+        choiceCell(edgeSeedRow, tr("border.film_holder"), labelOf(CARRIER_LABELS, CARRIER_IDS, edgeCarrier), tv ->
+                showChoiceMapping(tr("border.what_appears_alongside_the_film"), CARRIER_LABELS, CARRIER_IDS, edgeCarrier, id -> {
                     edgeCarrier = id;
                     tv.setText(labelOf(CARRIER_LABELS, CARRIER_IDS, id));
                     redraw.accept(null);
                 }));
-        choiceCell(edgeSeedRow, "片边种子", String.valueOf(cameraSeed), tv ->
-                askText("片边随机种子（0 – 2147483647）", String.valueOf(cameraSeed), true, v -> {
+        choiceCell(edgeSeedRow, tr("border.border_seed"), String.valueOf(cameraSeed), tv ->
+                askText(tr("border.random_seed_for_the_film"), String.valueOf(cameraSeed), true, v -> {
                     try { cameraSeed = Math.max(0, Integer.parseInt(v)); } catch (Exception ignored) { return; }
                     tv.setText(String.valueOf(cameraSeed));
                     redraw.accept(null);
                 }));
-        choiceCell(edgeSeedRow, "帧种子", String.valueOf(frameSeed), tv ->
-                askText("帧随机种子（0 – 2147483647）", String.valueOf(frameSeed), true, v -> {
+        choiceCell(edgeSeedRow, tr("border.frame_seed"), String.valueOf(frameSeed), tv ->
+                askText(tr("border.random_seed_for_the_frame"), String.valueOf(frameSeed), true, v -> {
                     try { frameSeed = Math.max(0, Integer.parseInt(v)); } catch (Exception ignored) { return; }
                     tv.setText(String.valueOf(frameSeed));
                     redraw.accept(null);
@@ -7431,9 +7453,9 @@ public class MainActivity extends Activity {
 
         datePage = new LinearLayout(this);
         datePage.setOrientation(LinearLayout.VERTICAL);
-        datePage.addView(pageHead("日期水印 / DATE BACK"), new LinearLayout.LayoutParams(-1, dp(38)));
+        datePage.addView(pageHead(tr("border.date_stamp_2")), new LinearLayout.LayoutParams(-1, dp(38)));
         dateMark = new Square(this, UI_BLUE, uiToggleOff());
-        dateRow = toggleRow("开启日期水印", dateMark, () -> dateOn, on -> {
+        dateRow = toggleRow(tr("border.enable_date_stamp"), dateMark, () -> dateOn, on -> {
             dateOn = on;
             if (dateOn && dateText == null) dateText = imprintDate();
             refreshEdgeGroups();
@@ -7444,35 +7466,35 @@ public class MainActivity extends Activity {
         dateInner.setOrientation(LinearLayout.VERTICAL);
         // 0..200 mm: 30 was the schema's old cap and it stopped the date a
         // third of the way along a 6x12 / 6x17 rebate.
-        dateInsetXBar = rangeRow(dateInner, "左右内边距", "字到片门左右边的距离，毫米（可直接在画布上拖）",
+        dateInsetXBar = rangeRow(dateInner, tr("border.horizontal_inset"), tr("border.distance_from_the_sides_of"),
                 0.0f, 200.0f, dateInsetX, v -> dateInsetX = v);
-        dateInsetYBar = rangeRow(dateInner, "上下内边距", "字到片门上下边的距离，毫米（可直接在画布上拖）",
+        dateInsetYBar = rangeRow(dateInner, tr("border.vertical_inset"), tr("border.distance_from_the_top_or"),
                 0.0f, 200.0f, dateInsetY, v -> dateInsetY = v);
         // 8.0: the engine clamps at 8 now, because "make the date bigger" was
         // the one adjustment the old 3.0 ceiling refused.
-        dateSizeBar = rangeRow(dateInner, "日期大小", "相对该样式的字高（1.0 是标准，可放大到 8 倍）",
+        dateSizeBar = rangeRow(dateInner, tr("border.date_size"), tr("border.relative_character_height_1_0"),
                 0.4f, 8.0f, dateSize, v -> dateSize = v);
-        dateEvBar = rangeRow(dateInner, "日期亮度", "红光在 18% 灰之上的曝光，单位挡",
+        dateEvBar = rangeRow(dateInner, tr("border.date_brightness"), tr("border.red_light_exposure_above_18"),
                 -2.0f, 8.0f, dateEv, v -> dateEv = v);
         LinearLayout dateGrid1 = new LinearLayout(this);
         dateGrid1.setOrientation(LinearLayout.HORIZONTAL);
         // The one field the app used to decide for the user: it read the date
         // out of EXIF and gave no way to write a different one.
-        choiceCell(dateGrid1, "日期文字", dateText == null || dateText.isEmpty() ? imprintDate() : dateText,
-                tv -> askText("印在画面上的日期（可以自己写）",
+        choiceCell(dateGrid1, tr("border.date_text"), dateText == null || dateText.isEmpty() ? imprintDate() : dateText,
+                tv -> askText(tr("border.text_stamped_on_the_image"),
                         dateText == null || dateText.isEmpty() ? imprintDate() : dateText, v -> {
                             dateText = v.isEmpty() ? null : v;
                             tv.setText(dateText == null ? imprintDate() : dateText);
                             redraw.accept(null);
                         }));
-        choiceCell(dateGrid1, "日期位置", labelOf(PLACE_LABELS, PLACE_IDS, datePlacement), tv ->
-                showChoiceMapping("日期打在哪里", PLACE_LABELS, PLACE_IDS, datePlacement, id -> {
+        choiceCell(dateGrid1, tr("border.date_placement"), labelOf(PLACE_LABELS, PLACE_IDS, datePlacement), tv ->
+                showChoiceMapping(tr("border.where_to_place_the_date"), PLACE_LABELS, PLACE_IDS, datePlacement, id -> {
                     datePlacement = id;
                     tv.setText(labelOf(PLACE_LABELS, PLACE_IDS, id));
                     redraw.accept(null);
                 }));
-        choiceCell(dateGrid1, "日期角位", labelOf(CORNER_LABELS, CORNER_IDS, dateCorner), tv ->
-                showChoiceMapping("画面内的哪个角", CORNER_LABELS, CORNER_IDS, dateCorner, id -> {
+        choiceCell(dateGrid1, tr("border.date_corner"), labelOf(CORNER_LABELS, CORNER_IDS, dateCorner), tv ->
+                showChoiceMapping(tr("border.which_corner_to_stamp"), CORNER_LABELS, CORNER_IDS, dateCorner, id -> {
                     dateCorner = id;
                     tv.setText(labelOf(CORNER_LABELS, CORNER_IDS, id));
                     redraw.accept(null);
@@ -7481,22 +7503,22 @@ public class MainActivity extends Activity {
 
         LinearLayout dateGrid2 = new LinearLayout(this);
         dateGrid2.setOrientation(LinearLayout.HORIZONTAL);
-        choiceCell(dateGrid2, "日期样式", labelOf(STYLE_LABELS, STYLE_IDS, dateStyle), tv ->
-                showChoiceMapping("日期用哪种字", STYLE_LABELS, STYLE_IDS, dateStyle, id -> {
+        choiceCell(dateGrid2, tr("border.date_style"), labelOf(STYLE_LABELS, STYLE_IDS, dateStyle), tv ->
+                showChoiceMapping(tr("border.type_of_lettering_for_the"), STYLE_LABELS, STYLE_IDS, dateStyle, id -> {
                     dateStyle = id;
                     tv.setText(labelOf(STYLE_LABELS, STYLE_IDS, id));
                     redraw.accept(null);
                 }));
-        choiceCell(dateGrid2, "拍摄数据", dataText.isEmpty() ? "（空）" : dataText, tv ->
-                askText("拍摄数据（和日期一起印在片边）", dataText, v -> {
+        choiceCell(dateGrid2, tr("border.shooting_data"), dataText.isEmpty() ? tr("border.empty") : dataText, tv ->
+                askText(tr("border.shooting_data_to_print_alongside"), dataText, v -> {
                     dataText = v;
-                    tv.setText(v.isEmpty() ? "（空）" : v);
+                    tv.setText(v.isEmpty() ? tr("border.empty") : v);
                     redraw.accept(null);
                 }));
-        choiceCell(dateGrid2, "第二帧日期", dateTextB.isEmpty() ? "（空）" : dateTextB, tv ->
-                askText("半格对的第二帧日期（用不到就留空）", dateTextB, v -> {
+        choiceCell(dateGrid2, tr("border.second_frame_date"), dateTextB.isEmpty() ? tr("border.empty") : dateTextB, tv ->
+                askText(tr("border.date_for_the_second_frame"), dateTextB, v -> {
                     dateTextB = v;
-                    tv.setText(v.isEmpty() ? "（空）" : v);
+                    tv.setText(v.isEmpty() ? tr("border.empty") : v);
                     redraw.accept(null);
                 }));
         LinearLayout.LayoutParams dateGrid2Lp = new LinearLayout.LayoutParams(-1, dp(46));
@@ -7504,7 +7526,7 @@ public class MainActivity extends Activity {
         dateInner.addView(dateGrid2, dateGrid2Lp);
 
         TextView dateTip = label(
-                "日期位置：画面内时可选中角位，也可以直接在画布上拖；片边模式的位置由片边条决定，用上面两个内边距微调",
+                tr("border.for_an_in_image_stamp"),
                 7.5f, UI_MUTED, tfHan);
         dateTip.setLineSpacing(dp(1), 1f);
         dateInner.addView(dateTip, new LinearLayout.LayoutParams(-1, -2));
@@ -7555,7 +7577,7 @@ public class MainActivity extends Activity {
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView back = label("‹ 返回", 10f, UI_BLUE, tfHan);
+        TextView back = label(tr("border.back"), 10f, UI_BLUE, tfHan);
         back.setPadding(0, dp(8), dp(16), dp(8));
         back.setOnClickListener(v -> openEdgePage(-1));
         head.addView(back);
@@ -7685,12 +7707,12 @@ public class MainActivity extends Activity {
             if (edgeValue != null) edgeValue.setText(gateLabelsFallback(overscanFormat));
             refreshFormatFoot();
             Probe.log("gate", "refused " + id + " aspect=" + originalAspect() + " fits=" + edgeIds);
-            showInAppToast("这张照片裁不成 " + EDGE_LABELS[at] + " 的比例，片门仍是 "
+            showInAppToast(tr("border.can_t_crop_this_photo") + EDGE_LABELS[at] + tr("border.the_film_gate_is_still")
                     + gateLabelsFallback(overscanFormat));
         } else {
             onEdgeChanged();
-            showInAppToast((cropped ? "画面已裁成 " + EDGE_RATIO_LABELS[at] + " · " : "")
-                    + "片门 → " + EDGE_LABELS[at]);
+            showInAppToast((cropped ? tr("border.cropped_to") + EDGE_RATIO_LABELS[at] + " · " : "")
+                    + tr("border.film_gate") + EDGE_LABELS[at]);
         }
         Probe.log("gate", "picked " + id + " cropped=" + cropped
                 + " aspect=" + originalAspect() + " fits=" + edgeIds);
@@ -7713,10 +7735,10 @@ public class MainActivity extends Activity {
             final boolean fits = aspect > 0
                     && Math.abs(aspect / EDGE_RATIOS[i] - 1.0) <= 0.045;
             labels.add(EDGE_LABELS[i]);
-            notes.add(fits ? null : "选它会居中裁成 " + EDGE_RATIO_LABELS[i] + "，片边就能印了");
+            notes.add(fits ? null : tr("border.centers_and_crops_to") + EDGE_RATIO_LABELS[i] + tr("border.to_fit_the_film_border"));
             if (EDGE_IDS[i].equals(overscanFormat)) selectedLabel = EDGE_LABELS[i];
         }
-        showChoiceSheet("选择片门格式", labels, notes, selectedLabel, null,
+        showChoiceSheet(tr("border.choose_a_film_gate"), labels, notes, selectedLabel, null,
                 picked -> {
                     final int i = labels.indexOf(picked);
                     if (i < 0) {
@@ -7759,11 +7781,12 @@ public class MainActivity extends Activity {
         LinearLayout tabs = new LinearLayout(this);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setBackgroundColor(UI_PAPER);
-        final String[] names = {"胶片", "冲印", "光学", "尺度", "构图", "边框"};
+        final String[] names = {tr("navigation.film"), tr("navigation.print"), tr("navigation.optics"), tr("navigation.scale"), tr("navigation.compose"), tr("navigation.border")};
         for (int i = 0; i < names.length; ++i) {
             final int index = i;
             android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            TextView name = label(names[i], 12, UI_MUTED, tfHan);
+            TextView name = mixedLabel(names[i], 12, UI_MUTED);
+            if (i == 4) name.setContentDescription(tr("navigation.composition"));
             name.setGravity(android.view.Gravity.CENTER);
             cell.addView(name, new android.widget.FrameLayout.LayoutParams(-1, -1));
             View bar = new View(this);
@@ -7783,7 +7806,7 @@ public class MainActivity extends Activity {
     private void onTabClicked(int index) {
         if (index == activeTabIndex) {
             setPanelCollapsed(!panelCollapsed);
-            showInAppToast(panelCollapsed ? "参数面板已收起，再点当前页签展开" : "参数面板已展开");
+            showInAppToast(panelCollapsed ? tr("navigation.panel_hidden_tap_this_tab") : tr("navigation.panel_shown"));
         } else {
             activeTabIndex = index;
             setTab(index);
@@ -7938,15 +7961,15 @@ public class MainActivity extends Activity {
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        head.addView(label("预设 / PRESETS", 12, UI_INK, tfHan),
+        head.addView(label(tr("preset.presets"), 12, UI_INK, tfHan),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
         head.addView(close);
         sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(54)));
 
-        TextView note = label("一套参数（胶片、曝光、光学、构图、片边、日期）。分享出去是一段文本，对方粘贴导入即可。",
+        TextView note = label(tr("preset.presets_store_film_exposure_optics"),
                 8.5f, UI_MUTED, tfHan);
         note.setPadding(dp(16), 0, dp(16), dp(10));
         sheet.addView(note);
@@ -7954,7 +7977,7 @@ public class MainActivity extends Activity {
         LinearLayout rows = new LinearLayout(this);
         rows.setOrientation(LinearLayout.VERTICAL);
         if (list.length() == 0) {
-            TextView empty = label("还没有预设。调好一张照片，点下面的「保存当前参数」。", 9, UI_MUTED, tfHan);
+            TextView empty = label(tr("preset.no_presets_yet_edit_a"), 9, UI_MUTED, tfHan);
             empty.setPadding(dp(16), dp(12), dp(16), dp(12));
             rows.addView(empty);
         }
@@ -7966,12 +7989,12 @@ public class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(android.view.Gravity.CENTER_VERTICAL);
             row.setPadding(dp(16), 0, dp(10), 0);
-            TextView name = label(p.optString("name", "预设"), 10, UI_INK, tfHan);
+            TextView name = label(p.optString("name", tr("preset.preset")), 10, UI_INK, tfHan);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             row.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
 
-            TextView apply = label("应用", 8.5f, UI_BLUE, tfHan);
+            TextView apply = label(tr("preset.apply"), 8.5f, UI_BLUE, tfHan);
             apply.setPadding(dp(8), dp(12), dp(8), dp(12));
             apply.setOnClickListener(v -> {
                 dialog.dismiss();
@@ -7979,12 +8002,12 @@ public class MainActivity extends Activity {
             });
             row.addView(apply);
 
-            TextView share = label("分享", 8.5f, UI_MUTED, tfHan);
+            TextView share = label(tr("editor.share"), 8.5f, UI_MUTED, tfHan);
             share.setPadding(dp(8), dp(12), dp(8), dp(12));
             share.setOnClickListener(v -> sharePreset(p));
             row.addView(share);
 
-            TextView del = label("删除", 8.5f, UI_MUTED, tfHan);
+            TextView del = label(tr("preset.delete"), 8.5f, UI_MUTED, tfHan);
             del.setPadding(dp(8), dp(12), dp(4), dp(12));
             del.setOnClickListener(v -> {
                 final org.json.JSONArray next = new org.json.JSONArray();
@@ -8005,21 +8028,21 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setPadding(dp(10), dp(6), dp(10), dp(10));
-        TextView save = label("保存当前参数", 8.5f, UI_BLUE, tfHan);
+        TextView save = label(tr("preset.save_current_settings"), 8.5f, UI_BLUE, tfHan);
         save.setGravity(android.view.Gravity.CENTER);
         save.setOnClickListener(v -> {
             dialog.dismiss();
             saveCurrentPreset();
         });
         foot.addView(save, new LinearLayout.LayoutParams(0, dp(34), 1f));
-        TextView pull = label("从剪贴板导入", 8.5f, UI_INK, tfHan);
+        TextView pull = label(tr("preset.import_from_clipboard"), 8.5f, UI_INK, tfHan);
         pull.setGravity(android.view.Gravity.CENTER);
         pull.setOnClickListener(v -> {
             dialog.dismiss();
             importPresetFromClipboard();
         });
         foot.addView(pull, new LinearLayout.LayoutParams(0, dp(34), 1f));
-        TextView push = label("分享当前", 8.5f, UI_INK, tfHan);
+        TextView push = label(tr("preset.share_current_settings"), 8.5f, UI_INK, tfHan);
         push.setGravity(android.view.Gravity.CENTER);
         push.setOnClickListener(v -> {
             dialog.dismiss();
@@ -8043,14 +8066,14 @@ public class MainActivity extends Activity {
 
     private void saveCurrentPreset() {
         if (frames.isEmpty() || filmStock == null) {
-            showInAppToast("先导入一张照片、选一支胶片");
+            showInAppToast(tr("preset.import_a_photo_and_choose"));
             return;
         }
         saveLookIntoFrames();
         final String fallback = stockDisplay(filmStock)
                 + (printStock == null || printStock.isEmpty() ? "" : " · " + stockDisplay(printStock));
-        askText("预设名字", fallback, name -> {
-            final String n = (name == null || name.trim().isEmpty()) ? "未命名预设" : name.trim();
+        askText(tr("preset.preset_name"), fallback, name -> {
+            final String n = (name == null || name.trim().isEmpty()) ? tr("preset.untitled_preset") : name.trim();
             try {
                 final org.json.JSONArray list = presetList();
                 final org.json.JSONObject p = new org.json.JSONObject();
@@ -8059,9 +8082,9 @@ public class MainActivity extends Activity {
                 p.put("look", lookToJson(captureLook()));
                 list.put(p);
                 storePresetList(list);
-                showInAppToast("已保存预设「" + n + "」");
+                showInAppToast(tr("preset.saved_preset") + n + "”");
             } catch (Throwable t) {
-                showInAppToast("保存失败：" + t.getMessage());
+                showInAppToast(tr("preset.could_not_save") + t.getMessage());
             }
         });
     }
@@ -8069,18 +8092,18 @@ public class MainActivity extends Activity {
     private void applyPreset(org.json.JSONObject p) {
         final org.json.JSONObject look = p == null ? null : p.optJSONObject("look");
         if (look == null) {
-            showInAppToast("这个预设是空的");
+            showInAppToast(tr("preset.this_preset_is_empty"));
             return;
         }
         final Look l = lookFromJson(look);
         if (l == null) {
-            showInAppToast("预设格式不认识");
+            showInAppToast(tr("preset.unrecognized_preset_format"));
             return;
         }
         // **Nothing is applied before the question is answered.** The gate a
         // preset carries may need a crop this photograph does not want, and
         // `applyForeignLook` is what asks.
-        applyForeignLook(l, "已应用预设「" + p.optString("name", "") + "」");
+        applyForeignLook(l, tr("preset.applied_preset") + p.optString("name", "") + "”");
     }
 
     private void sharePreset(org.json.JSONObject p) {
@@ -8089,18 +8112,18 @@ public class MainActivity extends Activity {
             final org.json.JSONObject out = new org.json.JSONObject();
             out.put("app", "SpektraLab Android");
             out.put("version", UpdateCheck.versionCode(this));
-            out.put("name", p.optString("name", "SpektraLab 参数"));
+            out.put("name", p.optString("name", tr("preset.spektralab_settings")));
             final org.json.JSONObject raw = p.optJSONObject("look");
             out.put("look", raw == null ? null : lookCompact(lookFromJson(raw)));
             shareLookJson(out);
         } catch (Throwable t) {
-            showInAppToast("分享失败：" + t.getMessage());
+            showInAppToast(tr("preset.could_not_share") + t.getMessage());
         }
     }
 
     private void shareCurrentLook() {
         if (frames.isEmpty() || filmStock == null) {
-            showInAppToast("先导入一张照片、选一支胶片");
+            showInAppToast(tr("preset.import_a_photo_and_choose"));
             return;
         }
         saveLookIntoFrames();
@@ -8112,7 +8135,7 @@ public class MainActivity extends Activity {
             out.put("look", lookCompact(captureLook()));
             shareLookJson(out);
         } catch (Throwable t) {
-            showInAppToast("分享失败：" + t.getMessage());
+            showInAppToast(tr("preset.could_not_share") + t.getMessage());
         }
     }
 
@@ -8120,12 +8143,12 @@ public class MainActivity extends Activity {
         try {
             final android.content.Intent send = new android.content.Intent(android.content.Intent.ACTION_SEND);
             send.setType("text/plain");
-            send.putExtra(android.content.Intent.EXTRA_SUBJECT, payload.optString("name", "SpektraLab 参数"));
+            send.putExtra(android.content.Intent.EXTRA_SUBJECT, payload.optString("name", tr("preset.spektralab_settings")));
             send.putExtra(android.content.Intent.EXTRA_TEXT,
-                    "SpektraLab 参数（复制整段，在应用里「从剪贴板导入」）\n" + payload.toString());
-            startActivity(android.content.Intent.createChooser(send, "分享参数"));
+                    tr("preset.spektralab_settings_copy_all_of") + payload.toString());
+            startActivity(android.content.Intent.createChooser(send, tr("preset.share_settings")));
         } catch (Throwable t) {
-            showInAppToast("分享失败：" + (t.getMessage() == null ? "参数序列化失败" : t.getMessage()));
+            showInAppToast(tr("preset.could_not_share") + (t.getMessage() == null ? tr("preset.could_not_encode_the_settings") : t.getMessage()));
         }
     }
 
@@ -8135,7 +8158,7 @@ public class MainActivity extends Activity {
                     getSystemService(android.content.Context.CLIPBOARD_SERVICE);
             if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip() == null
                     || cm.getPrimaryClip().getItemCount() == 0) {
-                showInAppToast("剪贴板里没有文本");
+                showInAppToast(tr("preset.no_text_on_the_clipboard"));
                 return;
             }
             final android.content.ClipData.Item item = cm.getPrimaryClip().getItemAt(0);
@@ -8143,19 +8166,19 @@ public class MainActivity extends Activity {
             final String text = cs == null ? "" : cs.toString();
             final int a = text.indexOf('{'), b = text.lastIndexOf('}');
             if (a < 0 || b <= a) {
-                showInAppToast("剪贴板里没有参数 JSON");
+                showInAppToast(tr("preset.no_preset_json_found_on"));
                 return;
             }
             final org.json.JSONObject o = new org.json.JSONObject(text.substring(a, b + 1));
             final org.json.JSONObject look = o.optJSONObject("look") != null ? o.optJSONObject("look") : o;
             final Look l = lookFromJson(look);
             if (l == null) {
-                showInAppToast("这段 JSON 不是参数");
+                showInAppToast(tr("preset.this_json_does_not_contain"));
                 return;
             }
-            applyForeignLook(l, "已导入并应用");
+            applyForeignLook(l, tr("preset.imported_and_applied"));
         } catch (Throwable t) {
-            showInAppToast("导入失败：" + (t.getMessage() == null ? "格式不对" : t.getMessage()));
+            showInAppToast(tr("preset.could_not_import") + (t.getMessage() == null ? tr("preset.invalid_format") : t.getMessage()));
         }
     }
 
@@ -8178,26 +8201,26 @@ public class MainActivity extends Activity {
      */
     private void showBatchDeleteSheet() {
         if (batchExportRunning) {
-            showInAppToast("批量导出中，等它跑完再改动照片栏");
+            showInAppToast(tr("editor.wait_for_batch_export_to_2"));
             return;
         }
         if (frames.size() < 2) {
-            showInAppToast("只有这一张照片");
+            showInAppToast(tr("preset.there_is_only_one_photo"));
             return;
         }
         final String[] labels = new String[frames.size()];
         for (int i = 0; i < frames.size(); ++i) {
             final Frame f = frames.get(i);
-            labels[i] = (f.name == null || f.name.isEmpty() ? "照片 " + (i + 1) : f.name);
+            labels[i] = (f.name == null || f.name.isEmpty() ? tr("preset.photo") + (i + 1) : f.name);
         }
-        showMultiChoiceSheet("删掉哪些照片",
-                "只从这条栏里移除，文件本身不动；这些照片的调色记录会一起删掉。",
+        showMultiChoiceSheet(tr("preset.remove_which_photos"),
+                tr("preset.removes_photos_and_their_edits"),
                 labels, picked -> {
                     final java.util.ArrayList<Integer> indices =
                             new java.util.ArrayList<>(picked);
                     java.util.Collections.sort(indices, (a, b) -> b - a);
                     for (int i = 0; i < indices.size(); ++i) removeFrame(indices.get(i));
-                    showInAppToast("已移除 " + indices.size() + " 张照片");
+                    showInAppToast(tr("preset.removed") + indices.size() + tr("preset.photos"));
                 });
     }
 
@@ -8208,25 +8231,25 @@ public class MainActivity extends Activity {
             if (i != sourceIndex) targets.add(i);
         }
         if (targets.isEmpty()) {
-            showInAppToast("只有这一张照片，没有可应用的对象");
+            showInAppToast(tr("preset.there_are_no_other_photos"));
             return;
         }
         final String[] labels = new String[targets.size()];
         for (int i = 0; i < targets.size(); ++i) {
             final int index = targets.get(i);
             final Frame f = frames.get(index);
-            labels[i] = (f.name == null || f.name.isEmpty() ? "照片 " + (index + 1) : f.name);
+            labels[i] = (f.name == null || f.name.isEmpty() ? tr("preset.photo") + (index + 1) : f.name);
         }
         final String srcName = frames.get(sourceIndex).name == null
-                ? "这张" : frames.get(sourceIndex).name;
-        showMultiChoiceSheet("把这张的参数应用到", 
-                "选中的照片会换成这张的胶片、曝光、光学、构图、片边和日期。"
-                        + "只改这条栏里的设置，文件不动；点开时才按新参数渲染。",
+                ? tr("preset.current_photo") : frames.get(sourceIndex).name;
+        showMultiChoiceSheet(tr("preset.apply_these_settings_to"),
+                tr("preset.copies_the_current_film_exposure")
+                        + tr("preset.original_files_are_not_changed"),
                 labels, picked -> {
                     saveLookIntoFrames();
                     final Look src = copyLook(frames.get(sourceIndex).look);
                     if (src == null) {
-                        showInAppToast("这张还没有可复制的参数");
+                        showInAppToast(tr("preset.this_photo_has_no_settings"));
                         return;
                     }
                     int n = 0;
@@ -8245,7 +8268,7 @@ public class MainActivity extends Activity {
                     }
                     saveSessionState();
                     rebuildFrameChips();
-                    showInAppToast("已应用到 " + n + " 张照片（点开时生效）");
+                    showInAppToast(tr("preset.applied_to") + n + tr("preset.photos_changes_appear_when_opened"));
                 });
     }
 
@@ -8265,7 +8288,7 @@ public class MainActivity extends Activity {
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
         head.addView(label(title, 12, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
         head.addView(close);
@@ -8306,25 +8329,25 @@ public class MainActivity extends Activity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setPadding(dp(10), dp(6), dp(10), dp(10));
-        final TextView all = label("全选", 9, UI_MUTED, tfHan);
+        final TextView all = label(tr("preset.select_all"), 9, UI_MUTED, tfHan);
         all.setGravity(android.view.Gravity.CENTER);
         all.setOnClickListener(v -> {
             final boolean want = !all.isSelected();
             all.setSelected(want);
-            all.setText(want ? "全不选" : "全选");
+            all.setText(want ? tr("preset.deselect_all") : tr("preset.select_all"));
             for (int i = 0; i < picked.length; ++i) {
                 picked[i] = want;
                 if (marks[i] != null) marks[i].setLit(want);
             }
         });
         foot.addView(all, new LinearLayout.LayoutParams(0, dp(34), 1f));
-        TextView apply = label("应用", 9, UI_BLUE, tfHan);
+        TextView apply = label(tr("preset.apply"), 9, UI_BLUE, tfHan);
         apply.setGravity(android.view.Gravity.CENTER);
         apply.setOnClickListener(v -> {
             final java.util.ArrayList<Integer> out = new java.util.ArrayList<>();
             for (int i = 0; i < picked.length; ++i) if (picked[i]) out.add(i);
             if (out.isEmpty()) {
-                showInAppToast("先勾选要应用的照片");
+                showInAppToast(tr("preset.select_at_least_one_photo"));
                 return;
             }
             dialog.dismiss();
@@ -8404,7 +8427,7 @@ public class MainActivity extends Activity {
             });
         }
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
         close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
@@ -8503,9 +8526,9 @@ public class MainActivity extends Activity {
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
-        head.addView(mixedLabel("FEEDBACK / 反馈与交流", 8, UI_BLUE),
+        head.addView(mixedLabel(tr("feedback.feedback_community"), 8, UI_BLUE),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
         close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
@@ -8515,10 +8538,10 @@ public class MainActivity extends Activity {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(16), 0, dp(16), 4);
-        TextView title = label("遇到问题，或者想聊冲印？", 17, UI_INK, tfHan);
+        TextView title = label(tr("feedback.need_help_or_want_to"), 17, UI_INK, tfHan);
         body.addView(title);
-        TextView copyText = label("渲染报错、导出异常、想要某支胶片，直接发在群里。"
-                + "问题能复现的话，把「复制错误信息」的内容一起贴上。", 10, UI_MUTED, tfHan);
+        TextView copyText = label(tr("feedback.use_the_group_to_report")
+                + tr("feedback.if_you_can_reproduce_the"), 10, UI_MUTED, tfHan);
         copyText.setLineSpacing(dp(4), 1f);
         LinearLayout.LayoutParams copyTextLp = new LinearLayout.LayoutParams(-1, -2);
         copyTextLp.topMargin = dp(9);
@@ -8542,12 +8565,12 @@ public class MainActivity extends Activity {
         final LinearLayout wxText = new LinearLayout(this);
         wxText.setOrientation(LinearLayout.VERTICAL);
         wxText.setPadding(dp(14), 0, 0, 0);
-        wxText.addView(label("微信群", 15, UI_INK, tfHan));
-        TextView wxHint = label("微信扫码加入", 9.5f, UI_MUTED, tfHan);
+        wxText.addView(label(tr("feedback.wechat_group"), 15, UI_INK, tfHan));
+        TextView wxHint = label(tr("feedback.scan_with_wechat_to_join"), 9.5f, UI_MUTED, tfHan);
         LinearLayout.LayoutParams wxHintLp = new LinearLayout.LayoutParams(-1, -2);
         wxHintLp.topMargin = dp(4);
         wxText.addView(wxHint, wxHintLp);
-        TextView wxHint2 = label("二维码会过期，失效就用下面的 QQ 群", 8.5f, UI_MUTED, tfHan);
+        TextView wxHint2 = label(tr("feedback.if_the_qr_code_has"), 8.5f, UI_MUTED, tfHan);
         wxHint2.setLineSpacing(dp(3), 1f);
         LinearLayout.LayoutParams wxHint2Lp = new LinearLayout.LayoutParams(-1, -2);
         wxHint2Lp.topMargin = dp(4);
@@ -8566,7 +8589,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams numberLp = new LinearLayout.LayoutParams(-1, -2);
         numberLp.topMargin = dp(16);
         body.addView(number, numberLp);
-        TextView hint = label("QQ 群号，点下面按钮复制后搜索加入", 9, UI_MUTED, tfHan);
+        TextView hint = label(tr("feedback.copy_the_group_id_below"), 9, UI_MUTED, tfHan);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(-1, -2);
         hintLp.topMargin = dp(5);
         body.addView(hint, hintLp);
@@ -8576,7 +8599,7 @@ public class MainActivity extends Activity {
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setPadding(dp(16), dp(16), dp(16), dp(16));
 
-        TextView open = label("打开 QQ", 10, UI_BLUE, tfHan);
+        TextView open = label(tr("feedback.open_qq"), 10, UI_BLUE, tfHan);
         open.setGravity(android.view.Gravity.CENTER);
         android.graphics.drawable.GradientDrawable openBg = new android.graphics.drawable.GradientDrawable();
         openBg.setColor(UI_PAPER);
@@ -8587,35 +8610,35 @@ public class MainActivity extends Activity {
         openLp.rightMargin = dp(8);
         actions.addView(open, openLp);
 
-        TextView copy = label("复制群号", 10, UI_PAPER, tfHan);
+        TextView copy = label(tr("feedback.copy_group_id"), 10, UI_PAPER, tfHan);
         copy.setGravity(android.view.Gravity.CENTER);
         android.graphics.drawable.GradientDrawable copyBg = new android.graphics.drawable.GradientDrawable();
         copyBg.setColor(UI_BLUE);
         copy.setBackground(copyBg);
         copy.setOnClickListener(v -> {
-            if (copyToClipboard("SpektraLab 反馈群", QQ_GROUP)) {
-                copy.setText("已复制");
+            if (copyToClipboard(tr("feedback.spektralab_feedback_group"), QQ_GROUP)) {
+                copy.setText(tr("feedback.copied"));
             } else {
-                copy.setText("复制失败 · 请长按");
+                copy.setText(tr("feedback.could_not_copy_press_and"));
             }
         });
         copy.setLongClickable(true);
         copy.setOnLongClickListener(v -> {
-            copyToClipboard("SpektraLab 反馈群", QQ_GROUP);
+            copyToClipboard(tr("feedback.spektralab_feedback_group"), QQ_GROUP);
             return true;
         });
         actions.addView(copy, new LinearLayout.LayoutParams(0, dp(42), 1.45f));
         card.addView(actions, new LinearLayout.LayoutParams(-1, -2));
 
         if (auto) {
-            TextView mute = label("不再自动弹出", 8.5f, UI_MUTED, tfHan);
+            TextView mute = label(tr("feedback.don_t_show_automatically"), 8.5f, UI_MUTED, tfHan);
             mute.setGravity(android.view.Gravity.CENTER);
             mute.setPaintFlags(mute.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
             mute.setPadding(0, 0, 0, dp(14));
             mute.setOnClickListener(v -> {
                 p.edit().putBoolean(PROMO_MUTED, true).apply();
                 dialog.dismiss();
-                showInAppToast("已关闭，仍可在「关于」里找到反馈群");
+                showInAppToast(tr("feedback.automatic_prompts_are_off_the"));
             });
             card.addView(mute, new LinearLayout.LayoutParams(-1, dp(30)));
         }
@@ -8660,8 +8683,8 @@ public class MainActivity extends Activity {
                 return;
             } catch (Throwable ignored) { }
         }
-        copyToClipboard("SpektraLab 反馈群", QQ_GROUP);
-        showInAppToast("群号已复制，请在 QQ 里搜索加入");
+        copyToClipboard(tr("feedback.spektralab_feedback_group"), QQ_GROUP);
+        showInAppToast(tr("feedback.group_id_copied_search_for"));
     }
 
     /** A paper bottom sheet in the same visual language as the cards. */
@@ -8685,6 +8708,13 @@ public class MainActivity extends Activity {
                                  String selected,
                                  java.util.function.IntPredicate selectable,
                                  java.util.function.Consumer<String> onPick) {
+        showIndexedChoiceSheet(title, labels, notes, selected == null ? -1 : labels.indexOf(selected),
+                selectable, index -> onPick.accept(labels.get(index)));
+    }
+
+    private void showIndexedChoiceSheet(String title, List<String> labels, List<String> notes,
+                                        int selected, java.util.function.IntPredicate selectable,
+                                        java.util.function.IntConsumer onPick) {
         final android.app.Dialog dialog = new android.app.Dialog(this);
         LinearLayout sheet = new LinearLayout(this);
         sheet.setOrientation(LinearLayout.VERTICAL);
@@ -8698,7 +8728,7 @@ public class MainActivity extends Activity {
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.setPadding(dp(16), 0, dp(16), 0);
         head.addView(label(title, 12, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView close = label("关闭", 9, UI_MUTED, tfHan);
+        TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
         close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
         close.setPadding(dp(12), dp(14), 0, dp(14));
         close.setOnClickListener(v -> dialog.dismiss());
@@ -8710,10 +8740,11 @@ public class MainActivity extends Activity {
         list.setOrientation(LinearLayout.VERTICAL);
         boolean anyNote = false;
         for (int index = 0; index < labels.size(); ++index) {
+            final int choice = index;
             final String name = labels.get(index);
             final String note = (notes != null && index < notes.size()) ? notes.get(index) : null;
             final boolean enabled = selectable == null || selectable.test(index);
-            final boolean active = name.equals(selected);
+            final boolean active = index == selected;
             if (note != null && !note.isEmpty()) anyNote = true;
 
             LinearLayout row = new LinearLayout(this);
@@ -8723,6 +8754,7 @@ public class MainActivity extends Activity {
             // A refused row is still readable: it is an option the user should
             // know exists, and only its tint says it is not for this film.
             row.setAlpha(enabled ? 1.0f : 0.38f);
+            row.setSelected(active);
 
             LinearLayout column = new LinearLayout(this);
             column.setOrientation(LinearLayout.VERTICAL);
@@ -8754,7 +8786,7 @@ public class MainActivity extends Activity {
                 row.setClickable(true);
                 row.setOnClickListener(v -> {
                     dialog.dismiss();
-                    onPick.accept(name);
+                    onPick.accept(choice);
                 });
             }
             list.addView(row, new LinearLayout.LayoutParams(-1, dp(note != null && !note.isEmpty() ? 62 : 49)));
@@ -8786,8 +8818,8 @@ public class MainActivity extends Activity {
         return "balanced";
     }
 
-    private static String meterName(String id) {
-        if (id == null || id.isEmpty()) return "关闭";
+    private String meterName(String id) {
+        if (id == null || id.isEmpty()) return tr("meter.off");
         for (int i = 0; i < METER_IDS.length; ++i) if (METER_IDS[i].equals(id)) return METER_NAMES[i];
         return id;
     }
@@ -8802,7 +8834,7 @@ public class MainActivity extends Activity {
             notes.add(METER_NOTES[i]);
             if (METER_IDS[i].equals(meterMethod == null ? "" : meterMethod)) at = i;
         }
-        showChoiceSheet("测光方式（决定整幅的曝光）", labels, notes, labels.get(at), null,
+        showChoiceSheet(tr("film.metering_mode_sets_overall_exposure"), labels, notes, labels.get(at), null,
                 picked -> {
                     final int index = labels.indexOf(picked);
                     if (index >= 0) setMeterMethod(METER_IDS[index]);
@@ -8861,7 +8893,7 @@ public class MainActivity extends Activity {
         if (emptyState != null && beforeBitmap != null) emptyState.setVisibility(View.GONE);
         if (rawState != null) rawState.setVisibility(View.GONE);
         if (statusText != null && beforeBitmap != null) {
-            statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+            statusText.setText(tr("film.original_ungraded_raw_preview_choose"));
         }
         if (histogram != null) histogram.setBitmap(null);
         setOriginalVisual(true);
@@ -8959,7 +8991,7 @@ public class MainActivity extends Activity {
 
     private void toggleOriginal() {
         if (beforeBitmap == null) {
-            showInAppToast("先导入一张照片");
+            showInAppToast(tr("film.import_a_photo_first"));
             return;
         }
         // An unrendered import is already the original: pressing this must not
@@ -8967,7 +8999,7 @@ public class MainActivity extends Activity {
         // a frame reopened on 原图 carries its look but no bitmap, and it has to
         // be able to come back to the developed side.
         if (showingOriginal && lastRenderedBitmap == null && filmStock == null) {
-            showInAppToast("选一张胶片后才会渲染");
+            showInAppToast(tr("film.choose_a_film_to_render"));
             return;
         }
         showingOriginal = !showingOriginal;
@@ -8983,7 +9015,7 @@ public class MainActivity extends Activity {
             // the time it shows you the frame; here the film and the paper are
             // what develop it. (Calling it a negative would be wrong twice
             // over: it is positive, and it is not film.)
-            statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+            statusText.setText(tr("film.original_ungraded_raw_preview_choose"));
             setOriginalVisual(true);
             updateFilmSelection();
             // **The original is not the render.** Every slider on 光学 / 冲印
@@ -9064,9 +9096,9 @@ public class MainActivity extends Activity {
         return i < 0 ? 0.0 : EDGE_RATIOS[i];
     }
 
-    private static String gateLabel(String id) {
+    private String gateLabel(String id) {
         final int i = gateIndex(id);
-        return i < 0 ? "片门" : EDGE_LABELS[i];
+        return i < 0 ? tr("editor.film_gate") : EDGE_LABELS[i];
     }
 
     /** "16:9" for the shapes people name, two decimals for the rest. */
@@ -9127,12 +9159,12 @@ public class MainActivity extends Activity {
         final int cw = cutWide ? (int) Math.round(h * want) : w;
         final int ch = cutWide ? h : (int) Math.round(w / want);
         final int loss = (int) Math.round(100.0 * (1.0 - (cutWide ? (double) cw / w : (double) ch / h)));
-        showActionSheet("预设用的是 " + name + " 片边",
-                "这张照片是 " + ratioText(have) + "，" + name + " 的片门是 " + ratioText(want) + "。\n\n"
-                + "裁成片门能还原他的片边，但要" + (cutWide ? "从左右" : "从上下") + "裁掉 " + loss
-                + "%（" + w + "×" + h + " → " + cw + "×" + ch + "）。\n"
-                + "不裁就只套颜色和参数，片边关闭。",
-                new String[]{"裁成 " + name, "只套参数（片边关闭）", "取消"},
+        showActionSheet(tr("editor.this_preset_uses_a") + name + tr("editor.film_border"),
+                tr("editor.photo_ratio") + ratioText(have) + ". " + name + tr("editor.gate_ratio") + ratioText(want) + ".\n\n"
+                + tr("editor.matching_the_preset_border_requires") + (cutWide ? tr("editor.horizontal") : tr("editor.vertical")) + tr("editor.cropping_of") + loss
+                + "% (" + w + "×" + h + " → " + cw + "×" + ch + ").\n"
+                + tr("editor.without_cropping_only_the_settings"),
+                new String[]{tr("editor.crop_to") + name, tr("editor.apply_settings_without_border"), tr("editor.cancel")},
                 which -> {
                     if (which == 0) {
                         applyLook(l);
@@ -9143,7 +9175,7 @@ public class MainActivity extends Activity {
                         applyLook(l);
                         finishForeignLook(l, done, true);
                     } else {
-                        showInAppToast("没有套用");
+                        showInAppToast(tr("editor.settings_not_applied"));
                     }
                 });
     }
@@ -9157,7 +9189,7 @@ public class MainActivity extends Activity {
             setOriginalVisual(false);
             renderImage();
         }
-        showInAppToast(dropped || rebateClosed ? done + " · 片边已关闭" : done);
+        showInAppToast(dropped || rebateClosed ? done + tr("editor.film_border_off") : done);
     }
 
     private boolean refreshEdgeFormats() {
@@ -9208,12 +9240,12 @@ public class MainActivity extends Activity {
                 // The page's controls dim with the switch; without this the
                 // rows stay lit while the feature they govern is off.
                 refreshEdgeGroups();
-                if (!quiet) showInAppToast("这张照片的比例与任何片门都不符，片边已关闭");
+                if (!quiet) showInAppToast(tr("editor.no_film_gate_matches_this"));
             }
         }
         if (edgeValue != null) {
             final int selected = edgeIds.indexOf(overscanFormat);
-            edgeValue.setText(selected >= 0 ? edgeLabels.get(selected) : "无可用片门");
+            edgeValue.setText(selected >= 0 ? edgeLabels.get(selected) : tr("editor.no_compatible_film_gate"));
         }
         try {
             DebugSink.text("overscan", "aspect=" + aspect + " gates=" + edgeIds
@@ -9678,7 +9710,7 @@ public class MainActivity extends Activity {
             // over, each time allocating a fresh set of planes. Ten taps of that
             // is what put the launcher out of memory.
             if (rendering) {
-                statusText.setText("渲染中…（这是胶片层参数，约 1–2 秒）");
+                statusText.setText(tr("print.rendering_film_settings_about_1"));
             }
             onChange.accept(next);
         });
@@ -10058,7 +10090,7 @@ public class MainActivity extends Activity {
      */
     private void showImportMenu() {
         if (batchExportRunning) {
-            showInAppToast("批量导出中，等它跑完再导入");
+            showInAppToast(tr("file.wait_for_batch_export_to"));
             return;
         }
         // **Two pickers, and only one of them returns the file on disk.**
@@ -10070,11 +10102,11 @@ public class MainActivity extends Activity {
         // action with `*/*` plus an EXTRA_MIME_TYPES list goes to the document
         // browser, which returns the original bytes. So the file entry is the
         // one that keeps the capture fields, and it has to say so.
-        showActionSheet("导入照片",
-                "要保留拍摄参数（EXIF），请选第二项：文件管理器读的是磁盘上的原文件。"
-                        + "系统相册选择器会先复制一份，部分机型的副本会丢掉这些信息。", new String[]{
-                "从相册选择（快 · 可能丢拍摄参数）",
-                "RAW / JPEG / HEIC · 任意文件（保留 EXIF）"
+        showActionSheet(tr("file.import_photos"),
+                tr("file.to_keep_shooting_metadata_exif")
+                        + tr("file.the_system_photo_picker_may"), new String[]{
+                tr("file.photo_library_fast_may_lose"),
+                tr("file.file_browser_raw_jpeg_heic")
         }, which -> {
             // A deliberate pick is a *new* photograph, not a chip coming back.
             // Cleared here so a chip whose file disappeared cannot leave the
@@ -10096,7 +10128,7 @@ public class MainActivity extends Activity {
      */
     private void shareLastExport() {
         if (lastExportUri == null) {
-            showInAppToast("还没有导出过文件");
+            showInAppToast(tr("file.no_files_have_been_exported"));
             return;
         }
         try {
@@ -10104,9 +10136,9 @@ public class MainActivity extends Activity {
             send.setType(lastExportMime == null ? "image/*" : lastExportMime);
             send.putExtra(Intent.EXTRA_STREAM, lastExportUri);
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(send, "发送到"));
+            startActivity(Intent.createChooser(send, tr("file.share_to")));
         } catch (Throwable t) {
-            showErrorDialog("无法发送", describe(t));
+            showErrorDialog(tr("file.could_not_share"), describe(t));
         }
     }
 
@@ -10114,22 +10146,22 @@ public class MainActivity extends Activity {
         if (batchExportRunning) {
             // **The only cancel.** A batch can run for ten minutes; without a
             // way out the user's choice is to kill the app.
-            showActionSheet("批量导出中", "正在一张张导出。停止会保留已经写好的那些。",
-                    new String[]{"停止批量导出", "继续"}, which -> {
+            showActionSheet(tr("file.batch_export_in_progress"), tr("file.photos_are_exported_one_at"),
+                    new String[]{tr("file.stop_batch_export"), tr("file.continue")}, which -> {
                         if (which == 0) batchExportAbort = true;
                     });
             return;
         }
         if (session == null) {
-            showInAppToast("先导入一张照片");
+            showInAppToast(tr("film.import_a_photo_first"));
             return;
         }
         final String full = (sourceWidth > 0 && sourceHeight > 0)
-                ? "全尺寸 " + sourceWidth + "×" + sourceHeight : "全尺寸";
+                ? tr("file.full_size") + sourceWidth + "×" + sourceHeight : tr("file.full_size_2");
         // No ceiling to warn about: the export renders the frame that was
         // imported, and that may be the file's own size. What is worth saying
         // is that it takes time, not that it will be refused.
-        final String fullNote = "（原图 · 大尺寸会慢）";
+        final String fullNote = tr("file.original_dimensions_large_images_are");
         // What the driver says it can take, as opposed to what this build
         // currently lets through. The two were only ever visible as one number,
         // and it was always the smaller -- so a phone reporting 2 GiB of
@@ -10139,11 +10171,10 @@ public class MainActivity extends Activity {
         if (probe.maxStorageBufferRange > 0) {
             final double driverMp = probe.maxStorageBufferRange / 12.0 * 0.80 / 1e6;
             final double budgetMp = maxImportPixels() / 1e6;
-            driverLine = String.format(java.util.Locale.US,
-                    "驱动单缓冲 %.0f MiB（分块后不再限制单帧）；本机按可用内存建议 %.1f MP",
+            driverLine = AppLanguage.format("file.driver_buffer_limit_0f_mib",
                     probe.maxStorageBufferRange / 1048576.0, budgetMp);
         } else {
-            driverLine = probe.valid ? "驱动未报单缓冲上限" : "设备信息读取失败";
+            driverLine = probe.valid ? tr("file.the_driver_did_not_report") : tr("file.could_not_read_device_information");
         };
         // One sheet, six rows. It was two -- format, then size -- and the first
         // thing that did was hide "全尺寸（原图）" behind a tap that nobody
@@ -10160,24 +10191,24 @@ public class MainActivity extends Activity {
         // known Android bug. Rather than let that read as our defect, the row
         // and the note name the destination and close the question.
         final String note = (limited
-                ? "TIFF 是 16 位；"
-                  + "导出后点导出旁边的「分享」，分享到 Lightroom 即可使用（手机相册多半不显示 TIFF）。JPEG 哪儿都能看。"
-                : "TIFF 是 16 位；"
-                  + "导出后点导出旁边的「分享」，分享到 Lightroom 即可使用（手机相册多半不显示 TIFF）。JPEG 是 8 位、哪儿都能看")
+                ? tr("file.tiff_uses_16_bit_color")
+                  + tr("file.after_exporting_use_share_next")
+                : tr("file.tiff_uses_16_bit_color")
+                  + tr("file.after_exporting_use_share_next_2"))
                 + "\n" + driverLine
-                + "\nDNG 只给电脑上的 Lightroom / ACR 用：手机版 Lr 打不开是已知问题，"
-                  + "遇到报错不必反馈。";
+                + tr("file.dng_is_for_desktop_lightroom")
+                  + tr("file.the_mobile_version_of_lightroom");
         final boolean batchable = frames.size() > 1;
         final java.util.ArrayList<String> rows = new java.util.ArrayList<>();
-        if (batchable) rows.add("批量 · 全部 " + frames.size() + " 张（JPEG · 全尺寸）");
-        rows.add("JPEG · 实时画质");
-        rows.add("JPEG · 预览画质 · 长边 3400");
-        rows.add("JPEG · 全尺寸（原图）");
-        rows.add("TIFF 16 位 · 实时画质");
-        rows.add("TIFF 16 位 · 预览画质 · 长边 3400");
-        rows.add("TIFF 16 位 · 全尺寸（原图）");
-        rows.add("DNG · 全尺寸（电脑用 · 手机版打不开）");
-        showActionSheet("导出照片", note, rows.toArray(new String[0]), which0 -> {
+        if (batchable) rows.add(tr("file.export_all") + frames.size() + tr("file.photos_full_size_jpeg"));
+        rows.add(tr("file.jpeg_live_quality"));
+        rows.add(tr("file.jpeg_preview_quality_3400_px"));
+        rows.add(tr("file.jpeg_full_size"));
+        rows.add(tr("file.16_bit_tiff_live_quality"));
+        rows.add(tr("file.16_bit_tiff_preview_quality"));
+        rows.add(tr("file.16_bit_tiff_full_size"));
+        rows.add(tr("file.dng_full_size_desktop_only"));
+        showActionSheet(tr("file.export_photo"), note, rows.toArray(new String[0]), which0 -> {
             int which = which0;
             if (batchable) {
                 if (which == 0) {
@@ -10870,18 +10901,18 @@ public class MainActivity extends Activity {
         // used to say "memory may run out and the app will disappear" without
         // ever saying how much; on a 50 MP file that is 600 MB of float and the
         // answer decides whether the tap is a coin flip.
-        final String budgetMessage = "原图 " + w + "×" + h + "（" + megapixels(w, h) + " MP）。"
-                + "\n\n按原图：渲染约 " + Math.max(5, (int) Math.round((double) w * h / 1e6 * 1.4))
-                + " 秒；交给 GPU 需要约 " + nativeMb + " MB 连续内存，本机现在可用 "
-                + availMb + " MB。"
+        final String budgetMessage = tr("import.original") + w + "×" + h + " (" + megapixels(w, h) + " MP)."
+                + tr("import.full_size_renders_in_about") + Math.max(5, (int) Math.round((double) w * h / 1e6 * 1.4))
+                + tr("import.s_the_gpu_needs_about") + nativeMb + tr("import.mb_of_contiguous_memory_available")
+                + availMb + " MB."
                 + (nativeMb * 10L > availMb * 8L
-                        ? "\n按原图很可能被系统回收（应用直接消失，不报错）。" : "")
-                + "\n\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
-                + "\n\n本机按可用内存建议约 "
+                        ? tr("import.android_may_close_the_app") : "")
+                + tr("import.resize_to") + sw + "×" + sh + tr("import.faster_and_more_reliable_with")
+                + tr("import.recommended_for_available_memory_about")
                 + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
-                + (overscanOn ? "（已按片边预留画布）" : "") + "。";
-        showActionSheet("按多大的尺寸导入", budgetMessage, new String[]{
-                "按原图 " + w + "×" + h, "缩到 " + sw + "×" + sh, "取消"
+                + (overscanOn ? tr("import.includes_space_for_the_film") : "") + ".";
+        showActionSheet(tr("import.choose_import_size"), budgetMessage, new String[]{
+                tr("import.full_size") + w + "×" + h, tr("import.resize_to_2") + sw + "×" + sh, tr("editor.cancel")
         }, which -> {
             if (which == 0) {
                 importAtNativeSize = true;
@@ -10910,17 +10941,17 @@ public class MainActivity extends Activity {
         // are what the decision actually turns on.
         final long needBytes = (long) w * (long) h * 100L;
         final long availBytes = availableMemoryBytes();
-        final String message = "这张 RAW 是 " + w + "×" + h + "（" + megapixels(w, h) + " MP）。"
-                + "\n\n按原图：需要约 " + String.format(java.util.Locale.US, "%.1f", needBytes / 1e9)
-                + " GB 内存（解码 + 显存），本机当前可用 "
-                + String.format(java.util.Locale.US, "%.1f", availBytes / 1e9) + " GB；"
-                + "不够时会直接闪退，渲染约 " + seconds + " 秒。"
-                + "\n缩到 " + sw + "×" + sh + "：更快更稳，细节会少一些。"
-                + "\n\n本机按可用内存建议约 "
+        final String message = tr("import.raw_size") + w + "×" + h + " (" + megapixels(w, h) + " MP)."
+                + tr("import.full_size_needs_about") + String.format(java.util.Locale.US, "%.1f", needBytes / 1e9)
+                + tr("import.gb_for_decoding_and_rendering")
+                + String.format(java.util.Locale.US, "%.1f", availBytes / 1e9) + " GB. "
+                + tr("import.the_app_may_close_if") + seconds + tr("import.s")
+                + tr("import.resize_to_3") + sw + "×" + sh + tr("import.faster_and_more_reliable_with")
+                + tr("import.recommended_for_available_memory_about")
                 + String.format(java.util.Locale.US, "%.1f", capPixels / 1e6) + " MP"
-                + (overscanOn ? "（已按片边预留画布）" : "") + "。";
-        showActionSheet("按多大的尺寸导入", message, new String[]{
-                "按原图 " + w + "×" + h, "缩到 " + sw + "×" + sh, "取消"
+                + (overscanOn ? tr("import.includes_space_for_the_film") : "") + ".";
+        showActionSheet(tr("import.choose_import_size"), message, new String[]{
+                tr("import.full_size") + w + "×" + h, tr("import.resize_to_2") + sw + "×" + sh, tr("editor.cancel")
         }, which -> {
             if (which == 0) {
                 importAtNativeSize = true;
@@ -10966,8 +10997,8 @@ public class MainActivity extends Activity {
         final long area = (long) w * (long) h;
         final long suggest = maxImportPixels();
         if (area <= suggest) return "";
-        return " · " + megapixels(w, h) + " MP（建议 "
-                + String.format(java.util.Locale.US, "%.1f", suggest / 1e6) + " MP，渲染会慢）";
+        return " · " + megapixels(w, h) + tr("import.mp_recommended")
+                + String.format(java.util.Locale.US, "%.1f", suggest / 1e6) + tr("import.mp_rendering_will_be_slower");
     }
 
     private static String megapixels(int w, int h) {
@@ -11127,18 +11158,18 @@ public class MainActivity extends Activity {
         final int currentBand = debugBandCap();
         final java.util.List<String> labels = new java.util.ArrayList<>();
         for (int v : caps)
-            labels.add((v == currentCap ? "· " : "") + (v == 0 ? "像素上限：按设备自动" : "像素上限：" + v + " MP"));
+            labels.add((v == currentCap ? "· " : "") + (v == 0 ? tr("import.pixel_cap_automatic") : tr("import.pixel_cap") + v + " MP"));
         for (int v : sims)
-            labels.add((v == currentSim ? "· " : "") + (v == 0 ? "模拟驱动绑定：关闭" : "模拟驱动绑定：" + v + " MiB"));
+            labels.add((v == currentSim ? "· " : "") + (v == 0 ? tr("import.simulated_driver_buffer_limit_off") : tr("import.simulated_driver_buffer_limit") + v + " MiB"));
         for (int v : bands)
-            labels.add((v == currentBand ? "· " : "") + (v == 0 ? "分带上限：引擎默认（2M 元素）"
-                    : (v >= 100000000 ? "分带上限：关闭（一条带 = 整幅）" : "分带上限：" + (v / 1000000) + "M 元素")));
+            labels.add((v == currentBand ? "· " : "") + (v == 0 ? tr("import.band_limit_engine_default_2m")
+                    : (v >= 100000000 ? tr("import.band_limit_off_one_band") : tr("import.band_limit") + (v / 1000000) + tr("import.m_elements"))));
         final long memoryCap = DeviceProbe.maxPixelsByMemory(availableMemoryBytes());
-        final String note = "像素上限只改「按绑定范围算」的那一道；内存上限（这台机器约 "
+        final String note = tr("import.the_pixel_cap_only_affects")
                 + String.format(java.util.Locale.US, "%.0f", memoryCap / 1e6)
-                + " MP）和硬上限 42 MP 仍然有效。模拟驱动绑定让引擎按小绑定分带渲染，"
-                + "改完要重启应用才生效。两者一起开 = 假装自己是 128 MiB 的机型，但允许导入更大的帧。";
-        showActionSheet("调试：像素上限 / 驱动绑定", note, labels.toArray(new String[0]), which -> {
+                + tr("import.mp_and_the_hard_cap")
+                + tr("import.restart_the_app_to_apply");
+        showActionSheet(tr("settings.debug_pixel_cap_and_buffer"), note, labels.toArray(new String[0]), which -> {
             if (which < caps.length) setDebugPixelCapMp(caps[which]);
             else if (which < caps.length + sims.length) setDebugStorageLimitMib(sims[which - caps.length]);
             else setDebugBandCap(bands[which - caps.length - sims.length]);
@@ -11148,19 +11179,19 @@ public class MainActivity extends Activity {
 
     private void showAbout() {
         probeNow();
-        final String version = UpdateCheck.versionName(this) + "（" + UpdateCheck.versionCode(this) + "）";
+        final String version = UpdateCheck.versionName(this) + " (" + UpdateCheck.versionCode(this) + ")";
         final int debugMp = debugPixelCapMp();
         final int debugSim = debugStorageLimitMib();
         final int debugBand = debugBandCap();
         final String debugLine = (debugMp == 0 && debugSim == 0 && appliedSimMib == 0 && debugBand == 0) ? ""
-                : "\n调试：像素上限 " + (debugMp > 0 ? debugMp + " MP" : "按设备")
-                  + "，实际生效 " + String.format(java.util.Locale.US, "%.1f", maxImportPixels(false) / 1e6) + " MP"
-                  + (debugSim > 0 ? "；模拟绑定 " + debugSim + " MiB" : "")
-                  + (debugSim != appliedSimMib ? "（重启后生效）" : "")
-                  + (debugBand > 0 ? "；分带上限 " + (debugBand >= 100000000 ? "关闭" : (debugBand / 1000000) + "M") : "");
+                : tr("settings.debug_pixel_cap") + (debugMp > 0 ? debugMp + " MP" : tr("settings.automatic"))
+                  + tr("settings.effective_limit") + String.format(java.util.Locale.US, "%.1f", maxImportPixels(false) / 1e6) + " MP"
+                  + (debugSim > 0 ? tr("settings.simulated_buffer_limit") + debugSim + " MiB" : "")
+                  + (debugSim != appliedSimMib ? tr("settings.takes_effect_after_restart") : "")
+                  + (debugBand > 0 ? tr("settings.band_limit") + (debugBand >= 100000000 ? tr("settings.off") : (debugBand / 1000000) + "M") : "");
         final String details = probe.describe() + debugLine
-                + "\n\n引擎：SpektraLab / spektrafilm（GPL-3.0，Andrea Volpato 的光谱胶片模型）"
-                + "\n移植：github.com/SAINTTaiYi/SpektraLab-Android";
+                + tr("settings.engine_spektralab_spektrafilm_gpl_3")
+                + tr("settings.android_port_github_com_sainttaiyi");
         // The report switch lives here rather than in a settings screen: it is
         // one line of one dialog, and it is the only thing this app sends that
         // the user did not ask for. The label carries the state, because the
@@ -11168,23 +11199,26 @@ public class MainActivity extends Activity {
         final boolean reporting = DeviceReport.enabled(this);
         final boolean dark = getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false);
         showActionSheet("SpektraLab Android " + version, details, new String[]{
-                "检查更新",
-                "预设（保存 / 分享参数）",
+                "Language · " + AppLanguage.current().name,
+                tr("settings.check_for_updates"),
+                tr("settings.presets_save_or_share_settings"),
                 // **Askable, not only post-mortem.** A hang, a wrong picture or a
                 // render that "took forever" leaves nothing on disk while the
                 // process is alive -- and those are the reports that arrive as a
                 // screenshot. One tap copies the same ring a crash would have
                 // left behind.
-                "导出最近的步骤（上传给开发者）",
-                reporting ? "驱动报告：开（每周一次，只报机型和 GPU）" : "驱动报告：关",
-                dark ? "界面：暗黑 · 黑橙（切换后重启生效）" : "界面：蓝白（切换后重启生效）",
-                "反馈群（微信群 / QQ 群）", "打开 GitHub", "关闭"
+                tr("settings.send_recent_activity_log_to"),
+                reporting ? tr("settings.driver_report_on_weekly_model") : tr("settings.driver_report_off"),
+                dark ? tr("settings.theme_dark_orange_restart_to") : tr("settings.theme_blue_and_white_restart"),
+                tr("settings.feedback_groups_wechat_qq"), tr("settings.open_github")
         }, which -> {
             if (which == 0) {
-                UpdateCheck.check(this, true);
+                showLanguagePicker();
             } else if (which == 1) {
-                showPresetsPanel();
+                UpdateCheck.check(this, true);
             } else if (which == 2) {
+                showPresetsPanel();
+            } else if (which == 3) {
                 // **The only upload the user starts by hand**, and the only way
                 // the ring leaves the phone when nothing has gone wrong yet.
                 final String ring = CrashTrail.snapshot(this);
@@ -11192,19 +11226,19 @@ public class MainActivity extends Activity {
                         + "steps=" + DebugSink.ringSize() + "\n";
                 new Thread(() -> {
                     final boolean ok = DebugSink.report("steps", head,
-                            ring.isEmpty() ? "(这次还没有记录)" : ring);
+                            ring.isEmpty() ? tr("settings.no_activity_logged_yet") : ring);
                     runOnUiThread(() -> showTextDialog(
-                            ok ? "已上传最近的步骤" : "上传失败",
-                            "记录号 " + DebugSink.REF + "\n\n"
-                            + (ring.isEmpty() ? "(这次还没有记录)" : ring)
-                            + (ok ? "\n已经上传，不用再发给我了。"
-                                  : "\n网络没通，请把这段复制发给我。"),
+                            ok ? tr("settings.recent_activity_uploaded") : tr("settings.upload_failed"),
+                            tr("settings.report_id") + DebugSink.REF + "\n\n"
+                            + (ring.isEmpty() ? tr("settings.no_activity_logged_yet") : ring)
+                            + (ok ? tr("settings.upload_complete_no_need_to")
+                                  : tr("settings.the_network_was_unavailable_copy")),
                             false));
                 }, "SpektraLab-report").start();
-            } else if (which == 3) {
+            } else if (which == 4) {
                 DeviceReport.setEnabled(this, !reporting);
                 showAbout();
-            } else if (which == 4) {
+            } else if (which == 5) {
                 // The palette is read once in onCreate; a restart is the whole
                 // rebuild, and the current session's state is already saved on
                 // pause, so nothing the user did is lost by asking for it.
@@ -11214,17 +11248,39 @@ public class MainActivity extends Activity {
                 // `onPick.accept(index)` on every row, so a null listener turned
                 // each tap on 「好」 into a NullPointerException -- a hundred
                 // sessions in a week.
-                showActionSheet("界面已切换", "退出应用再打开，新的界面就会生效。",
-                        new String[]{"好"}, done -> { });
-            } else if (which == 5) {
-                showFeedbackGroup(false);
+                showActionSheet(tr("settings.theme_changed"), tr("settings.close_and_reopen_the_app"),
+                        new String[]{tr("settings.ok")}, done -> { });
             } else if (which == 6) {
+                showFeedbackGroup(false);
+            } else if (which == 7) {
                 try {
                     startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                             android.net.Uri.parse("https://github.com/SAINTTaiYi/SpektraLab-Android/releases/latest")));
                 } catch (Throwable ignored) { }
             }
         }, this::showPixelCapSheet);
+    }
+
+    private void showLanguagePicker() {
+        final List<AppLanguage.Language> languages = AppLanguage.available();
+        final int selected = languages.indexOf(AppLanguage.current());
+        final List<String> names = new ArrayList<>();
+        for (AppLanguage.Language language : languages) names.add(language.name);
+        final List<String> notes = new ArrayList<>();
+        for (AppLanguage.Language language : languages) {
+            notes.add(java.util.Collections.frequency(names, language.name) > 1 ? language.tag : null);
+        }
+        showIndexedChoiceSheet(tr("settings.app_language"), names, notes, selected, null, which -> {
+            if (which == selected) return;
+            if (rendering || batchExportRunning
+                    || (exportProgressBar != null && exportProgressBar.getVisibility() == View.VISIBLE)) {
+                showInAppToast(tr("settings.wait_for_the_current_render"));
+                return;
+            }
+            // onPause saves the current frame edits before the new activity opens.
+            AppLanguage.select(this, languages.get(which));
+            recreate();
+        });
     }
 
     /** Reads assets/resources/stock_catalog.json (generated from the engine's profiles). */
@@ -11260,14 +11316,14 @@ public class MainActivity extends Activity {
             StringBuilder label = new StringBuilder(name);
             String type = o.optString("type", "");
             String use = o.optString("use", "");
-            if ("positive".equals(type)) label.append(" · 反转");
+            if ("positive".equals(type)) label.append(tr("film.slide"));
             // A silver stock is a `negative` in this catalogue like any other,
             // so without this the four black-and-white films wear "· 负片"
             // and nothing says which ones they are. "Black and white" is the
             // only label a user looks for them by.
-            else if (isMonochromeStock(id)) label.append(" · 黑白");
-            else if ("negative".equals(type)) label.append(" · 负片");
-            if ("cine".equals(use)) label.append(" · 电影");
+            else if (isMonochromeStock(id)) label.append(tr("film.b_w"));
+            else if ("negative".equals(type)) label.append(tr("import.negative"));
+            if ("cine".equals(use)) label.append(tr("import.cinema"));
             ids.add(id);
             labels.add(label.toString());
             if (types != null) types.add(type);
@@ -11313,7 +11369,7 @@ public class MainActivity extends Activity {
         chain.add(new Intent(Intent.ACTION_GET_CONTENT)
                 .addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"));
         if (!launchFirstResolvable(chain, 1)) {
-            showInAppToast("本机没有相册选择器；请改用「RAW / JPEG / HEIC」那一项");
+            showInAppToast(tr("import.no_system_photo_picker_found"));
         }
     }
 
@@ -11398,7 +11454,7 @@ public class MainActivity extends Activity {
         content.putExtra(Intent.EXTRA_MIME_TYPES, types);
         chain.add(content);
         if (!launchFirstResolvable(chain, 1)) {
-            showInAppToast("本机没有可用的文件选择器");
+            showInAppToast(tr("import.no_file_picker_is_available"));
         }
     }
 
@@ -11428,7 +11484,7 @@ public class MainActivity extends Activity {
         }
         if (picked.isEmpty()) {
             try { DebugSink.text("picker", "RESULT_OK with no data"); } catch (Throwable ignored) { }
-            showInAppToast("没有拿到图片（选择器返回空）。请点「导入」→「从文件管理器选择」再试一次");
+            showInAppToast(tr("import.the_picker_did_not_return"));
             return;
         }
         if (picked.size() == 1) {
@@ -11466,12 +11522,12 @@ public class MainActivity extends Activity {
         }
         if (persisted) { loadImage(uri); return; }
 
-        showInAppToast("正在把照片复制到应用目录…");
+        showInAppToast(tr("import.copying_photos_into_app_storage"));
         new Thread(() -> {
             final Uri copy = privateCopy(uri);
             runOnUiThread(() -> {
                 if (copy == null) {
-                    showErrorDialog("导入失败", "读取或复制这个文件失败了。请换「从相册选择」再试一次。");
+                    showErrorDialog(tr("import.import_failed"), tr("import.could_not_read_or_copy"));
                     return;
                 }
                 loadImage(copy);
@@ -11567,10 +11623,10 @@ public class MainActivity extends Activity {
             // only way out was 「关闭」, which changed nothing. Removed once,
             // here, and the strip is honest afterwards.
             final int dead = currentFrame;
-            showErrorDialog("照片已不可访问",
-                    "这张照片的读取权限已经失效——系统收回了文件选择器给的临时授权。\n\n"
-                    + "已经从照片栏里移除。点「导入」重新选择这张照片；"
-                    + "新版本会把文件复制到应用自己的目录，之后切到别的软件回来也不会丢。");
+            showErrorDialog(tr("import.photo_access_expired"),
+                    tr("import.android_revoked_temporary_access_to")
+                    + tr("import.it_was_removed_from_the")
+                    + tr("import.the_app_will_keep_its"));
             if (dead >= 0 && dead < frames.size() && frames.get(dead).uri.equals(uri)) {
                 removeFrame(dead);
             }
@@ -11615,7 +11671,7 @@ public class MainActivity extends Activity {
             final String[] knownButUnsupported = {".heic.raw", ".iiq", ".mos"};
             for (String ext : knownButUnsupported) {
                 if (lower.endsWith(ext)) {
-                    showInAppToast("[E-1107] 暂不支持 " + ext + " 格式");
+                    showInAppToast(tr("import.e_1107_unsupported_format") + ext + tr("import.suffix"));
                     return;
                 }
             }
@@ -11723,10 +11779,10 @@ public class MainActivity extends Activity {
                 // nothing to act on. A HEIC/HEIF this phone's decoder refuses is
                 // the common case, so the dialog carries the way out instead of
                 // describing it.
-                showActionSheet("[E-1107] 这张图本机解不开",
-                        "多半是 HEIC/HEIF 或 10-bit 的图（三星、iPhone 默认存这种）。\n"
-                                + "换「从文件选择」再试一次，读不到的话请先另存为 JPEG。",
-                        new String[]{"从文件选择", "取消"}, which -> {
+                showActionSheet(tr("import.e_1107_this_device_cannot"),
+                        tr("import.it_may_be_heic_heif")
+                                + tr("import.try_the_file_browser_if"),
+                        new String[]{tr("import.file_browser"), tr("editor.cancel")}, which -> {
                             if (which == 0) pickRawFile();
                         });
                 return;
@@ -11806,10 +11862,10 @@ public class MainActivity extends Activity {
                 sourcePixels = SpektraLabEngine.allocDirect(pixelBytes)
                         .order(ByteOrder.nativeOrder());
             } catch (Throwable oom) {
-                throw new IllegalStateException("导入这张图需要 " + (pixelBytes >> 20)
-                        + " MB 内存，本机现在给不出来（可用 "
-                        + (availableMemoryBytes() >> 20) + " MB）。"
-                        + "\n\n点「导入」再选一次，这次选「缩到建议尺寸」。", oom);
+                throw new IllegalStateException(tr("import.this_image_needs") + (pixelBytes >> 20)
+                        + tr("import.mb_of_memory_the_device")
+                        + (availableMemoryBytes() >> 20) + " MB)."
+                        + tr("import.import_the_photo_again_and"), oom);
             }
             final int[] rowPixels = new int[sourceWidth];
             for (int y = 0; y < sourceHeight; y++) {
@@ -11841,7 +11897,7 @@ public class MainActivity extends Activity {
             compare.setBefore(beforeBitmap);
             if (sourceBitmap != beforeBitmap) sourceBitmap.recycle();
             sourceBitmap = null;
-            statusText.setText("Local preview");
+            statusText.setText(tr("import.local_preview"));
             setStage(1, getFileName(uri));
             rememberFrame(uri);
             rebuildFilmCards();
@@ -11874,7 +11930,7 @@ public class MainActivity extends Activity {
                 showingOriginal = true;
                 setOriginalVisual(true);
                 updateFilmSelection();
-                statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+                statusText.setText(tr("film.original_ungraded_raw_preview_choose"));
                 if (!batchExportRunning) startPrefetch();
             } else if (filmStock != null) {
                 // A chip came back with a look: develop it again rather than
@@ -11889,12 +11945,12 @@ public class MainActivity extends Activity {
                 // load -> export, with nothing in between.
                 if (!batchExportRunning) renderImage();
             } else {
-                statusText.setText("未渲染 · 选择胶片开始" + importSizeNote(sourceWidth, sourceHeight));
+                statusText.setText(tr("import.not_rendered_choose_a_film") + importSizeNote(sourceWidth, sourceHeight));
                 if (!batchExportRunning) startPrefetch();
             }
         } catch (Throwable t) {
             lastImportError = describeImportFailure(t);
-            showErrorDialog("导入失败", lastImportError);
+            showErrorDialog(tr("import.import_failed"), lastImportError);
             try { DebugSink.text("import-failed", lastImportError); } catch (Throwable ignored) { }
         }
     }
@@ -12276,7 +12332,7 @@ public class MainActivity extends Activity {
             // for a while; this one had not.
             CrashTrail.markNow(this, "import:path " + (filePath == null ? "(null)" : "ok"));
             if (filePath == null) {
-                showInAppToast("无法获取RAW文件路径");
+                showInAppToast(tr("import.could_not_get_the_raw"));
                 return;
             }
 
@@ -12291,14 +12347,14 @@ public class MainActivity extends Activity {
                     final long area = (long) dims[0] * (long) dims[1];
                     final int cap = maxImportPixels();
                     if (area > cap || Math.max(dims[0], dims[1]) > IMPORT_LONG_EDGE) {
-                        statusText.setText("选择导入尺寸");
+                        statusText.setText(tr("import.choose_import_size_2"));
                         showRawBudgetDialog(uri, dims[0], dims[1], cap);
                         return;
                     }
                 }
             }
 
-            statusText.setText("Decoding RAW…");
+            statusText.setText(tr("import.decoding_raw"));
             // **The same three things the JPEG path does, for the same three
             // reasons** — and this path had none of them, which is why a RAW
             // import kept the previous photograph everywhere except the little
@@ -12443,7 +12499,7 @@ public class MainActivity extends Activity {
                         // photo that failed to load.
                         try { DebugSink.text("raw-view", "no source frame for the canvas"); }
                         catch (Throwable ignored) { }
-                        runOnUiThread(() -> statusText.setText("RAW 已载入，原图预览未生成"));
+                        runOnUiThread(() -> statusText.setText(tr("import.raw_loaded_but_the_original")));
                     }
                     if (hasPreview) {
                         runOnUiThread(() -> {
@@ -12453,7 +12509,7 @@ public class MainActivity extends Activity {
                             rememberFrame(uri);
                             rebuildFilmCards();
                             setStep(1);
-                            statusText.setText("Raw preview");
+                             statusText.setText(tr("import.raw_preview"));
                         });
                     }
 
@@ -12528,7 +12584,7 @@ public class MainActivity extends Activity {
                         lastRenderedBitmap = null;
                         setOriginalVisual(true);
                         rebuildFilmCards();
-                        if (filmStock == null) statusText.setText("未渲染 · 选择胶片开始");
+                        if (filmStock == null) statusText.setText(tr("import.not_rendered_choose_a_film"));
                         // **No render from here.** `sourceWidth/Height` are
                         // still the previous frame's and `refreshEdgeFormats`
                         // has not run, so a render now used the old shape and
@@ -12599,7 +12655,7 @@ public class MainActivity extends Activity {
                             showingOriginal = true;
                             setOriginalVisual(true);
                             updateFilmSelection();
-                            statusText.setText("ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）");
+                            statusText.setText(tr("film.original_ungraded_raw_preview_choose"));
                             if (!batchExportRunning) startPrefetch();
                         } else if (filmStock != null) {
                             showingOriginal = false;
@@ -12616,14 +12672,14 @@ public class MainActivity extends Activity {
                     // is (E-1108, a compression this build has no decoder for)
                     // and what to change, and leave the file alone.
                     runOnUiThread(() -> {
-                        statusText.setText("RAW加载失败 " + SpkError.shortForm(said));
-                        showErrorDialog("RAW 加载失败", said);
+                        statusText.setText(tr("import.raw_load_failed") + SpkError.shortForm(said));
+                        showErrorDialog(tr("import.raw_load_failed_2"), said);
                     });
                 }
             }).start();
         } catch (Throwable t) {
             lastImportError = describeImportFailure(t);
-            showErrorDialog("RAW 加载失败", lastImportError);
+            showErrorDialog(tr("import.raw_load_failed_2"), lastImportError);
         }
     }
     
@@ -12656,8 +12712,8 @@ public class MainActivity extends Activity {
             catch (Throwable ignored) { }
             return;
         }
-        final String shownTitle = (title == null || title.isEmpty()) ? "错误" : title;
-        final String shownBody = (body == null || body.isEmpty()) ? "[E-0000] 未知错误" : body;
+        final String shownTitle = (title == null || title.isEmpty()) ? tr("import.error") : title;
+        final String shownBody = (body == null || body.isEmpty()) ? tr("import.e_0000_unknown_error") : body;
         // **One row per failure.** The ring is already in memory; sending it
         // here is what makes an error report readable without the user having
         // to copy anything, and it costs one write instead of sixty-four.
@@ -12675,10 +12731,10 @@ public class MainActivity extends Activity {
             head.setOrientation(LinearLayout.HORIZONTAL);
             head.setGravity(android.view.Gravity.CENTER_VERTICAL);
             head.setPadding(dp(16), 0, dp(16), 0);
-            TextView kicker = mixedLabel("ERROR / 错误详情", 8, UI_BLUE);
+            TextView kicker = mixedLabel(tr("import.error_details"), 8, UI_BLUE);
             kicker.setLetterSpacing(0.08f);
             head.addView(kicker, new LinearLayout.LayoutParams(0, -2, 1f));
-            TextView close = label("关闭", 9, UI_MUTED, tfHan);
+            TextView close = label(tr("crash.close"), 9, UI_MUTED, tfHan);
             close.setPaintFlags(close.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
             close.setPadding(dp(12), dp(14), 0, dp(14));
             close.setOnClickListener(v -> dialog.dismiss());
@@ -12692,7 +12748,7 @@ public class MainActivity extends Activity {
             TextView titleView = label(shownTitle, 18, UI_INK, tfHan);
             titleView.setLetterSpacing(-0.02f);
             bodyBox.addView(titleView);
-            TextView advice = label("请复制下面的完整信息，方便定位问题。记录号 " + DebugSink.REF, 10, UI_MUTED, tfHan);
+            TextView advice = label(tr("import.copy_the_full_details_below") + DebugSink.REF, 10, UI_MUTED, tfHan);
             LinearLayout.LayoutParams adviceLp = new LinearLayout.LayoutParams(-1, -2);
             adviceLp.topMargin = dp(8);
             bodyBox.addView(advice, adviceLp);
@@ -12713,7 +12769,7 @@ public class MainActivity extends Activity {
             LinearLayout actions = new LinearLayout(this);
             actions.setOrientation(LinearLayout.HORIZONTAL);
             actions.setPadding(dp(16), dp(14), dp(16), dp(16));
-            TextView closeAction = label("关闭", 10, UI_BLUE, tfHan);
+            TextView closeAction = label(tr("crash.close"), 10, UI_BLUE, tfHan);
             closeAction.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable closeBg = new android.graphics.drawable.GradientDrawable();
             closeBg.setColor(UI_PAPER);
@@ -12723,7 +12779,7 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(0, dp(42), 1f);
             closeLp.rightMargin = dp(8);
             actions.addView(closeAction, closeLp);
-            TextView copy = label("复制错误信息", 10, UI_PAPER, tfHan);
+            TextView copy = label(tr("import.copy_error_details"), 10, UI_PAPER, tfHan);
             copy.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable copyBg = new android.graphics.drawable.GradientDrawable();
             copyBg.setColor(UI_BLUE);
@@ -12734,16 +12790,16 @@ public class MainActivity extends Activity {
                     // back to the D1 rows; a screenshot of the dialog is not
                     // always possible, and a pasted body without it is a
                     // report with no address.
-                    final String text = "记录号 " + DebugSink.REF
+                    final String text = tr("settings.report_id") + DebugSink.REF
                             + "\n\n" + shownTitle + "\n\n" + shownBody
                             + "\n\nbuild=SpektraLab Android " + UpdateCheck.versionName(this)
                             + "\n" + probe.describe();
                     android.content.ClipboardManager cm =
                             (android.content.ClipboardManager) getSystemService(android.content.Context.CLIPBOARD_SERVICE);
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("SpektraLab", text));
-                    copy.setText("已复制");
+                    copy.setText(tr("feedback.copied"));
                 } catch (Throwable t) {
-                    copy.setText("复制失败 · 请长按详情");
+                    copy.setText(tr("import.could_not_copy_press_and"));
                 }
             });
             actions.addView(copy, new LinearLayout.LayoutParams(0, dp(42), 1.45f));
@@ -13032,8 +13088,8 @@ public class MainActivity extends Activity {
             // 576 MB import buffer was refused by a ledger, not by the device.
             // What is worth saying is which way out exists and that the file
             // itself is wanted if it keeps happening.
-            return "[E-1003] 这张图解码时内存不够了。先关掉其它应用再试一次；"
-                    + "如果反复出现，把这张图的原始文件发给我，我看能不能在解码这一步省下内存";
+            return tr("render.e_1003_not_enough_memory")
+                    + tr("render.if_it_keeps_happening_send");
         }
         return SpkError.format(describe(t));
     }
@@ -13090,7 +13146,7 @@ public class MainActivity extends Activity {
         if (filmStock == null) {
             // No film yet: the frame stays the import's own, and the sheet's
             // choice is remembered for the first render.
-            showInAppToast("选择一张胶片开始渲染");
+            showInAppToast(tr("render.choose_a_film_to_start"));
             return;
         }
         // No `applySessionParams()` here any more: it wrote the engine from the
@@ -13272,7 +13328,7 @@ public class MainActivity extends Activity {
     private void undoStep() {
         undoHandler.removeCallbacks(undoPush);
         if (undoStack.size() <= 1) {
-            showInAppToast("已经回到最初的编辑");
+            showInAppToast(tr("render.restored_the_initial_edits"));
             return;
         }
         undoStack.pop();
@@ -14026,13 +14082,13 @@ public class MainActivity extends Activity {
                 pendingRender = true;
                 return;
             }
-            showErrorDialog("还没有可渲染的图像", lastImportError == null
-                    ? "先导入一张照片。点画布中央的「选择照片」，或点下方「换图」；RAW / HEIC 请选「从文件管理器选择」。"
-                    : "上次导入没有完成：\n\n" + lastImportError);
+            showErrorDialog(tr("render.no_image_to_render"), lastImportError == null
+                    ? tr("render.import_a_photo_first_tap")
+                    : tr("render.the_last_import_did_not") + lastImportError);
             return;
         }
         if (filmStock == null) {
-            showInAppToast("先在下方选一张胶片");
+            showInAppToast(tr("render.choose_a_film_below"));
             return;
         }
         stopPrefetch();
@@ -14041,11 +14097,11 @@ public class MainActivity extends Activity {
             // interleave on it and hand back another frame's dimensions.
             try { DebugSink.text("render", "already rendering"); } catch (Throwable ignored) { }
             Probe.log("render", "queued film=" + filmStock + " pending=" + pendingRender);
-            statusText.setText("Rendering…");
+            statusText.setText(tr("render.rendering"));
             // Not dropped: a tap that lands mid-render is the *last* choice the
             // user made, so it becomes the next render instead of a toast.
             pendingRender = true;
-            showInAppToast("正在渲染，完成后按新选择再画一次…");
+            showInAppToast(tr("render.rendering_will_render_again_with"));
             return;
         }
         scheduleUndo();          // one entry per settled edit
@@ -14064,7 +14120,7 @@ public class MainActivity extends Activity {
         rendering = true;
         progressBar.setVisibility(View.VISIBLE);
         busyLabel.setVisibility(View.VISIBLE);
-        statusText.setText("Rendering…");
+        statusText.setText(tr("render.rendering"));
         try { DebugSink.text("render", "begin " + sourceWidth + "x" + sourceHeight); }
         catch (Throwable ignored) { }
 
@@ -14259,7 +14315,7 @@ public class MainActivity extends Activity {
                     setOriginalVisual(false);
                     updateFilmSelection();
                     final int[] bands = blackBands(bmp);
-                    statusText.setText("Preview ready " + fw + "×" + fh);
+                    statusText.setText(tr("render.preview_ready") + fw + "×" + fh);
                     try {
                         DebugSink.text("bands", "render " + fw + "x" + fh
                                 + " black rows top=" + bands[0] + " bottom=" + bands[1]
@@ -14294,13 +14350,13 @@ public class MainActivity extends Activity {
                     // state that caused it -- and undo then replayed the error
                     // instead of the picture before it.
                     cancelUndo();
-                    statusText.setText("渲染失败 " + SpkError.shortForm(msg));
+                    statusText.setText(tr("render.render_failed") + SpkError.shortForm(msg));
                     progressBar.setVisibility(View.GONE);
                     busyLabel.setVisibility(View.GONE);
                     rendering = false;
                     // The foot is one 7 sp line: a failure has to be readable,
                     // and it has to arrive with enough context to be reported.
-                    showErrorDialog("渲染失败", SpkError.format(msg)
+                    showErrorDialog(tr("render.render_failed_2"), SpkError.format(msg)
                             + "\n\n" + sourceWidth + "×" + sourceHeight
                             + "\n" + probe.describe());
                     if (pendingRender) { pendingRender = false; renderImage(); }
@@ -14335,10 +14391,10 @@ public class MainActivity extends Activity {
         target = (long) (target * 0.75);
         target = Math.max(1_000_000L, Math.min(target, 100_000_000L));
         final long picking = target;
-        runOnUiThread(() -> showActionSheet("这张图超出本机的单缓冲上限",
-                "按约 " + String.format(java.util.Locale.US, "%.1f", picking / 1e6)
-                        + " MP 重新导入并渲染？画面会小一些，但能出图。",
-                new String[]{"重试", "取消"}, which -> {
+        runOnUiThread(() -> showActionSheet(tr("render.the_image_exceeds_this_device"),
+                tr("render.import_and_render_again_at") + String.format(java.util.Locale.US, "%.1f", picking / 1e6)
+                        + tr("render.mp_the_image_will_be"),
+                new String[]{tr("render.retry"), tr("editor.cancel")}, which -> {
                     if (which == 0) {
                         pendingCapPixels = (int) picking;
                         loadImage(sourceUri);
@@ -14412,9 +14468,7 @@ public class MainActivity extends Activity {
                 if (uri != null) { try { resolver.delete(uri, null, null); } catch (Throwable ignored) { } }
             }
         }
-        throw new java.io.IOException("相册写入失败（" + lastError + "）。照片已经渲染好，"
-                + "是系统相册没有接受这个文件——重启手机再导一次；"
-                + "如果每次都是这样，把这条发给我");
+        throw new java.io.IOException(SpkError.ALBUM_WRITE_PREFIX, lastError);
     }
 
     /** Stream `tmp` into an already-inserted MediaStore row. */
@@ -14444,11 +14498,11 @@ public class MainActivity extends Activity {
     private void resolvePrinting() {
         final SpektraLabEngine.Session s = session;
         if (s == null || filmStock == null) {
-            showActionSheet("还没有可配光的照片", "先导入一张照片并选一支胶片。",
-                    new String[]{"知道了"}, which -> { });
+            showActionSheet(tr("print.no_photo_to_rebalance"), tr("print.import_a_photo_and_choose"),
+                    new String[]{tr("print.ok")}, which -> { });
             return;
         }
-        statusText.setText("配光中…");
+        statusText.setText(tr("print.rebalancing_print"));
         new Thread(() -> {
             String json = null;
             String failure = null;
@@ -14463,8 +14517,8 @@ public class MainActivity extends Activity {
             final String out = json, err = failure;
             runOnUiThread(() -> {
                 if (err != null) {
-                    statusText.setText("配光失败");
-                    showErrorDialog("配光失败", err);
+                    statusText.setText(tr("print.could_not_rebalance_the_print"));
+                    showErrorDialog(tr("print.could_not_rebalance_the_print"), err);
                     return;
                 }
                 String balanced = "?", ch = "?", mg = "?", ye = "?";
@@ -14480,13 +14534,13 @@ public class MainActivity extends Activity {
                         ye = String.format(java.util.Locale.US, "%.1f", sp.optDouble("y_filter_neutral", 0.0));
                     }
                 } catch (Throwable ignored) { }
-                statusText.setText("配光完成 " + balanced);
-                showActionSheet("配光结果",
-                        "测光 " + balanced + "\n\n中性滤镜（引擎按胶片与光源查表）\n"
-                                + "青 " + ch + " · 品红 " + mg + " · 黄 " + ye
-                                + "\n\n「恢复放大机」会把亮度、黄、品红、预闪归零，"
-                                + "让画面回到配光算出的中性。",
-                        new String[]{"恢复放大机", "关闭"}, which -> {
+                statusText.setText(tr("print.print_rebalanced") + balanced);
+                showActionSheet(tr("print.color_timing_results"),
+                        tr("print.metering") + balanced + tr("print.neutral_filters_based_on_the")
+                                + tr("print.cyan") + ch + tr("print.magenta") + mg + tr("print.yellow") + ye
+                                + tr("print.reset_enlarger_clears_brightness_yellow")
+                                + tr("print.to_restore_the_neutral_balance"),
+                        new String[]{tr("print.reset_enlarger"), tr("crash.close")}, which -> {
                             if (which != 0) return;
                             printExposure = 1.0f;
                             mFilter = 0f;
@@ -14565,7 +14619,7 @@ public class MainActivity extends Activity {
     private void startBatchImport(final java.util.List<Uri> uris) {
         final int total = uris.size();
         runOnUiThread(() -> {
-            if (statusText != null) statusText.setText("正在加入 " + total + " 张照片…");
+            if (statusText != null) statusText.setText(tr("export.adding") + total + tr("export.photos"));
         });
         new Thread(() -> {
             int added = 0, failed = 0;
@@ -14580,7 +14634,7 @@ public class MainActivity extends Activity {
                     saveSessionState();
                     rebuildFrameChips();
                 }
-                final String msg = "已加入 " + a + " 张" + (f > 0 ? "，跳过 " + f + " 张" : "");
+                final String msg = tr("export.added") + a + tr("export.photos_2") + (f > 0 ? tr("export.skipped") + f + tr("export.photos_2") : "");
                 if (statusText != null) statusText.setText(msg);
                 showInAppToast(msg);
                 if (a > 0 && currentFrame < 0 && !frames.isEmpty()) {
@@ -14618,11 +14672,11 @@ public class MainActivity extends Activity {
      */
     private void startBatchExport(String format, String tier) {
         if (batchExportRunning) {
-            showInAppToast("批量导出已经在跑");
+            showInAppToast(tr("export.batch_export_is_already_running"));
             return;
         }
         if (frames.size() < 2) {
-            showInAppToast("只有一张照片，不需要批量");
+            showInAppToast(tr("export.only_one_photo_is_available"));
             return;
         }
         saveLookIntoFrames();
@@ -14654,14 +14708,15 @@ public class MainActivity extends Activity {
                 // 然后报错" and loses the remaining frames.
                 if (index >= frames.size()) { ++failed; continue; }
                 final Frame frame = frames.get(index);
-                final String name = frame.name == null ? ("第 " + (i + 1) + " 张") : frame.name;
+                final String name = frame.name == null
+                        ? tr("export.photo") + (i + 1) + tr("export.suffix") : frame.name;
                 if (frame.look == null || frame.look.filmStock == null) {
                     ++failed;               // nothing to print: no film chosen
                     continue;
                 }
                 runOnUiThread(() -> {
                     if (statusText != null) {
-                        statusText.setText("批量导出 " + (index + 1) + "/" + total + "：" + name);
+                        statusText.setText(tr("export.batch_export") + (index + 1) + "/" + total + ": " + name);
                     }
                     if (exportProgressBar != null) exportProgressBar.setVisibility(View.VISIBLE);
                 });
@@ -14735,8 +14790,8 @@ public class MainActivity extends Activity {
                     batchExportRunning = false;
                     if (abortBatchPill != null) abortBatchPill.setVisibility(View.GONE);
                     if (exportProgressBar != null) exportProgressBar.setVisibility(View.GONE);
-                    final String msg = "批量导出完成：" + fok + " 张成功"
-                            + (ffail > 0 ? "，" + ffail + " 张失败（多半是没选胶片或打不开）" : "");
+                    final String msg = tr("export.batch_export_finished") + fok + tr("export.succeeded")
+                            + (ffail > 0 ? ", " + ffail + tr("export.failed_no_film_selected_or") : "");
                     if (statusText != null) statusText.setText(msg);
                     showInAppToast(msg);
                     if (home >= 0 && home < frames.size()) {
@@ -15074,9 +15129,9 @@ public class MainActivity extends Activity {
         final java.util.regex.Matcher r = java.util.regex.Pattern
                 .compile("Lrow=(\\d+)@(-?\\d+) n(\\d+) g(\\d+) Y=(\\S+)").matcher(line);
         if (r.find() && Integer.parseInt(r.group(1)) >= 30 && Integer.parseInt(r.group(3)) >= 10) {
-            return "左侧短杠 peak=" + r.group(1) + " y=" + r.group(2)
-                    + " 行数=" + r.group(3) + " 间距=" + r.group(4)
-                    + " 组=" + r.group(5) + " · " + line;
+            return tr("export.left_edge_short_marks_peak") + r.group(1) + " y=" + r.group(2)
+                    + tr("export.rows") + r.group(3) + tr("export.spacing") + r.group(4)
+                    + tr("export.groups") + r.group(5) + " · " + line;
         }
         // The same measurement on a band eight times wider (w/8, capped at 256).
         // "Left side" on a 3400-wide frame is not the first 53 columns, and a
@@ -15086,8 +15141,8 @@ public class MainActivity extends Activity {
         final java.util.regex.Matcher w = java.util.regex.Pattern
                 .compile("Wrow=(\\d+)@(-?\\d+) n(\\d+)").matcher(line);
         if (w.find() && Integer.parseInt(w.group(1)) >= 20 && Integer.parseInt(w.group(3)) >= 10) {
-            return "左侧宽带 peak=" + w.group(1) + " y=" + w.group(2)
-                    + " 行数=" + w.group(3) + " · " + line;
+            return tr("export.left_edge_wide_band_peak") + w.group(1) + " y=" + w.group(2)
+                    + tr("export.rows") + w.group(3) + " · " + line;
         }
         // **Eight, not five.** `Vmax` used to be reported in 16-bit units while
         // this threshold was chosen on 8-bit numbers, so every clean export
@@ -15098,7 +15153,7 @@ public class MainActivity extends Activity {
         final java.util.regex.Matcher v = java.util.regex.Pattern
                 .compile("Vmax=(\\d+)@(\\d+)").matcher(line);
         if (v.find() && Integer.parseInt(v.group(1)) >= 8) {
-            return "竖线 x=" + v.group(2) + " Δ=" + v.group(1) + " · " + line;
+            return tr("export.vertical_line_x") + v.group(2) + " Δ=" + v.group(1) + " · " + line;
         }
         final java.util.regex.Matcher m = java.util.regex.Pattern
                 .compile(" ([LRTB])=(\\d+)@(-?\\d+) p(\\d+)").matcher(line);
@@ -15141,12 +15196,12 @@ public class MainActivity extends Activity {
         final String mime = dng ? "image/x-adobe-dng" : tiff ? "image/tiff" : "image/jpeg";
         if (sharePill != null) sharePill.setVisibility(View.GONE);
         if (engine == null || session == null) {
-            showInAppToast("请先导入照片");
+            showInAppToast(tr("export.import_a_photo_first"));
             if (onDone != null) onDone.run();
             return;
         }
         if (filmStock == null) {
-            showInAppToast("先选一张胶片，再导出");
+            showInAppToast(tr("export.choose_a_film_before_exporting"));
             if (onDone != null) onDone.run();
             return;
         }
@@ -15159,7 +15214,7 @@ public class MainActivity extends Activity {
             java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ext);
             try {
                 runOnUiThread(() -> {
-                    statusText.setText("导出中：准备全尺寸渲染（分条）...");
+                    statusText.setText(tr("export.exporting_preparing_full_size_render"));
                     exportProgressBar.setVisibility(View.VISIBLE);
                     setStep(3);
                 });
@@ -15199,7 +15254,7 @@ public class MainActivity extends Activity {
                     @Override public void run() {
                         if (!spinning.get()) return;
                         long el = (System.currentTimeMillis() - t0) / 1000;
-                        statusText.setText("导出中（" + tier + "）：渲染中 " + el + " 秒...");
+                        statusText.setText(tr("export.exporting") + tier + tr("export.rendering_for") + el + tr("export.s"));
                         // **What the export is holding, every five seconds.**
                         // A black screen leaves no stack and no exception -- the
                         // last line before the process dies is the only evidence
@@ -15559,7 +15614,7 @@ public class MainActivity extends Activity {
                                 DebugSink.text("export-error", "tier=" + tier + " no session for the export");
                             } catch (Throwable ignored) { }
                             runOnUiThread(() -> {
-                                showInAppToast("这张照片还没准备好，跳过");
+                                showInAppToast(tr("export.skipping_this_photo_it_is"));
                                 if (onDone != null) onDone.run();
                             });
                             return;
@@ -15783,7 +15838,7 @@ public class MainActivity extends Activity {
                 int w = info[0], h = info[1];
                 long renderMs = info[2];
                 if (w <= 0 || h <= 0 || !tmp.exists() || tmp.length() == 0) {
-                    throw new RuntimeException("引擎没有输出图像");
+                    throw new RuntimeException(tr("export.the_engine_did_not_produce"));
                 }
 
                 // (The capture fields are written by the JPEG encoder itself,
@@ -15792,7 +15847,7 @@ public class MainActivity extends Activity {
                 // `"jpg".equals(ext)` against an `ext` of ".jpg", so for a whole
                 // release no export carried any of it -- silently.)
                 final int fw = w, fh = h;
-                runOnUiThread(() -> statusText.setText("导出中：写入相册 " + fw + "x" + fh + "..."));
+                runOnUiThread(() -> statusText.setText(tr("export.exporting_saving_to_the_photo") + fw + "x" + fh + "..."));
                 String fileName = "SpektraLab_" + System.currentTimeMillis() + ext;
                 final Uri outUri = writeExportFile(tmp, fileName, ext, mime);
                 // **Does the file look like the picture we think we wrote?**
@@ -15836,8 +15891,8 @@ public class MainActivity extends Activity {
                         // The file stays -- the render cost minutes -- but it
                         // is named as suspect and the user is told to try again.
                         runOnUiThread(() -> {
-                            if (statusText != null) statusText.setText("导出结构异常：" + verdict);
-                            showInAppToast("这张导出结构异常（可能花屏），请再导一次");
+                            if (statusText != null) statusText.setText(tr("export.the_export_did_not_pass") + verdict);
+                            showInAppToast(tr("export.the_export_may_be_corrupted"));
                         });
                     }
                 }
@@ -15857,7 +15912,7 @@ public class MainActivity extends Activity {
                             DebugSink.textNow("edge-ruler", ruler + "\n" + reportHead());
                         } catch (Throwable ignored) { }
                         runOnUiThread(() -> {
-                            if (statusText != null) statusText.setText("边缘检测：" + ruler);
+                            if (statusText != null) statusText.setText(tr("export.edge_check") + ruler);
                         });
                     }
                 }
@@ -15894,16 +15949,16 @@ public class MainActivity extends Activity {
                     // a bug when the frame is 16 MP, and the reason is worth
                     // saying out loud rather than guessing at later.
                     final String canvas = overscanCanvasLabel();
-                    final String canvasNote = canvas.isEmpty() ? "" : " · 画布 " + canvas;
+                    final String canvasNote = canvas.isEmpty() ? "" : tr("export.canvas") + canvas;
                     final String tiffHint = tiff
-                            ? "（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）"
-                            : dng ? "（DNG：线性 16 位，给电脑上的 Lightroom / ACR；手机版打不开，已知问题，不必反馈）" : "";
+                            ? tr("export.tiff_use_share_next_to")
+                            : dng ? tr("export.dng_16_bit_linear_for") : "";
                     if (!exportCorruptNow)
-                        showInAppToast("已保存 " + fw + "x" + fh + canvasNote + " · " + sizeLabel + tiffHint);
+                        showInAppToast(tr("export.saved") + fw + "x" + fh + canvasNote + " · " + sizeLabel + tiffHint);
                     else
-                        showInAppToast("导出内容异常，正在自动重导一次…");
-                    statusText.setText("已导出 " + fw + "x" + fh + canvasNote + " · " + sizeLabel
-                        + "（" + secs + " 秒，其中渲染 " + (fRender / 1000.0) + " 秒）" + tiffHint);
+                        showInAppToast(tr("export.the_export_did_not_pass_2"));
+                    statusText.setText(tr("export.exported") + fw + "x" + fh + canvasNote + " · " + sizeLabel
+                        + " (" + secs + tr("export.s_including") + (fRender / 1000.0) + tr("export.s_rendering") + tiffHint);
                     exportProgressBar.setVisibility(View.GONE);
                     setStep(2);
                 });
@@ -15913,8 +15968,8 @@ public class MainActivity extends Activity {
                 uploadExportProgress(tmp);
                 uploadVkLog();
                 runOnUiThread(() -> {
-                    statusText.setText("导出失败 " + SpkError.shortForm(msg));
-                    showErrorDialog("导出失败", SpkError.format(msg)
+                    statusText.setText(tr("export.export_failed") + SpkError.shortForm(msg));
+                    showErrorDialog(tr("export.export_failed_2"), SpkError.format(msg)
                             + "\n\n" + sourceWidth + "×" + sourceHeight
                             + "\n" + probe.describe());
                     exportProgressBar.setVisibility(View.GONE);
@@ -15931,13 +15986,13 @@ public class MainActivity extends Activity {
                 if (exportCorruptNow && !exportRetried && !batchExportRunning) {
                     exportRetried = true;
                     runOnUiThread(() -> {
-                        if (statusText != null) statusText.setText("导出内容异常，自动重导一次…");
+                        if (statusText != null) statusText.setText(tr("export.the_export_did_not_pass_3"));
                         exportImage(format, tier, onDone);
                     });
                     return;
                 }
                 if (exportCorruptNow) {
-                    runOnUiThread(() -> showInAppToast("这张导出结构异常（花屏），请再导一次"));
+                    runOnUiThread(() -> showInAppToast(tr("export.the_export_may_be_corrupted_2")));
                 }
                 if (onDone != null) runOnUiThread(onDone);
             }

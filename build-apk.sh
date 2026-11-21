@@ -5,6 +5,7 @@ SDK="$HOME/Android/Sdk"
 STAGE="$ROOT/app/build/apk"
 OUT="$ROOT/app/build/SpektraLab-debug.apk"
 TMP="$ROOT/app/build/SpektraLab-complete.apk"
+python3 "$ROOT/app/build/check-locales.py"
 cp "$ROOT/app/src/main/AndroidManifest.xml" "$STAGE/AndroidManifest.xml"
 cd "$STAGE"
 aapt package -f -m -M AndroidManifest.xml -S res -A assets -I "$SDK/platforms/android-36/android.jar" -F "$OUT" >/dev/null
@@ -18,7 +19,7 @@ lib=root/'app/build/apk/lib/arm64-v8a'
 with zipfile.ZipFile(src) as a, zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
     skipped = 0
     for i in a.infolist():
-        if i.filename=='classes.dex': continue
+        if i.filename=='classes.dex' or i.filename.startswith('assets/locales/'): continue
         # Two 7.4 MB .cube tables for a DI view this app has no path to: the
         # JNI never calls spk_export_di / spk_render_digital_intermediate, and
         # the engine opens them lazily by name. 3.3 MB compressed, 18% of the
@@ -29,6 +30,8 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as
         z.writestr(i,a.read(i.filename))
     if skipped:
         print('skip DI tables:', skipped)
+    for f in sorted((root/'app/src/main/locales').glob('*.json')):
+        z.write(f, 'assets/locales/'+f.name)
     z.write(root/'app/build/dex/classes.dex','classes.dex')
     for f in sorted(lib.iterdir()):
         if f.is_file():
