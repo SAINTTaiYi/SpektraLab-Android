@@ -236,7 +236,7 @@ work and its device measurement and regression plan.
 | Phase B start: EditorState + RenderLookUseCase | `f1cfd4c` | DomainTest + emulator golden |
 | Preset/preferences repositories + live-preview state | `1c38785` | DomainTest + emulator UI tap |
 | Stock-catalog repository + UiPalette extraction | `c61b84f` | emulator screenshot + golden |
-| Custom Views to ui/ + package-rule checker | pending | check-package-rules + emulator golden |
+| Custom Views to ui/ + package-rule checker | `1092b87` | check-package-rules + emulator golden |
 
 ## Updating this plan
 
