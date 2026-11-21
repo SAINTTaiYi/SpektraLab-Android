@@ -27,6 +27,19 @@ Java, manifest, and Android `res/` files from this checkout and writes
 shaders, and `app/src/main/assets/` are **not** included in this mode. Use it
 for local development, not to publish a new release.
 
+For a build with **no network access**, use `-UsePrebuiltNative` instead:
+
+```powershell
+.\scripts\build-windows.ps1 -UsePrebuiltNative
+```
+
+The seven ARM64 libraries extracted from that same release APK are tracked in
+`app/prebuilt/arm64-v8a/` with SHA-256s in `app/prebuilt/sha256.json`, verified
+by `app/build/check-prebuilt.py`. Engine assets are taken from
+`app/src/main/assets/resources/` if you have them locally, otherwise from an
+already cached release APK (no download is attempted). This mode produces
+`SpektraLab-prebuilt-native-debug.apk`.
+
 This is an **Android ARM64** APK (minSdk 24, targetSdk 36), not a Windows app.
 To test with an ARM64 Vulkan-capable device and USB debugging enabled:
 

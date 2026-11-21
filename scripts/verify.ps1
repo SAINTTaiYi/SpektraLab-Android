@@ -25,6 +25,10 @@ Write-Host '== version metadata =='
 & $py "$root\app\build\check-version.py"
 Report 'check-version' ($LASTEXITCODE -eq 0)
 
+Write-Host '== prebuilt native payload =='
+& $py "$root\app\build\check-prebuilt.py"
+Report 'check-prebuilt' ($LASTEXITCODE -eq 0)
+
 Write-Host '== Java compilation =='
 $jdk = (Get-ChildItem "$BuildHome\jdk-17*" -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -First 1).FullName

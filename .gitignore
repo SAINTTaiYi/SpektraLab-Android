@@ -13,3 +13,10 @@ debug.keystore
 
 # ~30 MB of binary resources are not distributed with the source
 app/src/main/assets/
+
+# The native payload extracted from the published 1.6.2m release APK is tracked
+# so Java/UI builds work without downloading the APK. Everything under app/build/
+# stays generated; only this one prebuilt copy is source-controlled.
+!app/prebuilt/
+!app/prebuilt/arm64-v8a/
+!app/prebuilt/arm64-v8a/*.so

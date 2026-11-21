@@ -1,0 +1,12 @@
+{
+  "apk": "ae999a770893f1d0f7e5d43ea9b89bddfd73915e66361341a41e1d7e71e78561",
+  "libs": {
+    "libc++_shared.so": "ab4e6c71b96b851de45a8a9bd86369e7dbc2130a44b3b4520564be94847910f2",
+    "libjpeg_8.so": "f851908b7d663d1cf417fdd4cb163c8a5a03c46ef36a2952e7618c67243e3042",
+    "liblcms2.so": "400e1bdf195b63e9f65f6bdcd00cdd1c4489c03ddc77af5a7cf956c4d38a9746",
+    "libraw.so": "7efb8abc02b803811066d79e2ef4478f174a57bd7611eeb9c3dbad304f1eb724",
+    "libraw_r.so": "f49b9bea617f6b4bf460fefbea9d418cd4f822166c24e94666100ee5c4cf6ce7",
+    "libspektrafilm_engine.so": "402abe1b169d02d181fe80290b21915c1823f7746864a12904af8eebe6508a57",
+    "libz_1.so": "72a083208abc9050e5e0ce265243df37811650ff49a3248b1ecd790bf23d1642"
+  }
+}

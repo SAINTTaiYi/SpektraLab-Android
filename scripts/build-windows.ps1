@@ -4,6 +4,7 @@ param(
     [string]$BuildHome = "$env:LOCALAPPDATA\SpektraLabBuild",
     [string]$OutputDirectory,
     [switch]$UseReleaseNative,
+    [switch]$UsePrebuiltNative,
     [switch]$SideBySide,
     [string]$EngineCheckout,
     [ValidateRange(1, 64)][int]$Jobs = 8
@@ -24,7 +25,10 @@ $cmake = "$BuildHome\cmake-3.31.8-windows-x86_64\bin\cmake.exe"
 $python = "$BuildHome\python.exe"
 $localeCheck = "$root\app\build\check-locales.py"
 if (Test-Path $localeCheck) { & $python $localeCheck }
-if ($UseReleaseNative -and $EngineCheckout) { throw 'Choose either -UseReleaseNative or -EngineCheckout.' }
+if (($UseReleaseNative -and $EngineCheckout) -or
+    ($UsePrebuiltNative -and ($UseReleaseNative -or $EngineCheckout))) {
+    throw 'Choose one native source: -UseReleaseNative, -UsePrebuiltNative, or -EngineCheckout.'
+}
 
 function Build-Native {
 $enginePatch = "$root\patches\engine-android.patch"
@@ -100,6 +104,10 @@ if ($UseReleaseNative) {
         throw "Release APK checksum mismatch: $release"
     }
     Write-Host "Using v$($version.versionName) release native libraries and assets; C++ changes are not included."
+} elseif ($UsePrebuiltNative) {
+    & $python "$root\app\build\check-prebuilt.py"
+    if ($LASTEXITCODE -ne 0) { throw 'Prebuilt native payload failed verification.' }
+    Write-Host 'Using the tracked prebuilt arm64 payload; no APK download.'
 } else {
     $native = Build-Native
 }
@@ -112,6 +120,18 @@ try {
     $apkContents = "$root\app\build\apk-contents.py"
     if ($UseReleaseNative) {
         & $python $apkContents extract $stage $release
+    } elseif ($UsePrebuiltNative) {
+        Copy-Item "$root\app\prebuilt\arm64-v8a\*.so" $abiDir
+        $localAssets = "$root\app\src\main\assets"
+        $cachedRelease = Join-Path $BuildHome $version.releaseApk
+        if (Test-Path "$localAssets\resources") {
+            Get-ChildItem $localAssets -Exclude locales | Copy-Item -Destination "$stage\assets" -Recurse -Force
+        } elseif (Test-Path $cachedRelease) {
+            # Offline: reuse an already downloaded APK for its assets only.
+            & $python $apkContents assets $stage $cachedRelease
+        } else {
+            throw 'No engine assets: put them in app/src/main/assets/resources or cache the release APK in BuildHome.'
+        }
     } else {
         $resources = "$stage\assets\resources"
         Get-ChildItem "$native\engine\resources" -Exclude DI | Copy-Item -Destination $resources -Recurse
@@ -170,7 +190,9 @@ try {
         --ks-key-alias androiddebugkey --v1-signing-enabled true "$stage\aligned.apk"
     & "$tools\apksigner.bat" verify --verbose "$stage\aligned.apk"
     & "$tools\zipalign.exe" -c -P 16 4 "$stage\aligned.apk"
-    $suffix = if ($UseReleaseNative) { 'release-native-debug' } else { 'windows-debug' }
+    $suffix = if ($UseReleaseNative) { 'release-native-debug' }
+              elseif ($UsePrebuiltNative) { 'prebuilt-native-debug' }
+              else { 'windows-debug' }
     if ($SideBySide) { $suffix += '-side-by-side' }
     $outputDir = New-Item -ItemType Directory -Path $OutputDirectory -Force
     $output = Join-Path $outputDir.FullName "SpektraLab-$suffix.apk"

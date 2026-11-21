@@ -17,8 +17,10 @@ compile:
    `spk_trim_pool`. Declarations alone would not be enough — the
    implementations live in the matching engine tree as well.
 
-`docs/windows-build.md` therefore offers `-UseReleaseNative` (Java/UI changes
-against the published native library and assets) as the only verified path.
+`docs/windows-build.md` therefore offers two verified Java/UI paths:
+`-UseReleaseNative` (downloads the release APK) and `-UsePrebuiltNative`, which
+uses the seven ARM64 libraries tracked in `app/prebuilt/arm64-v8a/` and their
+SHA-256 manifest in `app/prebuilt/sha256.json`. Neither path recompiles C++.
 
 ## Checking it yourself
 

@@ -25,6 +25,18 @@ def extract(apk, stage):
             raise SystemExit(f'Release APK is missing {name}')
 
 
+def extract_assets(apk, stage):
+    """Copy only assets/ from a release APK (used by -UsePrebuiltNative)."""
+    with zipfile.ZipFile(apk) as source:
+        for entry in source.infolist():
+            path = PurePosixPath(entry.filename)
+            if entry.is_dir() or path.parts[0] != 'assets' or '..' in path.parts:
+                continue
+            if path.parts[:2] == ('assets', 'locales'):
+                continue  # catalogs must match this checkout's Java
+            source.extract(entry, stage)
+
+
 def pack(apk, stage):
     if not (stage / 'dex/classes.dex').is_file():
         raise SystemExit('No classes.dex to package')
@@ -45,4 +57,5 @@ def pack(apk, stage):
 
 if __name__ == '__main__':
     action, directory, apk_path = sys.argv[1:]
-    {'extract': extract, 'pack': pack}[action](Path(apk_path), Path(directory))
+    {'extract': extract, 'assets': extract_assets, 'pack': pack}[action](
+        Path(apk_path), Path(directory))
