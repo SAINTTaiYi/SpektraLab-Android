@@ -237,7 +237,7 @@ work and its device measurement and regression plan.
 | Preset/preferences repositories + live-preview state | `1c38785` | DomainTest + emulator UI tap |
 | Stock-catalog repository + UiPalette extraction | `c61b84f` | emulator screenshot + golden |
 | Custom Views to ui/ + package-rule checker | `1092b87` | check-package-rules + emulator golden |
-| More Views to ui/ (RatioMark, GuideView, HistogramView) | pending | javac + emulator golden |
+| More Views to ui/ (RatioMark, GuideView, HistogramView) | `686e546` | javac + emulator golden |
 
 ## Updating this plan
 
