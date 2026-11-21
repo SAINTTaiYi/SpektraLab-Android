@@ -44,7 +44,10 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
   side-by-side APK on a Motorola Razr 2025 over Wi-Fi adb; the UI rendered and
   an image import was performed without a crash. The test exposed and fixed a
   real `file://` ACTION_VIEW bug (`openUri` / `privateCopy`).
-- **Still open:** golden render hashes and a banded-vs-whole-plane comparison.
+- **Done:** `scripts/device-golden.ps1` launches the same image with
+  `SPK_BAND_ROWS` 0 / 128 / 512 using deterministic-render intent extras and
+  compares the render hash logged as `SpektraLabHash`. On the Motorola Razr
+  2025 all three runs produced `5ddbaa4709c950bd`.
 - **Problem:** CI still does not execute render/export behaviour.
 - **Evidence:** only `app/build/native-tests/view_adjust_test.cpp` exists; the
   workflow `.github/workflows/verify.yml` runs compile/check steps.
@@ -225,6 +228,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | SessionState + ThumbCache extraction | `d44f9bb` | javac, APK build |
 | UiDispatcher + PresetStore + logged catches | `1401714` | check-no-silent-catch, javac |
 | Device smoke run + file:// ACTION_VIEW fix | `7846adb` | device screenshot, javac |
+| On-device golden / banding comparison | pending | 3 hashes identical |
 
 ## Updating this plan
 

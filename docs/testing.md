@@ -36,9 +36,27 @@ Requires an ARM64 device with USB debugging. Installs the APK, launches the
 activity, captures a screenshot, and fails on `FATAL EXCEPTION` / native crash
 signals in logcat. Add `-Uninstall` to clean up.
 
-## 4. Known gaps
+## 4. On-device golden / banding comparison
 
-- No golden render-hash regression run yet (needs a device and a fixture RAW).
-- No automated banded-vs-whole-plane comparison yet.
+```powershell
+./scripts/device-golden.ps1 -Apk app/build/SpektraLab-prebuilt-native-debug-side-by-side.apk `
+    -Serial 192.168.1.83:42011 -Bands 0,512,128
+```
+
+The script pushes deterministic-render intent extras into the app (grain and
+paper veil off, first film auto-selected), launches the same image three times
+with different `SPK_BAND_ROWS` values, and reads the render hash that the app
+logs as `SpektraLabHash`. It fails if the hashes differ and writes the observed
+values to `app/build/device-golden.json`.
+
+Observed on a Motorola Razr 2025 with the 1.6.2m prebuilt engine: band 0, 128
+and 512 all produced `5ddbaa4709c950bd` — the banded renderer is byte-identical
+to the whole-plane path on that device.
+
+## 5. Known gaps
+
+- Golden hashes are device/driver specific; the artifact is intentionally not
+  committed. Re-run on each device class of interest.
+- No golden RAW fixture yet (the test uses a small PNG).
 - The engine patch check is expected to fail until the complete engine source
   is published; see `source-build.md`.

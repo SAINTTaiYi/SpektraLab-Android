@@ -84,6 +84,11 @@ public class MainActivity extends Activity {
     private String lastExportMime = null;
     /** Shown only after a TIFF export: the one format the picker hides. */
     private TextView sharePill = null;
+    // Device-golden test hooks (default 0/false; never set by normal UI use).
+    private static int testBandRows = 0;
+    private static boolean testDeterministic = false;
+    private static boolean testAutoFilm = false;
+
     private Bitmap sourceBitmap;
     private Uri sourceUri;
     /** An ACTION_VIEW URI that arrived before the canvas was ready. */
@@ -379,6 +384,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Device-test hooks, set only by device-golden.ps1 through intent extras.
+        final android.content.Intent launch = getIntent();
+        if (launch != null) {
+            testBandRows = launch.getIntExtra("spk_band_rows", 0);
+            testDeterministic = launch.getBooleanExtra("spk_deterministic", false);
+            testAutoFilm = launch.getBooleanExtra("spk_auto_film", false);
+        }
         AppLanguage.load(this);
         loadLocalizedLabels();
         // **Before anything logs, and before anything reports.** The ring lives
@@ -11260,6 +11272,17 @@ public class MainActivity extends Activity {
             reopeningFrame = false;
             applyLook(defaultLook());
         }
+        if (testDeterministic) {
+            // Grain and the paper veil are seeded per frame; switch them off so
+            // two renders of the same picture are byte-comparable.
+            grainOn = 0f;
+            glareActive = 0f;
+        }
+        if (testAutoFilm && filmStock == null) {
+            for (String id : filmIds) {
+                if (!"original".equals(id)) { filmStock = id; break; }
+            }
+        }
         CrashTrail.mark(this, "import:look");
         try {
             // Check if this is a RAW file by extension
@@ -11609,7 +11632,8 @@ public class MainActivity extends Activity {
             // (`6a19bb88851e5304` both ways). It is the only lever that has
             // moved the peak at all; the pool trim and its keep budget did not
             // (1144 MiB at best, 1.7%).
-            SpektraLabEngine.setEnv("SPK_BAND_ROWS", "512");
+            SpektraLabEngine.setEnv("SPK_BAND_ROWS",
+                    testBandRows > 0 ? String.valueOf(testBandRows) : "512");
             // **The band ceiling, for the seam question only.** A frame wide
             // enough to need 37 bands shows 37 equally spaced lines on one GPU
             // family and none on another; raising this to the device's dispatch
@@ -13867,9 +13891,13 @@ public class MainActivity extends Activity {
                 try {
                     long hsh = 1469598103934665603L;
                     for (int i = 0; i < pixels.length; i += 7) { hsh ^= pixels[i]; hsh *= 1099511628211L; }
-                    DebugSink.text("preview", "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
-                            + " copy=" + copied + " first=" + Integer.toHexString(pixels[0])
-                            + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2]));
+                    final String hashLine = "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
+                            + " band=" + testBandRows + " copy=" + copied
+                            + " first=" + Integer.toHexString(pixels[0])
+                            + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2]);
+                    DebugSink.text("preview", hashLine);
+                    // logcat hook for scripts/device-golden.ps1 (no network needed).
+                    android.util.Log.i("SpektraLabHash", hashLine);
                 } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13846", spkIgnored); }
                 UiDispatcher.post(() -> {
                     if (renderedEpoch != renderEpoch
