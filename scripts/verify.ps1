@@ -75,6 +75,8 @@ $domainSources = @(
     "$root\app\src\main\java\app\spektralab\domain\EngineApi.java",
     "$root\app\src\main\java\app\spektralab\domain\SessionApi.java",
     "$root\app\src\main\java\app\spektralab\domain\ImportPlanner.java",
+    "$root\app\src\main\java\app\spektralab\domain\EditorState.java",
+    "$root\app\src\main\java\app\spektralab\domain\RenderLookUseCase.java",
     "$root\app\src\main\java\app\spektralab\domain\RenderPreviewUseCase.java",
     "$root\app\src\main\java\app\spektralab\domain\PhotoRepository.java",
     "$root\app\src\test\java\app\spektralab\testing\FakeSession.java",

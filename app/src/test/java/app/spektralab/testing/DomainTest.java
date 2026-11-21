@@ -1,7 +1,9 @@
 package app.spektralab.testing;
 
+import app.spektralab.domain.EditorState;
 import app.spektralab.domain.EngineApi;
 import app.spektralab.domain.ImportPlanner;
+import app.spektralab.domain.RenderLookUseCase;
 import app.spektralab.domain.RenderPreviewUseCase;
 import app.spektralab.domain.SessionApi;
 
@@ -74,6 +76,21 @@ public final class DomainTest {
         String copy = photos.persist("content://pick/1");
         check(copy != null && photos.canRead(copy), "persist creates a readable copy");
         check("1".equals(photos.displayName("content://pick/1")), "display name from URI");
+
+        EditorState state = new EditorState("film", "paper", "balanced", 3, false, false, 7);
+        FakeSession renderSession = new FakeSession();
+        int[] dims = new RenderLookUseCase().render(renderSession, state, "live", 2048, false,
+                (target, captured, edge) -> {
+                    check("film".equals(captured.filmStock) && edge == 2048,
+                            "captured state reaches the params boundary");
+                    target.setParams("{}");
+                });
+        check(dims[0] == 640 && dims[1] == 480, "render use case returns dimensions");
+        check(renderSession.calls.equals(Arrays.asList("setParams", "renderBegin:live:false")),
+                "params applied before render: " + renderSession.calls);
+        FakeSession reprint = new FakeSession();
+        new RenderLookUseCase().render(reprint, state, "live", 800, true, (s, st, e) -> { });
+        check(reprint.calls.contains("renderBegin:live:true"), "reprint flag reaches the session");
 
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");

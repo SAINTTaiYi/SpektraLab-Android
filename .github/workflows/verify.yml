@@ -56,6 +56,8 @@ jobs:
             'app/src/main/java/app/spektralab/domain/EngineApi.java',
             'app/src/main/java/app/spektralab/domain/SessionApi.java',
             'app/src/main/java/app/spektralab/domain/ImportPlanner.java',
+            'app/src/main/java/app/spektralab/domain/EditorState.java',
+            'app/src/main/java/app/spektralab/domain/RenderLookUseCase.java',
             'app/src/main/java/app/spektralab/domain/RenderPreviewUseCase.java',
             'app/src/main/java/app/spektralab/domain/PhotoRepository.java',
             'app/src/test/java/app/spektralab/testing/FakeSession.java',

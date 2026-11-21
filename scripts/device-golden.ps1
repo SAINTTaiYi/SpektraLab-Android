@@ -19,6 +19,9 @@ function Adb([string[]]$arguments) { & $adb -s $Serial @arguments }
 
 Adb @('install', '-r', $Apk) | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'adb install failed' }
+# The test image is pushed into shared storage; grant the test package access
+# so a file:// ACTION_VIEW can actually be opened on API 33+.
+Adb @('shell', 'pm', 'grant', $Package, 'android.permission.READ_MEDIA_IMAGES')
 
 $results = @()
 foreach ($band in $Bands) {

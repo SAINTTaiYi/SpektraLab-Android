@@ -230,6 +230,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Device smoke run + file:// ACTION_VIEW fix | `7846adb` | device screenshot, javac |
 | On-device golden / banding comparison | `0b634e0` | 3 hashes identical |
 | Android-skill Phase A (interfaces, use cases, fakes) | `1d1692e` | DomainTest + golden hash |
+| Phase B start: EditorState + RenderLookUseCase | pending | DomainTest + emulator golden |
 
 ## Updating this plan
 

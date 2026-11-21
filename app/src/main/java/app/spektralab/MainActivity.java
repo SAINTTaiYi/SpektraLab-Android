@@ -13675,18 +13675,25 @@ public class MainActivity extends Activity {
             return;
         }
         scheduleUndo();          // one entry per settled edit
-        final String renderedStock = filmStock;
+        // UDF: capture one immutable snapshot on the UI thread. The worker
+        // below must not read the Activity's mutable look fields any more.
+        final app.spektralab.domain.EditorState editorState =
+                new app.spektralab.domain.EditorState(
+                        filmStock,
+                        printStock == null ? "kodak_portra_endura" : printStock,
+                        meterMethod, currentFrame, showingOriginal, rendering, geometrySeq);
+        final String renderedStock = editorState.filmStock;
         // **The frame this render belongs to.** Deleting the chips (or opening
         // another photo) while a render is in flight used to let its callback
         // call setStage(1) on a canvas that no longer had a frame: the empty
         // state -- and with it the 选择照片 button -- vanished, which is the
         // "删掉全部缩略图后导入按钮有时候会消失" report.
-        final int renderedFrame = currentFrame;
+        final int renderedFrame = editorState.frameIndex;
         final int renderedEpoch = renderEpoch;
         // **Which geometry this render is allowed to speak for.** A render the
         // commit did not wait for carries the angle from before it, and letting
         // it take the preview turn off is exactly the frame that jumps back.
-        final int renderedGeometrySeq = geometrySeq;
+        final int renderedGeometrySeq = editorState.geometrySequence;
         rendering = true;
         progressBar.setVisibility(View.VISIBLE);
         busyLabel.setVisibility(View.VISIBLE);
@@ -13737,28 +13744,31 @@ public class MainActivity extends Activity {
                 // `renderBegin` is this one.
                 final boolean geoOwed = pendingGeometry;
                 pendingGeometry = false;
-                applyParams(renderedStock, longEdge);
-                if (geoOwed) {
-                    sendGeometry();
-                    try {
-                        final String gp = session.getParams();
-                        final int at = gp.indexOf("\"geometry_rotation_deg\"");
-                        DebugSink.text("geo-check", "after delta " + (at >= 0
-                                ? gp.substring(at, Math.min(gp.length(), at + 30)) : "absent"));
-                    } catch (Throwable spkIgnored) { Diagnostics.ignored("indexOf:13760", spkIgnored); }
-                }
-                Probe.log("render", "apply film=" + renderedStock + " long=" + longEdge
-                        + " src=" + sourceWidth + "x" + sourceHeight);
-                CrashTrail.markNow(MainActivity.this, "render:params");
-                // **The black box is `renderBegin`.** Everything before it is
-                // Java and leaves a stack; everything after it is arithmetic on
-                // a frame that already exists. So the ticker wraps exactly that
-                // call, and `render:returned` is the first proof it came back.
+                // The use case applies the captured state and then renders;
+                // no Activity field is read by the worker after this point.
                 Thread ticker = startTick("render", session);
                 CrashTrail.markNow(MainActivity.this, "render:call");
                 int[] dims;
                 try {
-                    dims = session.renderBegin("live");
+                    dims = new app.spektralab.domain.RenderLookUseCase().render(
+                            session, editorState, "live", longEdge, false,
+                            (target, state, edge) -> {
+                                applyParams(state.filmStock, (int) edge);
+                                if (geoOwed) {
+                                    sendGeometry();
+                                    try {
+                                        final String gp = target.getParams();
+                                        final int at = gp.indexOf("\"geometry_rotation_deg\"");
+                                        DebugSink.text("geo-check", "after delta " + (at >= 0
+                                                ? gp.substring(at, Math.min(gp.length(), at + 30)) : "absent"));
+                                    } catch (Throwable spkIgnored) {
+                                        Diagnostics.ignored("geo-check", spkIgnored);
+                                    }
+                                }
+                                Probe.log("render", "apply film=" + state.filmStock
+                                        + " long=" + edge + " src=" + sourceWidth + "x" + sourceHeight);
+                                CrashTrail.markNow(MainActivity.this, "render:params");
+                            });
                 } finally {
                     stopTick(ticker);
                 }
