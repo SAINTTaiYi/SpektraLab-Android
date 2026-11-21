@@ -238,7 +238,7 @@ work and its device measurement and regression plan.
 | Stock-catalog repository + UiPalette extraction | `c61b84f` | emulator screenshot + golden |
 | Custom Views to ui/ + package-rule checker | `1092b87` | check-package-rules + emulator golden |
 | More Views to ui/ (RatioMark, GuideView, HistogramView) | `686e546` | javac + emulator golden |
-| RotateScale + CropOverlay extraction with delegates | pending | emulator Compose page + golden |
+| RotateScale + CropOverlay extraction with delegates | `8590764` | emulator Compose page + golden |
 
 ## Updating this plan
 
