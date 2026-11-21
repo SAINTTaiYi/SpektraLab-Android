@@ -232,7 +232,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Android-skill Phase A (interfaces, use cases, fakes) | `1d1692e` | DomainTest + golden hash |
 | Phase B start: EditorState + RenderLookUseCase | `f1cfd4c` | DomainTest + emulator golden |
 | Preset/preferences repositories + live-preview state | `1c38785` | DomainTest + emulator UI tap |
-| Stock-catalog repository + UiPalette extraction | pending | emulator screenshot + golden |
+| Stock-catalog repository + UiPalette extraction | `c61b84f` | emulator screenshot + golden |
 
 ## Updating this plan
 
