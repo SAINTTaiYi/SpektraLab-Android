@@ -212,6 +212,10 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Storage quotas + scratch pruning | `501448a` | javac |
 | APK size guard in build script | `501448a` | 20 MB threshold |
 | Remove tracked generated sources.txt | `501448a` | git rm + .gitignore |
+| JVM-runnable pure-logic tests | `9c3ec0d` | `PureLogicTest` in verify.ps1 + CI |
+| LookCodec extraction (~250 lines) | `9c3ec0d` | javac |
+| AppFailure classification + stage tag | `9c3ec0d` | javac |
+| Dialog registry + uiWait inline path | `9c3ec0d` | javac |
 
 ## Updating this plan
 
