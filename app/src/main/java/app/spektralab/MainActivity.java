@@ -29073,6 +29073,22 @@ public class MainActivity extends Activity {
             session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
             CrashTrail.mark(this, "import:session");
             applySessionParams();
+            // **The engine has its own copy; this one is 12 B/px of dead
+            // weight.** 432 MB at 36 MP, held for the whole life of the
+            // session, and the only reader left was the export's last-resort
+            // fallback -- which now re-decodes from the file instead. This is
+            // the largest single allocation the app makes and the only one it
+            // can give back without touching a pixel; the low-memory killer
+            // took the process at 2.7 GB with a 36 MP frame open.
+            //
+            // Small frames keep it: below 4 MP it is 48 MB, and an export that
+            // can no longer read its file still has the buffer that way.
+            if (session != null && sourcePixels != 0
+                    && (long) sourceWidth * sourceHeight > 4_000_000L) {
+                SpektraLabEngine.freePixels(sourcePixels);
+                sourcePixels = 0;
+                CrashTrail.mark(this, "import:staging freed");
+            }
             lastImportError = null;
             // An import is not a look. The frame lands unrendered with no film
             // chosen; the first render happens when the user picks a stock.
@@ -37181,7 +37197,7 @@ public class MainActivity extends Activity {
                         // both the wrong size and the shape that failed on the
                         // Mali report. The buffer is malloc'd now and the cap is
                         // thirty times smaller than what the phones can hold.
-                        if (!reuseCanvas && keep != null && sourcePixels != 0
+                        if (!reuseCanvas && keep != null
                                 && sourceWidth > 0 && sourceHeight > 0) {
                             // **The export goes back to the file for its size.**
                             // `sourcePixels` carries whatever the import's
@@ -37208,7 +37224,14 @@ public class MainActivity extends Activity {
                             final boolean bigger = fullBmp != null
                                     && (long) fullBmp.getWidth() * fullBmp.getHeight()
                                        > (long) sourceWidth * sourceHeight;
-                            if (bigger) {
+                            // **A frame with no staging copy comes back from the
+                            // file.** Since 1.7.0i the import lets
+                            // `sourcePixels` go once the engine has its own;
+                            // the export is the only thing that ever wanted it,
+                            // and re-decoding at the same size is the same
+                            // frame.
+                            final boolean fromFile = bigger || (sourcePixels == 0 && fullBmp != null);
+                            if (fromFile) {
                                 final int fw = fullBmp.getWidth(), fh = fullBmp.getHeight();
                                 try {
                                     fullBuf = SpektraLabEngine.allocPixels((long) fw * fh * 12L);
@@ -37255,7 +37278,7 @@ public class MainActivity extends Activity {
                                                 + "本机现在给不出来。关掉其它应用再试，"
                                                 + "或重新导入时选「缩到…」。");
                             }
-                            if (fresh == null) {
+                            if (fresh == null && sourcePixels != 0) {
                                 try { fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3); }
                                 catch (Throwable ignored) { fresh = null; }
                             }
