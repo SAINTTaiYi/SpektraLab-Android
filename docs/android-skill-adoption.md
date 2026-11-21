@@ -70,9 +70,10 @@ the pure interfaces.
 Phase C started: theme tokens moved to `app.spektralab.ui.UiPalette`, and five
 self-contained Views (`Square`, `ArrowView`, `ToolGlyph`, `CappedScroll`,
 `EdgeBackdrop`, `RatioMark`, `GuideView`, `HistogramView`, `RotateScale`,
-`CropOverlay`) moved to `app.spektralab.ui`, with delegate interfaces that keep
-geometry state in the Activity. The Compose page opens correctly on the Orca
-emulator after the extraction. The app renders identically on
+`CropOverlay`, `ColorWheel`, `FilmCoverView`, `CurveView`, `CompareView`)
+moved to `app.spektralab.ui`, with delegate interfaces that keep grading and
+geometry state in the Activity. The Optics and Compose pages open correctly on
+the Orca emulator after the extraction. MainActivity is now 13,045 lines. The app renders identically on
 the Orca emulator and golden hashes are unchanged.
 
 Phase D started: `app/build/check-package-rules.py` rejects forbidden imports

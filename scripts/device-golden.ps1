@@ -26,6 +26,7 @@ Adb @('shell', 'pm', 'grant', $Package, 'android.permission.READ_MEDIA_IMAGES')
 $results = @()
 foreach ($band in $Bands) {
     Adb @('shell', 'am', 'force-stop', $Package)
+    Start-Sleep -Seconds 2
     Adb @('logcat', '-c')
     $intent = @('shell', 'am', 'start',
         '-a', 'android.intent.action.VIEW',
