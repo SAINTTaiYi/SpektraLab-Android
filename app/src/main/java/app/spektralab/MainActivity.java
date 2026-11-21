@@ -14191,7 +14191,14 @@ public class MainActivity extends Activity {
                 try (java.io.InputStream in = new java.io.FileInputStream(f)) {
                     while (off < buf.length && (n = in.read(buf, off, buf.length - off)) > 0) off += n;
                 }
+                // **The device belongs in here too.** The native handler has no
+                // Java side, so a native crash arrived with a build and a
+                // version and nothing else -- six reports from one phone and one
+                // report from six phones looked exactly alike (1.7.0's teardown
+                // aborts). The probe is up by the time a crash file ships; if it
+                // is not, `deviceLine` falls back to the last launch's answer.
                 final String body = "build=" + buildLine() + "\nversion=" + versionLine()
+                        + "\ndevice=" + deviceLine() + "\n"
                         + new String(buf, 0, off, java.nio.charset.StandardCharsets.UTF_8);
                 // `send` stashes the row when the network is down, so the file
                 // is not needed as a second copy once it has been attempted.
@@ -29591,7 +29598,15 @@ public class MainActivity extends Activity {
                             : spkPaperForEngine(printStock);
                     final String filmField = spkFilm == null ? ""
                             : String.format(java.util.Locale.US, "\"film_stock\":\"%s\",", spkFilm);
-                    String params = String.format(
+                    // **`Locale.US`, always, for anything that becomes JSON.**
+                    // Without it `%.2f` follows the phone's locale: a device set
+                    // to German (or any comma-decimal locale) sent
+                    // `"print_exposure":1,00`, the engine's parser read `1` and
+                    // then wanted a key where the `,` stood, and answered
+                    // `params_delta: expected a string at byte 147` -- byte 147
+                    // is the first `0` of `00`. Every raw import on such a phone
+                    // died with E-1106 (SL-261121-130E).
+                    String params = String.format(java.util.Locale.US,
                         "{%s\"print_stock\":\"%s\",\"input_color_space\":\"ProPhoto RGB\",\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\",\"print_exposure\":%.2f,\"preview_long_edge\":2048}",
                         filmField, spkPaper, printExposure
                     );
@@ -32495,6 +32510,19 @@ public class MainActivity extends Activity {
                         fotuGateHealed = true;
                         CrashTrail.mark(this, "fotu:heal gate " + overscanFormat);
                         applyGate(overscanFormat);
+                        return;
+                    }
+                    // **A file that is no longer there is not a render
+                    // failure.** A restored strip (150 frames was the report)
+                    // can outlive the private copies its frames name, and every
+                    // visit to such a frame used to raise a modal dialog with
+                    // nothing the user could do in it -- 3 of the 8 errors in
+                    // 1.7.0's first four hours. Say it on the canvas instead,
+                    // once, and let browsing continue.
+                    if (said.contains("读不到原图文件")) {
+                        statusText.setText("这张照片的原始文件已不在 · 换一张，或重新导入");
+                        showInAppToast("fotufilm：这张照片的原始文件已不在");
+                        CrashTrail.mark(this, "fotu: source gone " + id);
                         return;
                     }
                     statusText.setText("fotufilm 渲染失败");
