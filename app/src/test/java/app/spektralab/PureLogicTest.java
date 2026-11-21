@@ -29,6 +29,19 @@ public final class PureLogicTest {
         check("\"a\\u000ab\"".equals(JsonQuote.quote("a\nb")), "control char is escaped");
         check("\"中文\"".equals(JsonQuote.quote("中文")), "non-ASCII passes through");
 
+        check(AppFailure.fromTitle("导入失败") == AppFailure.Stage.IMPORT,
+                "import title is classified as IMPORT");
+        check(AppFailure.fromTitle("RAW 加载失败") == AppFailure.Stage.IMPORT,
+                "RAW title is classified as IMPORT");
+        check(AppFailure.fromTitle("渲染失败") == AppFailure.Stage.RENDER,
+                "render title is classified as RENDER");
+        check(AppFailure.fromTitle("导出失败") == AppFailure.Stage.EXPORT,
+                "export title is classified as EXPORT");
+        check(AppFailure.fromTitle("关于") == AppFailure.Stage.OTHER,
+                "unrelated title is OTHER");
+        check(AppFailure.of(AppFailure.Stage.EXPORT, new RuntimeException("x")).stage
+                == AppFailure.Stage.EXPORT, "wrapped failure keeps its stage");
+
         if (failures != 0) {
             System.err.println(failures + " pure-logic check(s) failed");
             System.exit(1);

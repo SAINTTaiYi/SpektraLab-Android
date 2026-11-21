@@ -32,6 +32,8 @@ Report 'check-prebuilt' ($LASTEXITCODE -eq 0)
 Write-Host '== build-tool tests =='
 & $py "$root\app\build\test_build_tools.py"
 Report 'test_build_tools' ($LASTEXITCODE -eq 0)
+& $py "$root\app\build\test_checkers.py"
+Report 'test_checkers' ($LASTEXITCODE -eq 0)
 
 Write-Host '== Java compilation =='
 $jdk = (Get-ChildItem "$BuildHome\jdk-17*" -Directory -ErrorAction SilentlyContinue |
@@ -55,6 +57,7 @@ New-Item -ItemType Directory -Path $logicOut | Out-Null
 $logicSources = @(
     "$root\app\src\main\java\app\spektralab\PixelBudget.java",
     "$root\app\src\main\java\app\spektralab\JsonQuote.java",
+    "$root\app\src\main\java\app\spektralab\AppFailure.java",
     "$root\app\src\test\java\app\spektralab\PureLogicTest.java")
 & "$jdk\bin\javac.exe" @logicSources -d $logicOut
 if ($LASTEXITCODE -eq 0) {

@@ -178,6 +178,8 @@ Known limits: arbitrary-angle rotation needs a whole-source binding and is refus
 devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
 Lightroom — use TIFF + share from the phone.
 
+**Testing:** see [docs/testing.md](docs/testing.md) for the offline suite and the optional device smoke test.
+
 **Improvement plan:** the tracked checklist in [docs/improvement-plan.md](docs/improvement-plan.md).
 
 **Building on Windows x64:** see [setup, build, and project layout](docs/windows-build.md).

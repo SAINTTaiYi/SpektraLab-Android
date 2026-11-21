@@ -827,67 +827,19 @@ public class MainActivity extends Activity {
     private static org.json.JSONObject lookToJson(Look l) { return LookCodec.toJson(l); }
     private static Look lookFromJson(org.json.JSONObject o) { return LookCodec.fromJson(o); }
 
-    private java.io.File thumbFile(Uri uri) {
-        return new java.io.File(getCacheDir(),
-                "thumb_" + Integer.toHexString(uri.toString().hashCode()) + ".png");
-    }
-
-    /** Drop export/Vulkan scratch files older than a week. */
-    private void pruneDiagnosticFiles() {
-        final long cutoff = System.currentTimeMillis() - 7L * 24 * 3600 * 1000;
-        final java.io.File[] files = getCacheDir().listFiles((dir, name) ->
-                name.endsWith(".prog") || name.startsWith("export_") || name.startsWith("vk"));
-        if (files == null) return;
-        for (java.io.File f : files) if (f.isFile() && f.lastModified() < cutoff) f.delete();
-    }
-
-    /** Drop thumbnails whose frame was deleted or whose grant expired. */
-    private void pruneThumbFiles() {
-        final java.io.File[] files = getCacheDir().listFiles(
-                (dir, name) -> name.startsWith("thumb_") && name.endsWith(".png"));
-        if (files == null) return;
-        final java.util.Set<String> keep = new java.util.HashSet<>();
-        for (Frame f : frames) {
-            if (f.uri != null) keep.add("thumb_" + Integer.toHexString(f.uri.toString().hashCode()) + ".png");
-        }
-        for (java.io.File f : files) if (!keep.contains(f.getName())) f.delete();
-    }
-
-    private void persistThumb(Frame frame) {
-        if (frame == null || frame.thumb == null) return;
-        try (java.io.FileOutputStream out = new java.io.FileOutputStream(thumbFile(frame.uri))) {
-            frame.thumb.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out);
-        } catch (Throwable ignored) { }
-    }
-
-    private Bitmap readThumb(Uri uri) {
-        try {
-            final java.io.File f = thumbFile(uri);
-            if (!f.isFile()) return null;
-            return android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
-        } catch (Throwable t) {
-            return null;
-        }
-    }
+    // Thumbnail and scratch-file handling is file I/O, not UI; see ThumbCache.
+    private void pruneDiagnosticFiles() { ThumbCache.pruneDiagnostics(this); }
+    private void pruneThumbFiles() { ThumbCache.prune(this, frames); }
+    private void persistThumb(Frame frame) { ThumbCache.persist(this, frame); }
 
     private void saveSessionState() {
         try {
-            final org.json.JSONArray arr = new org.json.JSONArray();
-            for (Frame f : frames) {
-                final org.json.JSONObject o = new org.json.JSONObject();
-                o.put("uri", f.uri.toString());
-                o.put("raw", f.raw);
-                o.put("name", f.name == null ? "" : f.name);
-                o.put("look", lookToJson(f.look));
-                o.put("orig", f.original);
-                arr.put(o);
+            final String json = SessionState.toJson(frames, currentFrame, shelfCollapsed).toString();
+            // Never overwrite a good state file with an empty document.
+            if (!"{}".equals(json)) {
+                getSharedPreferences(PREFS_SESSION, MODE_PRIVATE).edit()
+                        .putString(KEY_SESSION, json).apply();
             }
-            final org.json.JSONObject root = new org.json.JSONObject();
-            root.put("frames", arr);
-            root.put("current", currentFrame);
-            root.put("collapsed", shelfCollapsed);
-            getSharedPreferences(PREFS_SESSION, MODE_PRIVATE).edit()
-                    .putString(KEY_SESSION, root.toString()).apply();
         } catch (Throwable t) {
             try { DebugSink.text("session", "save failed: " + t); } catch (Throwable ignored) { }
         }
@@ -907,30 +859,11 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) { }
         if (raw == null || raw.isEmpty()) return false;
         try {
-            final org.json.JSONObject root = new org.json.JSONObject(raw);
-            final org.json.JSONArray arr = root.optJSONArray("frames");
-            if (arr == null || arr.length() == 0) return false;
+            final SessionState.Snapshot snapshot = SessionState.fromJson(raw, this);
+            if (snapshot == null) return false;
             frames.clear();
-            for (int i = 0; i < arr.length(); ++i) {
-                final org.json.JSONObject o = arr.optJSONObject(i);
-                if (o == null) continue;
-                final String u = o.optString("uri", "");
-                if (u.isEmpty()) continue;
-                final Uri uri = Uri.parse(u);
-                final Frame frame = new Frame(uri, o.optBoolean("raw", false), o.optString("name", ""));
-                frame.look = lookFromJson(o.optJSONObject("look"));
-                // **Legacy sessions open on their print.** A frame saved before
-                // this flag existed had no way to say "I was looking at the
-                // source"; defaulting to true would bring every old edit back
-                // unrendered and read as lost work.
-                frame.original = o.optBoolean("orig", false);
-                frame.thumb = readThumb(uri);
-                frames.add(frame);
-            }
-            if (frames.isEmpty()) return false;
-            final int saved = root.optInt("current", -1);
-            final String savedUri = (saved >= 0 && saved < frames.size())
-                    ? frames.get(saved).uri.toString() : "";
+            frames.addAll(snapshot.frames);
+            final String savedUri = snapshot.currentUri;
             // **A frame whose grant expired can never be opened again.** Left in
             // the strip it re-ran `loadImage`, hit the same dialog, and kept the
             // dead chip for the next launch; dropped here it costs one toast and
@@ -956,7 +889,7 @@ public class MainActivity extends Activity {
                 if (frames.get(i).uri.toString().equals(savedUri)) { pick = i; break; }
             }
             currentFrame = pick >= 0 ? pick : frames.size() - 1;
-            shelfCollapsed = root.optBoolean("collapsed", false);
+            shelfCollapsed = snapshot.collapsed;
             rebuildFrameChips();
             setShelfCollapsed(shelfCollapsed);
             try {

@@ -7,12 +7,12 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 | Metric | Value |
 |---|---:|
-| `MainActivity.java` | 15,112 lines |
+| `MainActivity.java` | 14,9xx lines |
 | `catch (Throwable …)` / empty bodies | 279 / 185 |
 | `runOnUiThread` / `new Thread` | 44 / 20 |
 | Dialog constructions / `dismiss()` calls | 7 / 19 |
 | Hardcoded Chinese UI literals | 0 user-facing (3 are native-message matchers) |
-| Automated tests | 3 build-tool tests + 1 JVM test + 2 C++ compile checks + 4 checkers |
+| Automated tests | 7 Python tests + 1 JVM test + 2 C++ compile checks + 4 checkers |
 | Built APK size (prebuilt mode) | 15.9 MB (after deflating native libs) |
 | Native source build | blocked — `check-patch.py` WARN |
 
@@ -115,7 +115,8 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 ### [ ] P2.1 — Finish the MainActivity split (partially done)
 
 - **Done:** extracted `Look` / `Frame` / `Knob` / `LookCodec` (~250 lines of
-  pure JSON mapping) and `PixelBudget` / `JsonQuote` (pure, JVM-testable).
+  pure JSON mapping), `SessionState` (strip serialization), `ThumbCache`
+  (disk cache), and `PixelBudget` / `JsonQuote` (pure, JVM-testable).
 - **Still open:** `ImportController`, `RenderController`, `ExportController`,
   `PresetStore`, `DialogFactory`. Target: Activity < 5,000 lines.
 - **Verification:** javac + `PureLogicTest` pass after every extraction.
