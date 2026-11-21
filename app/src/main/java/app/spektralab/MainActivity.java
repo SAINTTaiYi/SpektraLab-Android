@@ -24576,6 +24576,30 @@ public class MainActivity extends Activity {
      * gate that fits *that* size and draw once more. Returns true when the
      * selection actually changed, which is what stops it from looping.
      */
+    /**
+     * The rebate made the canvas bigger than one frame may be.
+     *
+     * <p>The engine refuses before it allocates anything: "the film canvas
+     * would be 8758 x 11853 (103.8 MP) ... Turn the rebate off, or import a
+     * smaller picture" (SL-261121-9DB4). A 100 MP import plus a 135 rebate is
+     * 104 MP of canvas, and the only way forward the dialog offered was a trip
+     * to the 边框 page. Closing the rebate for this frame gets the picture out
+     * on the first try -- and it is the engine's own sentence that says so.
+     *
+     * <p>Idempotent: with the rebate already off this returns false, so a
+     * second failure from another cause is reported rather than re-healed.
+     */
+    private boolean healCanvasFromError(String raw) {
+        if (raw == null || !raw.contains("film canvas would be")) return false;
+        if (!overscanOn) return false;
+        overscanOn = false;
+        try { refreshEdgeCards(); } catch (Throwable ignored) { }
+        try { statusText.setText("这张太大，片边画不上 · 片边已关闭"); } catch (Throwable ignored) { }
+        try { showInAppToast("片边超过单帧上限，已自动关闭"); } catch (Throwable ignored) { }
+        try { CrashTrail.mark(this, "heal: canvas too big, rebate off"); } catch (Throwable ignored) { }
+        return true;
+    }
+
     private boolean healGateFromError(String raw) {
         if (raw == null || !raw.contains("gate's shape")) return false;
         final java.util.regex.Matcher m =
@@ -34311,6 +34335,17 @@ public class MainActivity extends Activity {
             } catch (Throwable e) {
                 try { session.renderEnd(); } catch (Throwable ignored) {}
                 final String msg = describe(e);
+                if (healCanvasFromError(msg)) {
+                    runOnUiThread(() -> {
+                        rendering = false;
+                        progressBar.setVisibility(View.GONE);
+                        hideBusy();
+                        pendingRender = false;
+                        statusText.setText("Rendering…");
+                        renderImage(longEdge);
+                    });
+                    return;
+                }
                 if (healGateFromError(msg)) {
                     runOnUiThread(() -> {
                         rendering = false;
@@ -37835,6 +37870,16 @@ public class MainActivity extends Activity {
                 // number is a real answer rather than a guess; everything else
                 // (a plane that does not fit, a lost device) fails the same way
                 // a second time and should just be reported.
+                if (exportHeals < 2 && healCanvasFromError(msg)) {
+                    ++exportHeals;
+                    final String f2 = format, t2 = tier;
+                    runOnUiThread(() -> {
+                        if (exportProgressBar != null) hideBusy();
+                        statusText.setText("片边太大，已关闭，重试导出…");
+                        exportImage(f2, t2, onDone);
+                    });
+                    return;
+                }
                 if (exportHeals < 2 && healGateFromError(msg)) {
                     ++exportHeals;
                     final String f2 = format, t2 = tier;
@@ -38075,6 +38120,43 @@ public class MainActivity extends Activity {
         // moment the state is most likely to have drifted: the app was in the
         // background while a decode, a batch or a rotation finished.
         refreshPanelLocks();
+    }
+
+    /**
+     * Android telling us the phone is short.
+     *
+     * <p>Three of the eight crashes in 1.7.0's first four hours were the
+     * low-memory killer taking the process at 2.7-6.5 GB resident -- 50 MP
+     * frames, one of them with the second engine's scene cache still beside
+     * it -- and this class had no trim callback at all: whatever it held, it
+     * kept holding until the killer decided. Everything released here is a
+     * cache and rebuilds itself.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        try { CrashTrail.mark(this, "trim " + level); } catch (Throwable ignored) { }
+        // **The pool first, every time.** `spk_trim_pool` returns the idle
+        // device blocks; the session's own planes are not touched, so the
+        // canvas survives this.
+        try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
+        final int moderate = android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE;
+        final int critical = android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL;
+        if (level < moderate && level != critical) return;
+        // **The shelf's pictures.** 54 cards at 384 px is ~25 MB, and a queue
+        // that keeps rendering more of them while the phone is dying is the
+        // wrong thing to be doing.
+        try { stopPrefetch(); } catch (Throwable ignored) { }
+        try { clearShelfCache(); } catch (Throwable ignored) { }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        try { CrashTrail.mark(this, "trim low-memory"); } catch (Throwable ignored) { }
+        try { stopPrefetch(); } catch (Throwable ignored) { }
+        try { clearShelfCache(); } catch (Throwable ignored) { }
+        try { if (engine != null) engine.trimPool(); } catch (Throwable ignored) { }
     }
 
     @Override
