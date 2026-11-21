@@ -228,7 +228,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | SessionState + ThumbCache extraction | `d44f9bb` | javac, APK build |
 | UiDispatcher + PresetStore + logged catches | `1401714` | check-no-silent-catch, javac |
 | Device smoke run + file:// ACTION_VIEW fix | `7846adb` | device screenshot, javac |
-| On-device golden / banding comparison | pending | 3 hashes identical |
+| On-device golden / banding comparison | `0b634e0` | 3 hashes identical |
 
 ## Updating this plan
 
