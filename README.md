@@ -180,6 +180,8 @@ Lightroom — use TIFF + share from the phone.
 
 **Testing:** see [docs/testing.md](docs/testing.md) for the offline suite and the optional device smoke test.
 
+**Architecture plan:** [docs/android-skill-adoption.md](docs/android-skill-adoption.md) maps the `claude-android-skill` principles onto this Java/JNI codebase.
+
 **Improvement plan:** the tracked checklist in [docs/improvement-plan.md](docs/improvement-plan.md).
 
 **Building on Windows x64:** see [setup, build, and project layout](docs/windows-build.md).
