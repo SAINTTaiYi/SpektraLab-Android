@@ -178,6 +178,8 @@ Known limits: arbitrary-angle rotation needs a whole-source binding and is refus
 devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
 Lightroom — use TIFF + share from the phone.
 
+**Improvement plan:** the tracked checklist in [docs/improvement-plan.md](docs/improvement-plan.md).
+
 **Building on Windows x64:** see [setup, build, and project layout](docs/windows-build.md).
 Run `./scripts/verify.ps1` for offline locale/version/Java/header checks, and add
 `-EngineRoot <upstream checkout>` to also verify the published engine patch.
