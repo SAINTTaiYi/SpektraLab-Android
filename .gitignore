@@ -4,6 +4,8 @@ app/build/classes/
 app/build/dex/
 app/build/apk/
 app/build/sources.txt
+__pycache__/
+*.pyc
 app/build/*.apk
 *.apk
 *.apk.idsig

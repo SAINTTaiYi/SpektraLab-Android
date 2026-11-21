@@ -210,14 +210,14 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Batch stop mid-export, storage cleanup, dead code | `a81ae43` | javac |
 | Track prebuilt arm64 payload | `f152b76` | `check-prebuilt.py`, APK build |
 | Cache release APK with checksum | `2941932` | both Windows build modes |
-| Build-tool unit tests + EXIF compile test | pending | `test_build_tools.py`, verify.ps1 |
-| Deflate native libs in APK | pending | 15.9 MB, compress_type 8, unit test |
-| Diagnostics consent labels | pending | check-locales |
-| Reusable native scratch / row sampling | pending | JNI + javac |
-| CrashTrail apply() for routine marks | pending | javac |
-| Storage quotas + scratch pruning | pending | javac |
-| APK size guard in build script | pending | 20 MB threshold |
-| Remove tracked generated sources.txt | pending | git rm + .gitignore |
+| Build-tool unit tests + EXIF compile test | `501448a` | `test_build_tools.py`, verify.ps1 |
+| Deflate native libs in APK | `501448a` | 15.9 MB, compress_type 8, unit test |
+| Diagnostics consent labels | `501448a` | check-locales |
+| Reusable native scratch / row sampling | `501448a` | JNI + javac |
+| CrashTrail apply() for routine marks | `501448a` | javac |
+| Storage quotas + scratch pruning | `501448a` | javac |
+| APK size guard in build script | `501448a` | 20 MB threshold |
+| Remove tracked generated sources.txt | `501448a` | git rm + .gitignore |
 
 ## Updating this plan
 
