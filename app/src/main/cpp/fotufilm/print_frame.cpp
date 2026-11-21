@@ -433,10 +433,16 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
         }
     }
 
-    const double band_x = 0.5 * double(W - L.photo_w);
-    const double band_y = 0.5 * double(H - L.photo_h);
-    // The perforations sit in the wider band: above and below a 135 frame,
-    // beside a motion-picture frame (its gate is nearly the full film width).
+    const double mx0 = double(L.photo_x);
+    const double mx1 = double(W - L.photo_x - L.photo_w);
+    const double my0 = double(L.photo_y);
+    const double my1 = double(H - L.photo_y - L.photo_h);
+    // The perforations sit on the axis with the wider margin: above and below a
+    // 135 frame, beside a motion-picture frame (its gate is nearly the full film
+    // width). A one-row gauge is offset in `layout`, so its two margins differ
+    // and only their sum is symmetric.
+    const double band_x = 0.5 * (mx0 + mx1);
+    const double band_y = 0.5 * (my0 + my1);
     const bool perf_on_x = band_x > band_y;
 
     if (g->rows > 0) {
@@ -470,11 +476,71 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
     // The factory's edge print, in the free strip between the perforation row
     // and the frame -- not over the holes, which is where a naive centre of the
     // band lands. A long inscription shrinks, then trims.
-    if (!g->instax && !g->sheet) {
+    if (!g->instax) {
         const double px = L.px_per_mm;
         const double inner_mm = (g->rows > 0) ? (g->edge + g->hole_y) : 0.0;
         const double inset_y = std::max(1.0, std::min(2.0 * px, band_y * 0.35));
         const double inset_x = std::max(1.0, std::min(2.0 * px, band_x * 0.35));
+        if (g->rows == 1) {
+            // **One row: the print goes on the edge *without* the holes.** The
+            // strip between the perforation and the frame is exactly the
+            // perforation's own height, so subtracting `inner_mm` here (as the
+            // two-row branch below does) always came out negative. The free
+            // strip is the narrower margin, on the opposite edge.
+            const double strip = std::max(0.0, std::min(mx0, mx1));
+            if (strip >= 0.55 * px) {
+                const double room_no = req.frame_no.empty() ? 0.0 : 0.22 * double(H);
+                const double avail = double(H) - 2.0 * inset_x - room_no;
+                const double base = std::min(2.1 * px, strip * 0.72);
+                double em = base;
+                std::string text = req.inscription;
+                while (em > base * 0.55 && !text.empty() &&
+                       spk::imprint::text_width("LiberationSans-Bold", em, text, em * 0.04, 1.0) > avail)
+                    em *= 0.93;
+                while (!text.empty() &&
+                       spk::imprint::text_width("LiberationSans-Bold", em, text, em * 0.04, 1.0) > avail)
+                    text.pop_back();
+                const double x = double(W) - strip * 0.5 + em * 0.30;
+                if (!text.empty())
+                    draw_text(out, W, H, x, double(H) - inset_x, em, text,
+                              "LiberationSans-Bold", -90.0, 0.94);
+                if (!req.frame_no.empty()) {
+                    const double wnum = spk::imprint::text_width(
+                        "LiberationSans-Bold", em, req.frame_no, em * 0.04, 1.0);
+                    draw_text(out, W, H, x, inset_x + wnum, em, req.frame_no,
+                              "LiberationSans-Bold", -90.0, 0.94);
+                }
+            }
+        } else if (g->sheet) {
+            // **A sheet carries the emulsion's name along one edge**, in the
+            // border the holder leaves -- no perforations, and the notch sits at
+            // the opposite corner. 2.5 mm is narrower than the 3 mm the two-row
+            // branch asks for, so sheets used to come out blank.
+            const double strip = std::max(0.0, std::min(my0, my1));
+            if (strip >= 0.8 * px) {
+                const double room_no = req.frame_no.empty() ? 0.0 : 0.22 * double(W);
+                const double avail = double(W) - 2.0 * inset_y - room_no;
+                const double base = std::min(2.1 * px, strip * 0.72);
+                double em = base;
+                std::string text = req.inscription;
+                while (em > base * 0.55 && !text.empty() &&
+                       spk::imprint::text_width("LiberationSans-Bold", em, text, em * 0.04, 1.0) > avail)
+                    em *= 0.93;
+                while (!text.empty() &&
+                       spk::imprint::text_width("LiberationSans-Bold", em, text, em * 0.04, 1.0) > avail)
+                    text.pop_back();
+                const double baseline = double(H) - strip * 0.5 + em * 0.36;
+                if (!text.empty())
+                    draw_text(out, W, H, inset_y, baseline, em, text,
+                              "LiberationSans-Bold", 0.0, 0.94);
+                if (!req.frame_no.empty()) {
+                    const double wnum = spk::imprint::text_width(
+                        "LiberationSans-Bold", em, req.frame_no, em * 0.04, 1.0);
+                    draw_text(out, W, H, double(W) - inset_y - wnum, baseline, em, req.frame_no,
+                              "LiberationSans-Bold", 0.0, 0.94);
+                }
+            }
+        }
         // **The band the print can live in is the wider one.** A motion
         // picture's gate very nearly fills the film across its width (Super 35:
         // 18.67 of 18.96 mm), so the free strip is on the *sides* -- 5.04 mm of
@@ -627,10 +693,17 @@ const char* edge_print_for(const std::string& stock, const std::string& gauge) {
     const EdgePrint* e = nullptr;
     for (const EdgePrint& one : kEdgePrints) if (stock == one.stock) { e = &one; break; }
     if (!e) return "";
-    if (gauge == "super35" || gauge == "16mm") return e->tmotion ? e->tmotion : "";
+    // **A motion gauge prints the motion stock's code, and any other stock's
+    // own 135 inscription.** A still film in a Super 8 cartridge is a fantasy
+    // the app allows; leaving the strip blank made it look like a bug. The
+    // inscription is still the stock's verified one, not an invented one.
+    if (gauge == "super35" || gauge == "16mm" || gauge == "super8")
+        return e->tmotion ? e->tmotion : (e->t135 ? e->t135 : "");
     if (gauge.rfind("120_", 0) == 0) return e->t120 ? e->t120 : "";
-    // A sheet's lettering is not verified; Super 8 and Instax carry none.
-    if (gauge == "4x5" || gauge == "super8" || gauge.rfind("instax", 0) == 0) return "";
+    // An Instax sheet is integral: the white border is the product, and it
+    // carries no film edge. A 4x5 sheet does carry the emulsion's name.
+    if (gauge.rfind("instax", 0) == 0) return "";
+    if (gauge == "4x5") return e->t135 ? e->t135 : "";
     return e->t135 ? e->t135 : "";
 }
 
@@ -664,6 +737,25 @@ bool layout(const Request& req, int src_w, int src_h, Layout& out, std::string& 
         out.photo_y = g->instax
             ? int(std::lround(0.5 * (fx - ax) * out.px_per_mm))
             : (out.canvas_h - out.photo_h) / 2;
+        // **One row of holes is not a symmetric frame.** 16 mm and Super 8 are
+        // perforated along one edge only, so the aperture is offset away from
+        // it: that edge keeps exactly `edge + hole` of film and the opposite one
+        // keeps the remainder -- which is where the factory printed the stock's
+        // name. Centring instead made the holes cut into the picture (16 mm
+        // wants 2.43 mm of the 1.82 mm it had) and left the inscription a
+        // negative strip, so both gauges came out with no lettering at all.
+        if (g->rows == 1) {
+            const double free_x = fx - ax, free_y = fy - ay;
+            const bool perf_on_x = free_x > free_y;        // same rule as compose_film
+            const double perf_side = g->edge + g->hole_y;  // hole_y is the across size
+            if (perf_on_x) {
+                out.photo_x = int(std::lround(perf_side * out.px_per_mm));
+                out.photo_y = (out.canvas_h - out.photo_h) / 2;
+            } else {
+                out.photo_y = int(std::lround(perf_side * out.px_per_mm));
+                out.photo_x = (out.canvas_w - out.photo_w) / 2;
+            }
+        }
         out.sheet_w_mm = fx;
         out.sheet_h_mm = fy;
         out.valid = true;

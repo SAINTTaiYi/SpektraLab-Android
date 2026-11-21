@@ -878,6 +878,12 @@ public class MainActivity extends Activity {
     private TextView edgeFotuNote;
     private LinearLayout edgeShapeRow;
     private int edgePageIndex = -1;
+    /** Ceiling for a 边框 sub-page, in dp.
+     *
+     *  <p>The tallest legitimate one is 日期水印: a 38 dp head over a body capped
+     *  at 340. 400 leaves that alone and still refuses the height a page grew to
+     *  on 1.7.0, which took the canvas and the tab bar with it. */
+    private static final int EDGE_SUBPAGE_CAP_DP = 400;
     private static final String[] MODE_IDS = {"strip", "filed"};
     private static final String[] MODE_LABELS = {"整条 strip", "窄边 filed"};
     private static final String[] GATE_IDS = {"auto", "square", "rounded", "eared", "shouldered", "kicked"};
@@ -3587,6 +3593,14 @@ public class MainActivity extends Activity {
 
     /** `again` is for a container that is never hidden -- a rebuilt body. */
     private void enterPanel(final View panel, final int fromH, boolean again) {
+        enterPanel(panel, fromH, again, 0);
+    }
+
+    /**
+     * @param capPx > 0 pins the arriving height. A sub-page of 边框 may never
+     *              take the canvas with it, whatever it measures to.
+     */
+    private void enterPanel(final View panel, final int fromH, boolean again, final int capPx) {
         if (panel == null) return;
         if (!again && panel.getVisibility() == View.VISIBLE && panel.getAlpha() >= 1f
                 && panel.getTranslationY() == 0f) {
@@ -3602,7 +3616,8 @@ public class MainActivity extends Activity {
         final int inner = panelHolder.getWidth()
                 - panelHolder.getPaddingLeft() - panelHolder.getPaddingRight();
         if (inner <= 0) return;
-        final int to = naturalHeight(panel, inner);
+        int to = naturalHeight(panel, inner);
+        if (capPx > 0 && to > capPx) to = capPx;
         cancelHeight(panel);
         // Every component animates itself, and stays visible while it does.
         componentArrival(panel);
@@ -21712,7 +21727,8 @@ public class MainActivity extends Activity {
 
         TextView note = label("画面冲出来之后再放到材料上 —— 不重采样、不改色彩。"
                 + "「相纸」是印出来那张纸的白边，「片夹边」是暗房把片夹锉宽留下的黑线，"
-                + "「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。",
+                + "「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。"
+                + "页片没有齿孔，只有右上角的缺口码；Instax 是一体式相纸，四周是白边 —— 这两类本来就没有齿孔。",
                 7.5f, UI_MUTED, tfHan);
         note.setPadding(dp(2), 0, dp(2), dp(6));
         pfPage.addView(note, new LinearLayout.LayoutParams(-1, -2));
@@ -21722,17 +21738,30 @@ public class MainActivity extends Activity {
         choiceCell(row, "边框样式", pfLabel(), tv -> { pfValue = tv; showPfPicker(); });
         pfPage.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        pfMarginBar = rangeRow(pfPage, "纸边宽", "相纸 / 片夹的留白，毫米；按这张纸的实际尺寸",
+        // **The body scrolls, like the other two sub-pages.** 片边 and 日期水印
+        // both sit inside a `cappedScroll`; this page was the only one whose
+        // rows hung straight off the page, so its natural height was whatever
+        // the device made of three rows and a note -- and the page is a child of
+        // the panel, which is `wrap_content` inside a column where the canvas is
+        // the only weight. A page that measures tall therefore takes the canvas
+        // with it: 边框 → 印刷边框 covered the whole window, tab bar and all.
+        // Capped at 240 dp the same rows scroll, and the photograph keeps its
+        // half of the screen whatever the font scale does.
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+
+        pfMarginBar = rangeRow(body, "纸边宽", "相纸 / 片夹的留白，毫米；按这张纸的实际尺寸",
                 0.5f, 20f, pfMargin, 0.5f, v -> pfMargin = v);
-        pfFxBar = rangeRow(pfPage, "取景 左右", "画面在片门里向左 / 右挪；只有需要裁切时才有行程",
+        pfFxBar = rangeRow(body, "取景 左右", "画面在片门里向左 / 右挪；只有需要裁切时才有行程",
                 -1f, 1f, pfFx, 0.01f, v -> pfFx = v);
-        pfFyBar = rangeRow(pfPage, "取景 上下", "画面在片门里向上 / 下挪",
+        pfFyBar = rangeRow(body, "取景 上下", "画面在片门里向上 / 下挪",
                 -1f, 1f, pfFy, 0.01f, v -> pfFy = v);
 
         TextView only = label("这一层只作用在 fotufilm 的帧上。第一引擎的片边在引擎里，相纸边还没有。",
                 7.5f, UI_MUTED, tfHan);
         only.setPadding(dp(2), dp(8), dp(2), dp(4));
-        pfPage.addView(only, new LinearLayout.LayoutParams(-1, -2));
+        body.addView(only, new LinearLayout.LayoutParams(-1, -2));
+        pfPage.addView(cappedScroll(body, 240), new LinearLayout.LayoutParams(-1, -2));
         refreshPfRows();
     }
 
@@ -22144,8 +22173,34 @@ public class MainActivity extends Activity {
             }
             if (shown >= 0 && shown < edgeRoot.getChildCount()) {
                 final View target = edgeRoot.getChildAt(shown);
-                if (onScreen) enterPanel(target, fromH, true);
-                else target.setVisibility(View.VISIBLE);
+                // **The panel's own height is not the page's.** `enterPanel` walks
+                // the child; a fixed height left on this container -- by an
+                // interrupted walk, or by the fold -- would outlive the page that
+                // asked for it and squeeze the canvas to nothing on the next one.
+                final android.view.ViewGroup.LayoutParams rlp = edgeRoot.getLayoutParams();
+                if (onScreen && rlp != null && rlp.height >= 0) {
+                    rlp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                    edgeRoot.setLayoutParams(rlp);
+                }
+                if (onScreen) {
+                    enterPanel(target, fromH, true, dp(EDGE_SUBPAGE_CAP_DP));
+                } else {
+                    final android.view.ViewGroup.LayoutParams tlp = target.getLayoutParams();
+                    if (tlp != null && tlp.height >= 0) {
+                        tlp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                        target.setLayoutParams(tlp);
+                    }
+                    target.setVisibility(View.VISIBLE);
+                }
+                // **One line, and the next report is decidable.** 边框 → 印刷边框
+                // covered the window on 1.7.0 and the code alone could not say
+                // which of the four heights had grown; this writes them out on
+                // every page change (boot.txt, no network).
+                final int whichNow = which;
+                target.post(() -> markFile("edge p=" + whichNow
+                        + " h=" + target.getHeight()
+                        + " root=" + edgeRoot.getHeight()
+                        + " holder=" + (panelHolder == null ? -1 : panelHolder.getHeight())));
             }
         }
         refreshEdgeCards();
@@ -30827,7 +30882,26 @@ public class MainActivity extends Activity {
         // -- the physics is not linear in the way the number suggested, so the
         // slider keeps only the usable end.
         kv.put("preflash_exposure", f("%.4f", preflash * 0.2f));
-        kv.put("overscan_active", b(overscanOn));
+        // **A print frame is not a carrier this engine has.** The seven gauges the
+        // second engine lays its own film on (Super 35 / 16 mm / Super 8 / 4x5 /
+        // Instax) are `pf:` slots on the host; `spkGateId()` can only answer with
+        // one of the ten rebate carriers. The picture, though, is still cropped to
+        // the *print frame's* ratio, so sending `overscan_active` is a guaranteed
+        // rejection -- measured here with a 1.263 crop:
+        //
+        //   spk_render failed (-5): overscan: a 900 x 504 frame is not the 135
+        //   gate's shape (36.25 x 24.3); crop the picture to the gate first
+        //
+        // and the same line reached a user as 渲染失败 on 1.7.0 with Portra 800 --
+        // a film only this engine has -- which reads as "SpektraLab 引擎用不了".
+        // Switching back to a fotufilm stock worked because the host accepts the
+        // print frame, which is exactly what made the report look film-specific.
+        //
+        // There is no border to draw here, so the frame renders bare; the gate
+        // stays where it is and the second engine gets it back untouched.
+        final boolean spkBorder = overscanOn
+                && !(isPrintFrameGauge(overscanFormat) && !isFotuStock(stock));
+        kv.put("overscan_active", b(spkBorder));
         kv.put("overscan_format", q(spkGateId()));
         kv.put("overscan_edge_text", q(edgeTextOn ? edgeTextFor(stock) : ""));
         kv.put("overscan_fog", f("%.2f", edgeFog));
@@ -32008,6 +32082,13 @@ public class MainActivity extends Activity {
             b.append("pf:").append(pfKindHere);
             if (pfFilmHere)
                 b.append(";pfg:").append(overscanFormat);
+            // **`etext` is only appended in the rebate block above, and that
+            // block is skipped on these seven gauges** -- so the host was never
+            // asked for the stock's inscription and every print frame came out
+            // blank, even though the table has the lettering. The host resolves
+            // it through `print_frame::edge_print_for`, which knows the motion
+            // code (`5207  EN`) and the sheet's emulsion name.
+            if (pfFilmHere && edgeTextOn) b.append(";etext:1");
             if (pfNeedsMargin())
                 b.append(";pfm:").append(f("%.2f", Math.max(0f, Math.min(20f, pfMargin))));
             if (Math.abs(pfFx) > 1e-4f) b.append(";pffx:").append(f("%.3f", pfFx));
