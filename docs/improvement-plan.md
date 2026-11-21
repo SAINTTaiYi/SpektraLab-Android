@@ -224,7 +224,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Checker unit tests + device smoke script | `d44f9bb` | test_checkers.py, docs/testing.md |
 | SessionState + ThumbCache extraction | `d44f9bb` | javac, APK build |
 | UiDispatcher + PresetStore + logged catches | `1401714` | check-no-silent-catch, javac |
-| Device smoke run + file:// ACTION_VIEW fix | pending | device screenshot, javac |
+| Device smoke run + file:// ACTION_VIEW fix | `7846adb` | device screenshot, javac |
 
 ## Updating this plan
 
