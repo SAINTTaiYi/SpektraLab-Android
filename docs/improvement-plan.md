@@ -118,6 +118,9 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 ## Phase 2 — structure and performance
 
+See [the app performance handoff](performance-plan.md) for prioritized runtime
+work and its device measurement and regression plan.
+
 ### [ ] P2.1 — Finish the MainActivity split (partially done)
 
 - **Done:** extracted `Look` / `Frame` / `Knob` / `LookCodec` (~250 lines of
@@ -233,6 +236,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Phase B start: EditorState + RenderLookUseCase | `f1cfd4c` | DomainTest + emulator golden |
 | Preset/preferences repositories + live-preview state | `1c38785` | DomainTest + emulator UI tap |
 | Stock-catalog repository + UiPalette extraction | `c61b84f` | emulator screenshot + golden |
+| Custom Views to ui/ + package-rule checker | pending | check-package-rules + emulator golden |
 
 ## Updating this plan
 

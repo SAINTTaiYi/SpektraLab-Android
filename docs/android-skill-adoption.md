@@ -67,8 +67,13 @@ Phase A repositories now cover photos, presets, preferences and the stock
 catalog (translation stays in the UI via `decorateStockLabel`), with fakes for
 the pure interfaces.
 
-Phase C started: theme tokens moved to `app.spektralab.ui.UiPalette`; the app
-renders identically on the Orca emulator after the extraction.
+Phase C started: theme tokens moved to `app.spektralab.ui.UiPalette`, and five
+self-contained Views (`Square`, `ArrowView`, `ToolGlyph`, `CappedScroll`,
+`EdgeBackdrop`) moved to `app.spektralab.ui`. The app renders identically on
+the Orca emulator and golden hashes are unchanged.
+
+Phase D started: `app/build/check-package-rules.py` rejects forbidden imports
+between `app`, `ui`, `domain` and `data`, and runs in CI.
 
 1. Define `EngineApi` (create/open session/render/export/trim) and `SessionApi`
    (setParams, renderBegin, copyArgbRange, solve, close) around the existing

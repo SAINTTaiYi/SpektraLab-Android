@@ -26,6 +26,7 @@ jobs:
           python app/build/test_build_tools.py
           python app/build/test_checkers.py
           python app/build/check-no-silent-catch.py
+          python app/build/check-package-rules.py
       - name: Compile Java
         shell: pwsh
         run: |

@@ -20,6 +20,11 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
 import app.spektralab.ui.UiPalette;
+import app.spektralab.ui.EdgeBackdrop;
+import app.spektralab.ui.Square;
+import app.spektralab.ui.ArrowView;
+import app.spektralab.ui.ToolGlyph;
+import app.spektralab.ui.CappedScroll;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
@@ -488,7 +493,6 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------------
     // Theme tokens live in UiPalette.
     private View overscanRow, dateRow;
-
 
     private Typeface tfDisplay;      // Inter 300 — numbers and the wordmark
     private Typeface tfBody;         // Inter 400 — Latin labels
@@ -1254,23 +1258,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private static class EdgeBackdrop extends android.graphics.drawable.Drawable {
-        private final int top;
-        private final android.graphics.Paint paint = new android.graphics.Paint();
-        EdgeBackdrop(int top) { this.top = top; }
-        @Override public void draw(android.graphics.Canvas canvas) {
-            final android.graphics.Rect b = getBounds();
-            paint.setColor(UiPalette.PAPER);
-            canvas.drawRect(b, paint);
-            if (top > 0) {
-                paint.setColor(UiPalette.STAGE);
-                canvas.drawRect(b.left, b.top, b.right, b.top + top, paint);
-            }
-        }
-        @Override public void setAlpha(int alpha) { }
-        @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
-        @Override public int getOpacity() { return android.graphics.PixelFormat.OPAQUE; }
-    }
+    
 
     private void buildUi() {
         loadUiFonts();
@@ -1775,7 +1763,6 @@ public class MainActivity extends Activity {
             return "";
         }
     }
-
 
     /**
      * A cheap structural sanity check on a file we just wrote.
@@ -2935,7 +2922,6 @@ public class MainActivity extends Activity {
         return head;
     }
 
-
     /**
      * The pinch, caught at the window.
      *
@@ -3746,7 +3732,6 @@ public class MainActivity extends Activity {
     /** Which 光学 sub-page is showing; 重置 acts on this one only. */
     private int viewPage = 0;
     private TextView[] viewCatChips;
-
 
     /**
      * The rendered result's own RGB distribution.
@@ -5128,12 +5113,10 @@ public class MainActivity extends Activity {
         // the checkbox. It also read as one more thing to tune rather than the
         // one bit it is.
 
-
         // **A switch, not a 0..1 knob**, for the same reason as EDR above: the
         // field has two meaningful values and a slider would invent 98 others
         // that all render the same. On = the stock's own hues (the 1.6.7 look);
         // off = the green-window correction.
-
 
         // **Log travel.** 0.25 / 1.0 / 4.0 are equal stops, and 1.0 is the
         // neutral: on a linear bar it sat at 20 %, which is the "越右越暗" half
@@ -5175,7 +5158,6 @@ public class MainActivity extends Activity {
                                                                     () -> digitalIntermediate ? 1f : 0f);
         knob("print.knob.output_encoding",   "E",  0.0f,  1.0f,   v -> outputCctf = v > 0.5f,
                                                                     () -> outputCctf ? 1f : 0f);
-
 
         // **Six controls, two rows.** This page is the tallest one in the app;
         // on a 640 dp screen six full-width rows at the bottom pushed the tab
@@ -5434,7 +5416,6 @@ public class MainActivity extends Activity {
         row.addView(cell, lp);
     }
 
-
     /** A picker whose rows show labels but whose callback delivers ids. */
     private void showChoiceMapping(String title, String[] labels, String[] ids, String currentId,
                                    java.util.function.Consumer<String> onPick) {
@@ -5615,7 +5596,6 @@ public class MainActivity extends Activity {
             name.setTextColor(active ? UiPalette.BLUE : UiPalette.MUTED);
         }
     }
-
 
     // ──────────────────────────────────────────────────────────────────
     // 构图: crop and rotate, out of the 尺度 page and into their own.
@@ -7112,27 +7092,7 @@ public class MainActivity extends Activity {
         return scroll;
     }
 
-    private static final class CappedScroll extends ScrollView {
-        private final int cap;
-
-        CappedScroll(android.content.Context context, int cap) {
-            super(context);
-            this.cap = cap;
-            setVerticalScrollBarEnabled(false);
-        }
-
-        @Override protected void onMeasure(int widthSpec, int heightSpec) {
-            final int mode = MeasureSpec.getMode(heightSpec);
-            final int size = MeasureSpec.getSize(heightSpec);
-            final int limit = mode == MeasureSpec.EXACTLY ? Math.min(size, cap) : cap;
-            super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST));
-            // AT_MOST(cap) already hugs a shorter list; this only makes the
-            // intent explicit if a future parent hands down EXACTLY.
-            if (getMeasuredHeight() > cap) {
-                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.EXACTLY));
-            }
-        }
-    }
+    
 
     private ScrollView scrollOf(View content) {
         final ScrollView scroll = new ScrollView(this);
@@ -8522,51 +8482,7 @@ public class MainActivity extends Activity {
     }
 
     /** A drawn tool glyph: no font fallback tofu at 19 dp. */
-    private static class ToolGlyph extends View {
-        static final int COMPARE = 0, CAMERA = 1, EXPORT = 2;
-        private final int kind;
-        private final android.graphics.Paint paint =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final float stroke;
-
-        ToolGlyph(android.content.Context context, int kind, int color) {
-            super(context);
-            this.kind = kind;
-            stroke = Math.max(1f, getResources().getDisplayMetrics().density);
-            paint.setStyle(android.graphics.Paint.Style.STROKE);
-            paint.setStrokeWidth(stroke);
-            paint.setColor(color);
-        }
-
-        void setColor(int color) {
-            paint.setColor(color);
-            invalidate();
-        }
-
-        @Override protected void onDraw(android.graphics.Canvas canvas) {
-            final float w = getWidth(), h = getHeight(), p = stroke;
-            if (kind == COMPARE) {
-                canvas.drawRect(p, h * 0.20f, w - p, h * 0.82f, paint);
-                canvas.drawLine(w * 0.5f, h * 0.20f, w * 0.5f, h * 0.82f, paint);
-                canvas.drawLine(p, h * 0.68f, w * 0.42f, h * 0.38f, paint);
-                canvas.drawLine(w - p, h * 0.68f, w * 0.58f, h * 0.38f, paint);
-            } else if (kind == EXPORT) {
-                // A tray, and an arrow leaving it.
-                canvas.drawLine(p, h * 0.58f, p, h * 0.86f, paint);
-                canvas.drawLine(p, h * 0.86f, w - p, h * 0.86f, paint);
-                canvas.drawLine(w - p, h * 0.86f, w - p, h * 0.58f, paint);
-                canvas.drawLine(w * 0.5f, h * 0.70f, w * 0.5f, h * 0.16f, paint);
-                canvas.drawLine(w * 0.5f, h * 0.16f, w * 0.28f, h * 0.38f, paint);
-                canvas.drawLine(w * 0.5f, h * 0.16f, w * 0.72f, h * 0.38f, paint);
-            } else {
-                canvas.drawRect(p, h * 0.28f, w - p, h * 0.82f, paint);
-                canvas.drawLine(w * 0.27f, h * 0.28f, w * 0.36f, h * 0.16f, paint);
-                canvas.drawLine(w * 0.36f, h * 0.16f, w * 0.64f, h * 0.16f, paint);
-                canvas.drawLine(w * 0.64f, h * 0.16f, w * 0.73f, h * 0.28f, paint);
-                canvas.drawCircle(w * 0.5f, h * 0.55f, h * 0.16f, paint);
-            }
-        }
-    }
+    
 
     /** Only the gates whose shape this frame is: the engine's own 5 % rule. */
     /** The gate's own long/short, or 0 when the id is not one of ours. */
@@ -9122,39 +9038,7 @@ public class MainActivity extends Activity {
 
     /** A 12 px square that fills when on: the page has no switch, and a filled
      *  square is the same vocabulary the tabs use. */
-    private static class Square extends View {
-        private final android.graphics.Paint paint =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final int onColor, offColor;
-        private final float stroke;
-        private boolean lit;
-
-        Square(android.content.Context context, int onColor, int offColor) {
-            super(context);
-            this.onColor = onColor;
-            this.offColor = offColor;
-            stroke = Math.max(1f, getResources().getDisplayMetrics().density);
-        }
-
-        void setLit(boolean on) {
-            lit = on;
-            invalidate();
-        }
-
-        @Override protected void onDraw(android.graphics.Canvas canvas) {
-            final float w = getWidth(), h = getHeight(), inset = stroke / 2f;
-            if (lit) {
-                paint.setStyle(android.graphics.Paint.Style.FILL);
-                paint.setColor(onColor);
-                canvas.drawRect(0, 0, w, h, paint);
-            } else {
-                paint.setStyle(android.graphics.Paint.Style.STROKE);
-                paint.setStrokeWidth(stroke);
-                paint.setColor(offColor);
-                canvas.drawRect(inset, inset, w - inset, h - inset, paint);
-            }
-        }
-    }
+    
 
     private View toggleRow(String labelText, Square mark,
                            java.util.function.BooleanSupplier isOn,
@@ -9705,27 +9589,7 @@ public class MainActivity extends Activity {
     /** Reset from the old single control strip: delegate to the film page. */
     private void resetLook() { resetFilmPanel(); }
 
-    private static class ArrowView extends View {
-        private final android.graphics.Paint paint =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final float stroke;
-
-        ArrowView(android.content.Context context, int color) {
-            super(context);
-            paint.setColor(color);
-            paint.setStyle(android.graphics.Paint.Style.STROKE);
-            stroke = Math.max(1f, getResources().getDisplayMetrics().density * 1.1f);
-            paint.setStrokeWidth(stroke);
-        }
-
-        @Override protected void onDraw(android.graphics.Canvas canvas) {
-            final float w = getWidth(), h = getHeight();
-            final float pad = stroke;
-            canvas.drawLine(pad, h - pad, w - pad, pad, paint);
-            canvas.drawLine(w - pad, pad, w - pad * 2f - w * 0.34f, pad, paint);
-            canvas.drawLine(w - pad, pad, w - pad, pad * 2f + h * 0.34f, paint);
-        }
-    }
+    
 
     /**
      * The stage's picture, and the two ways to see what the film did: hold it
@@ -9860,7 +9724,6 @@ public class MainActivity extends Activity {
         // pointer ids by hand got the sequence wrong: the pinch never moved
         // the picture and the leftover finger became a comparison drag.
         // `ScaleGestureDetector` owns that state and reports a factor.
-
 
         /** Retired: the long press lives on the pill now. Kept so the
          *  `removeCallbacks` calls stay valid, never posted. */
@@ -10800,7 +10663,6 @@ public class MainActivity extends Activity {
         if ("cine".equals(use)) label.append(tr("import.cinema"));
         return label.toString();
     }
-
 
     private int getStatusBarHeight() {
         int result = 0;
@@ -12636,7 +12498,6 @@ public class MainActivity extends Activity {
         }
     }
 
-
     /**
      * A stock change only re-renders. Measured against fresh sessions on this
      * engine, the stored print solution already gives the same picture after a
@@ -12662,7 +12523,6 @@ public class MainActivity extends Activity {
         updateFilmSelection();
         renderImage();
     }
-
 
     /**
      * The cheap half: what a slider owns.
@@ -15526,7 +15386,6 @@ public class MainActivity extends Activity {
             }
         }).start();
     }
-
 
     /**
      * `Class: message`, then its cause chain. A native library that fails to
