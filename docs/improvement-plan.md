@@ -40,9 +40,11 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
   (`native-tests/export_metadata_test.cpp`), and a **JVM-runnable** pure-logic
   test (`app/src/test/java/.../PureLogicTest.java`) covering the memory budget
   and JSON quoting. CI runs all three.
-- **Still open:** host golden tests for render maths and a device smoke suite
-  (render-hash, banded vs whole-plane, ACTION_VIEW, locale switch, export
-  self-check).
+- **Done on device:** `scripts/device-smoke.ps1` installed and launched the
+  side-by-side APK on a Motorola Razr 2025 over Wi-Fi adb; the UI rendered and
+  an image import was performed without a crash. The test exposed and fixed a
+  real `file://` ACTION_VIEW bug (`openUri` / `privateCopy`).
+- **Still open:** golden render hashes and a banded-vs-whole-plane comparison.
 - **Problem:** CI still does not execute render/export behaviour.
 - **Evidence:** only `app/build/native-tests/view_adjust_test.cpp` exists; the
   workflow `.github/workflows/verify.yml` runs compile/check steps.
@@ -222,6 +224,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | Checker unit tests + device smoke script | `d44f9bb` | test_checkers.py, docs/testing.md |
 | SessionState + ThumbCache extraction | `d44f9bb` | javac, APK build |
 | UiDispatcher + PresetStore + logged catches | `1401714` | check-no-silent-catch, javac |
+| Device smoke run + file:// ACTION_VIEW fix | pending | device screenshot, javac |
 
 ## Updating this plan
 

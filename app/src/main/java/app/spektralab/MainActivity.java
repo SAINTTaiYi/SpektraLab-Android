@@ -9146,7 +9146,7 @@ public class MainActivity extends Activity {
         try {
             if (sourceUri != null) {
                 String v = null;
-                try (InputStream in = getContentResolver().openInputStream(sourceUri)) {
+                try (InputStream in = openUri(sourceUri)) {
                     if (in != null) {
                         v = new android.media.ExifInterface(in)
                                 .getAttribute(android.media.ExifInterface.TAG_DATETIME_ORIGINAL);
@@ -10537,7 +10537,7 @@ public class MainActivity extends Activity {
         try {
             android.graphics.BitmapFactory.Options bounds = new android.graphics.BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            try (InputStream head = getContentResolver().openInputStream(uri)) {
+            try (InputStream head = openUri(uri)) {
                 if (head != null) android.graphics.BitmapFactory.decodeStream(head, null, bounds);
             }
             if (bounds.outWidth > 0 && bounds.outHeight > 0) {
@@ -11123,12 +11123,23 @@ public class MainActivity extends Activity {
             }
             dst = new java.io.File(dir,
                     System.currentTimeMillis() + "_" + (name == null ? "photo" : name));
-            try (InputStream in = getContentResolver().openInputStream(src);
+            // ACTION_VIEW from a file manager hands us a file:// URI. The
+            // platform ContentResolver does not open those; read the path
+            // directly so "open with" works as advertised in the manifest.
+            final InputStream in;
+            if ("file".equalsIgnoreCase(src.getScheme())) {
+                final java.io.File source = new java.io.File(src.getPath());
+                if (!source.isFile()) return null;
+                in = new java.io.FileInputStream(source);
+            } else {
+                in = openUri(src);
+            }
+            try (InputStream input = in;
                  java.io.FileOutputStream out = new java.io.FileOutputStream(dst)) {
-                if (in == null) return null;
+                if (input == null) return null;
                 final byte[] buf = new byte[1 << 16];
                 int read;
-                while ((read = in.read(buf)) > 0) out.write(buf, 0, read);
+                while ((read = input.read(buf)) > 0) out.write(buf, 0, read);
             }
             try { DebugSink.text("import", "copied " + name + " -> " + dst.getName()
                     + " (" + dst.length() + " bytes)"); } catch (Throwable spkIgnored) { Diagnostics.ignored("listFiles:11134", spkIgnored); }
@@ -11142,10 +11153,26 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Open either kind of URI this app handles: a picker's content:// grant or
+     * a file:// path from "open with" / our own private copies. ContentResolver
+     * does not open file:// URIs on every device.
+     */
+    private InputStream openUri(Uri uri) throws java.io.FileNotFoundException {
+        if (uri == null) return null;
+        if ("file".equalsIgnoreCase(uri.getScheme())) {
+            return new java.io.FileInputStream(uri.getPath());
+        }
+        return getContentResolver().openInputStream(uri);
+    }
+
     /** Can this URI still be opened? A restored frame's grant may be gone. */
     private boolean canReadUri(Uri uri) {
         if (uri == null) return false;
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
+        if ("file".equalsIgnoreCase(uri.getScheme())) {
+            return new java.io.File(uri.getPath()).isFile();
+        }
+        try (InputStream in = openUri(uri)) {
             return in != null;
         } catch (Throwable t) {
             return false;
@@ -12469,7 +12496,7 @@ public class MainActivity extends Activity {
                         new String[]{android.provider.OpenableColumns.SIZE}, null, null, null)) {
                     if (c != null && c.moveToFirst()) expected = c.getLong(0);
                 } catch (Throwable spkIgnored) { Diagnostics.ignored("getFilePathFromUri:12471", spkIgnored); }
-                try (InputStream in = getContentResolver().openInputStream(uri);
+                try (InputStream in = openUri(uri);
                      java.io.OutputStream out = new java.io.FileOutputStream(tempFile)) {
                     byte[] buf = new byte[64 * 1024];
                     int len;
@@ -12570,7 +12597,7 @@ public class MainActivity extends Activity {
     }
 
     private int readOrientation(Uri uri) {
-        try (InputStream in = getContentResolver().openInputStream(uri)) {
+        try (InputStream in = openUri(uri)) {
             if (in != null) {
                 return new android.media.ExifInterface(in).getAttributeInt(
                         android.media.ExifInterface.TAG_ORIENTATION,
@@ -12602,7 +12629,7 @@ public class MainActivity extends Activity {
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            try (InputStream head = getContentResolver().openInputStream(uri)) {
+            try (InputStream head = openUri(uri)) {
                 if (head != null) BitmapFactory.decodeStream(head, null, bounds);
             } catch (Throwable t) {
                 try { DebugSink.text("decode", "sniff " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("decodeImport:12608", spkIgnored); }
@@ -12613,7 +12640,7 @@ public class MainActivity extends Activity {
                         || Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edgeCap) sample *= 2;
                 BitmapFactory.Options opts = new BitmapFactory.Options();
                 opts.inSampleSize = sample;
-                try (InputStream stream = getContentResolver().openInputStream(uri)) {
+                try (InputStream stream = openUri(uri)) {
                     Bitmap decoded = BitmapFactory.decodeStream(stream, null, opts);
                     if (decoded != null) return decoded;
                     try { DebugSink.text("decode", "null at sample " + sample); }
@@ -14573,7 +14600,7 @@ public class MainActivity extends Activity {
                 if (idx >= 0 && !c.isNull(idx)) declared = String.valueOf(c.getLong(idx));
             }
         } catch (Throwable spkIgnored) { Diagnostics.ignored("getColumnIndex:14575", spkIgnored); }
-        try (java.io.InputStream in = getContentResolver().openInputStream(sourceUri)) {
+        try (java.io.InputStream in = openUri(sourceUri)) {
             if (in != null) {
                 final android.media.ExifInterface src = new android.media.ExifInterface(in);
                 platformFields[0] = nz(src.getAttribute(android.media.ExifInterface.TAG_MAKE));
@@ -14617,7 +14644,7 @@ public class MainActivity extends Activity {
     /** The first `max` bytes of the imported file -- an EXIF header lives there. */
     private byte[] readSourceHead(int max) {
         if (sourceUri == null) return null;
-        try (java.io.InputStream in = getContentResolver().openInputStream(sourceUri)) {
+        try (java.io.InputStream in = openUri(sourceUri)) {
             if (in == null) return null;
             final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
             final byte[] buf = new byte[32768];

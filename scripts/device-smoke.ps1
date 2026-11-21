@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory)][string]$Apk,
     [string]$BuildHome = "$env:LOCALAPPDATA\SpektraLabBuild",
     [string]$Package = 'app.spektralab',
+    [string]$Activity,
+    [string]$Serial,
     [switch]$Uninstall
 )
 $ErrorActionPreference = 'Stop'
@@ -15,27 +17,37 @@ if (!(Test-Path $Apk)) { throw "APK not found: $Apk" }
 $devices = & $adb devices | Select-String 'device$'
 if (!$devices) { throw 'No Android device connected.' }
 
+$adbArgs = @()
+if ($Serial) { $adbArgs = @('-s', $Serial) }
+function Adb([string[]]$arguments) {
+    & $adb @adbArgs @arguments
+}
+
 function Fail($message) { Write-Error $message; exit 1 }
 
 Write-Host "Installing $Apk"
-& $adb install -r $Apk | Out-Host
+Adb @('install', '-r', $Apk) | Out-Host
 if ($LASTEXITCODE -ne 0) { Fail 'adb install failed' }
 
-& $adb logcat -c
-& $adb shell am force-stop $Package
-& $adb shell am start -n "$Package/.MainActivity" | Out-Host
+Adb @('logcat', '-c')
+if (!$Activity) { $Activity = "$Package/.MainActivity" }
+Adb @('shell', 'am', 'force-stop', $Package)
+Adb @('shell', 'am', 'start', '-n', $Activity) | Out-Host
 if ($LASTEXITCODE -ne 0) { Fail 'activity launch failed' }
 Start-Sleep -Seconds 8
 
-$log = & $adb logcat -d -t 500
+$log = Adb @('logcat', '-d', '-t', '500')
 $crash = $log | Select-String 'FATAL EXCEPTION|native crash|SIGSEGV|SIGABRT|AndroidRuntime'
 if ($crash) {
     $crash | ForEach-Object { Write-Host $_.Line }
     Fail 'crash detected in logcat'
 }
 $shots = Join-Path ([IO.Path]::GetTempPath()) 'spektralab-smoke.png'
-& $adb exec-out screencap -p > $shots
+# PowerShell's `>` redirection mangles binary output; pull the file instead.
+Adb @('shell', 'screencap', '-p', '/sdcard/spektralab-smoke.png')
+Adb @('pull', '/sdcard/spektralab-smoke.png', $shots) | Out-Host
+Adb @('shell', 'rm', '/sdcard/spektralab-smoke.png')
 Write-Host "Screenshot: $shots"
 Write-Host 'Device smoke test passed.'
 
-if ($Uninstall) { & $adb uninstall $Package | Out-Host }
+if ($Uninstall) { Adb @('uninstall', $Package) | Out-Host }
