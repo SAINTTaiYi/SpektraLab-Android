@@ -7,12 +7,12 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 | Metric | Value |
 |---|---:|
-| `MainActivity.java` | 15,300 lines |
+| `MainActivity.java` | 15,112 lines |
 | `catch (Throwable …)` / empty bodies | 279 / 185 |
 | `runOnUiThread` / `new Thread` | 44 / 20 |
 | Dialog constructions / `dismiss()` calls | 7 / 19 |
 | Hardcoded Chinese UI literals | 0 user-facing (3 are native-message matchers) |
-| Automated tests | 3 build-tool tests + 2 C++ compile checks + 4 checkers |
+| Automated tests | 3 build-tool tests + 1 JVM test + 2 C++ compile checks + 4 checkers |
 | Built APK size (prebuilt mode) | 15.9 MB (after deflating native libs) |
 | Native source build | blocked — `check-patch.py` WARN |
 
@@ -37,7 +37,9 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 - **Done:** three runnable `unittest` cases for packaging helpers
   (`app/build/test_build_tools.py`), a compile-level EXIF round-trip test
-  (`native-tests/export_metadata_test.cpp`), and CI steps for both.
+  (`native-tests/export_metadata_test.cpp`), and a **JVM-runnable** pure-logic
+  test (`app/src/test/java/.../PureLogicTest.java`) covering the memory budget
+  and JSON quoting. CI runs all three.
 - **Still open:** host golden tests for render maths and a device smoke suite
   (render-hash, banded vs whole-plane, ACTION_VIEW, locale switch, export
   self-check).
@@ -77,28 +79,22 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
   `zipalign -c`, `apksigner verify`, and the packaging unit test pass.
 - **Effort / risk:** hours; low.
 
-### [ ] P1.3 — Error taxonomy
+### [ ] P1.3 — Error taxonomy (partially done)
 
-- **Problem:** 279 `catch (Throwable …)`, 185 empty bodies; failures are
-  implicit and hard to classify.
-- **Change:** introduce `ImportFailure`, `RenderFailure`, `ExportFailure` and a
-  single `reportAndShow()`; keep "batch must not stop" explicit rather than
-  relying on a swallowed exception.
-- **Verification:** every failure path produces a classified UI message and one
-  diagnostic row (respecting the consent switch).
-- **Effort / risk:** 3–5 days; medium — do after P0.2.
+- **Done:** `AppFailure` classifies IMPORT/RENDER/EXPORT; the four main catch
+  blocks log a `failure` row and the diagnostic header carries `stage=`.
+- **Still open:** replace the remaining 279 `catch (Throwable …)` / 185 empty
+  bodies with typed failures and one central `reportAndShow()`.
+- **Verification:** javac passes; a classified error report is observable.
 
-### [ ] P1.4 — UI concurrency ownership
+### [ ] P1.4 — UI concurrency ownership (partially done)
 
-- **Problem:** 44 `runOnUiThread` posts and 20 threads coordinate through
-  flags; `uiWait()` uses a timed latch that can apply state after timeout;
-  dialogs are not tied to lifecycle.
-- **Change:** a single `UiDispatcher` owning dialogs and handler callbacks;
-  replace `uiWait()` with a command queue / `CompletableFuture`; dismiss
-  dialogs in `onDestroy`.
-- **Verification:** no Handler/dialog leak in lifecycle tests; no state applied
-  after a timed-out wait.
-- **Effort / risk:** 3–5 days; medium.
+- **Done:** all 7 dialogs are created through `newDialog()` and dismissed in
+  `onDestroy`; `uiWait()` runs inline when already on the UI thread and logs
+  instead of silently swallowing exceptions.
+- **Still open:** a single `UiDispatcher` for all 44 `runOnUiThread` posts and
+  handler callbacks; replace the timed latch with a command queue.
+- **Verification:** javac passes; lifecycle leak test still needed.
 
 ### [x] P1.5 — Privacy completeness
 
@@ -116,15 +112,13 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 
 ## Phase 2 — structure and performance
 
-### [ ] P2.1 — Finish the MainActivity split
+### [ ] P2.1 — Finish the MainActivity split (partially done)
 
-- **Problem:** the Activity is still 15,300 lines and owns import, render,
-  export, presets, dialogs and diagnostics.
-- **Change:** incrementally extract `ImportController`, `RenderController`,
-  `ExportController`, `PresetStore`, `DialogFactory`. Target: Activity < 5,000
-  lines. One controller per PR, compile after each.
-- **Verification:** P0.2 suite passes after every extraction.
-- **Effort / risk:** 1–2 weeks; high — do after P0.2.
+- **Done:** extracted `Look` / `Frame` / `Knob` / `LookCodec` (~250 lines of
+  pure JSON mapping) and `PixelBudget` / `JsonQuote` (pure, JVM-testable).
+- **Still open:** `ImportController`, `RenderController`, `ExportController`,
+  `PresetStore`, `DialogFactory`. Target: Activity < 5,000 lines.
+- **Verification:** javac + `PureLogicTest` pass after every extraction.
 
 ### [x] P2.2 — Hot-path allocations
 

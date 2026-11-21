@@ -48,6 +48,20 @@ $javacArgs = @('--release', '17', '-encoding', 'UTF-8', '-nowarn', '-classpath',
 & "$jdk\bin\javac.exe" @javacArgs
 Report 'javac' ($LASTEXITCODE -eq 0)
 
+Write-Host '== runnable JVM logic tests =='
+$logicOut = Join-Path ([IO.Path]::GetTempPath()) 'spektralab-purelogic'
+Remove-Item -LiteralPath $logicOut -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $logicOut | Out-Null
+$logicSources = @(
+    "$root\app\src\main\java\app\spektralab\PixelBudget.java",
+    "$root\app\src\main\java\app\spektralab\JsonQuote.java",
+    "$root\app\src\test\java\app\spektralab\PureLogicTest.java")
+& "$jdk\bin\javac.exe" @logicSources -d $logicOut
+if ($LASTEXITCODE -eq 0) {
+    & "$jdk\bin\java.exe" -cp $logicOut app.spektralab.PureLogicTest
+}
+Report 'PureLogicTest' ($LASTEXITCODE -eq 0)
+
 Write-Host '== native header checks =='
 $ndk = "$BuildHome\sdk\ndk\28.2.13676358"
 $clang = "$ndk\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe"

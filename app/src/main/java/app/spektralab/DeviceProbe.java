@@ -51,7 +51,7 @@ public final class DeviceProbe {
      * read at all. A frame above it is not refused: the user is asked whether
      * to shrink or to force the original size.
      */
-    public static final int HARD_PIXEL_CAP = 42_000_000;
+    public static final int HARD_PIXEL_CAP = (int) PixelBudget.HARD_PIXEL_CAP;
 
     /**
      * The plane size one frame at {@link #HARD_PIXEL_CAP} needs, in bytes.
@@ -205,13 +205,7 @@ public final class DeviceProbe {
      * which is where the measured ceiling sat.
      */
     public static long maxPixelsByMemory(long availableBytes) {
-        if (availableBytes <= 0) return HARD_PIXEL_CAP;
-        final long reserve = 1536L << 20;   // 1.5 GiB: a frame that pushes the system into its low-memory killer costs more than it gives
-        // 76 B/px is the GPU pool's measured peak (6.3 live planes), and the
-        // import itself holds the frame twice more before the GPU sees it: an
-        // ARGB_8888 bitmap (4 B/px) and the 12 B/px float buffer handed to
-        // spk_open. That is what made a 45 MP import die before the render did.
-        return Math.max(0, availableBytes - reserve) / (12L * 7 + 16);
+        return PixelBudget.maxPixelsByMemory(availableBytes);
     }
 
     /**

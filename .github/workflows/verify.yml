@@ -33,6 +33,19 @@ jobs:
           $sources = Get-ChildItem app\src\main\java -Recurse -Filter *.java | ForEach-Object { $_.FullName }
           & javac --release 17 -encoding UTF-8 -nowarn -classpath $jar -d $out @sources
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Runnable pure-logic tests
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'purelogic'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $sources = @(
+            'app/src/main/java/app/spektralab/PixelBudget.java',
+            'app/src/main/java/app/spektralab/JsonQuote.java',
+            'app/src/test/java/app/spektralab/PureLogicTest.java')
+          & javac $sources -d $out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & java -cp $out app.spektralab.PureLogicTest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Native header compile check
         shell: pwsh
         run: |
