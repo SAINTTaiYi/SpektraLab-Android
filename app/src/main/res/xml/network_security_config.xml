@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The only plaintext endpoint the app has is the debug sink, an HTTP server on
+  the loopback interface (DebugSink.LOCAL). Everything else it talks to
+  (sink.workshop.skin, report.workshop.skin, update.workshop.skin) is HTTPS.
+
+  Before this file the manifest said usesCleartextTraffic="true", which allowed
+  any plaintext host for every component. Allowing it per domain keeps the sink
+  working and refuses everything else.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">::1</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false"/>
+</network-security-config>

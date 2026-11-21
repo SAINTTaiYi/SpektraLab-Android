@@ -1,5 +1,7 @@
 package app.spektralab.engine;
 
+import android.graphics.Bitmap;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -179,19 +181,6 @@ public class SpektraLabEngine implements AutoCloseable {
     }
 
     /**
-     * A direct buffer outside the runtime's native-allocation ledger.
-     *
-     * <p>{@code ByteBuffer.allocateDirect} is capped by the heap's growth limit
-     * -- 512 MB on most phones -- and a 50 MP frame's float32 is 600 MB, so the
-     * allocation is refused while the device still has gigabytes free. Free it
-     * with {@link #freeDirect}; there is no cleaner behind this one.
-     */
-    public static ByteBuffer allocDirect(long bytes) { return nativeAllocDirect(bytes); }
-
-    /** Release a buffer from {@link #allocDirect}. The caller must drop it too. */
-    public static void freeDirect(ByteBuffer buffer) { if (buffer != null) nativeFreeDirect(buffer); }
-
-    /**
      * Drop the open RAW file's unpacked data.
      *
      * <p>Decoding keeps the LibRaw object alive so a white-balance change only
@@ -202,11 +191,29 @@ public class SpektraLabEngine implements AutoCloseable {
     public static void clearRawCache() { nativeClearRawCache(); }
 
     private static native void nativeClearRawCache();
-    private static native ByteBuffer nativeAllocDirect(long bytes);
-    private static native void nativeFreeDirect(ByteBuffer buffer);
+    /**
+     * Pixels as a native address, not a direct {@code ByteBuffer}.
+     *
+     * The runtime counts a direct buffer against the heap growth limit (512 MB
+     * on many phones) so a 55 MP frame at 12 B/px could not be allocated with
+     * 4 GB free -- and on some ART builds {@code NewDirectByteBuffer} does not
+     * refuse it, it dies inside libart. malloc has neither behaviour.
+     */
+    public static long allocPixels(long bytes) { return nativeAllocPixels(bytes); }
 
-    public Session openSession(ByteBuffer pixels, int width, int height, int channels) {
-        if (!pixels.isDirect()) throw new IllegalArgumentException("pixels must be direct");
+    /** Release an {@link #allocPixels} block. The caller must also forget it. */
+    public static void freePixels(long addr) { if (addr != 0) nativeFreePixels(addr); }
+
+    /** One row of ARGB ints into the float32 RGB buffer at {@code pixelOffset}. */
+    public static void fillRow(long addr, long pixelOffset, int[] argb, int count) {
+        nativeFillRow(addr, pixelOffset, argb, count);
+    }
+
+    private static native long nativeAllocPixels(long bytes);
+    private static native void nativeFreePixels(long addr);
+    private static native void nativeFillRow(long addr, long pixelOffset, int[] argb, int count);
+
+    public Session openSession(long pixels, int width, int height, int channels) {
         long sessionHandle = nativeOpenSession(handle, pixels, width, height, channels);
         if (sessionHandle == 0) throw new RuntimeException("Failed to open session");
         return new Session(sessionHandle, width, height);
@@ -222,7 +229,20 @@ public class SpektraLabEngine implements AutoCloseable {
 
     /** Opens a RAW session, optionally bounding the source by area and long edge. */
     public Session openRawSession(String filePath, String paramsJson, int maxPixels, int maxLongEdge) {
-        long sessionHandle = nativeOpenRawSession(handle, filePath, paramsJson, maxPixels, maxLongEdge);
+        long sessionHandle;
+        try {
+            sessionHandle = nativeOpenRawSession(handle, filePath, paramsJson, maxPixels, maxLongEdge);
+        } catch (RuntimeException refused) {
+            // **The refusal states the answer.** `'preview_long_edge'=400 is
+            // outside [800, 8192]` is a sentence about a number this app chose
+            // and the engine's own bounds; re-reading it as an instruction is
+            // what SelfHeal is for. The RAW itself is already decoded and the
+            // decode cache serves the retry, so the second attempt costs a
+            // profile load, not a second demosaic.
+            final String repaired = app.spektralab.SelfHeal.retry(paramsJson, refused.getMessage());
+            if (repaired == null) throw refused;
+            sessionHandle = nativeOpenRawSession(handle, filePath, repaired, maxPixels, maxLongEdge);
+        }
         if (sessionHandle == 0) throw new RuntimeException("Failed to open RAW session");
         return new Session(sessionHandle, 0, 0); // width/height unknown until render
     }
@@ -233,7 +253,14 @@ public class SpektraLabEngine implements AutoCloseable {
      */
     public Session openRawSessionTuned(String filePath, String paramsJson, int maxPixels, int maxLongEdge,
                                        float[] mul) {
-        long sessionHandle = nativeOpenRawSessionTuned(handle, filePath, paramsJson, maxPixels, maxLongEdge, mul);
+        long sessionHandle;
+        try {
+            sessionHandle = nativeOpenRawSessionTuned(handle, filePath, paramsJson, maxPixels, maxLongEdge, mul);
+        } catch (RuntimeException refused) {
+            final String repaired = app.spektralab.SelfHeal.retry(paramsJson, refused.getMessage());
+            if (repaired == null) throw refused;
+            sessionHandle = nativeOpenRawSessionTuned(handle, filePath, repaired, maxPixels, maxLongEdge, mul);
+        }
         if (sessionHandle == 0) throw new RuntimeException("Failed to open RAW session");
         return new Session(sessionHandle, 0, 0);
     }
@@ -284,7 +311,21 @@ public class SpektraLabEngine implements AutoCloseable {
         }
 
         public void setParams(String paramsJson) {
-            nativeSetParams(handle, paramsJson);
+            try {
+                nativeSetParams(handle, paramsJson);
+            } catch (RuntimeException refused) {
+                // **One retry, and only when the engine named the cure.** A
+                // rejected range is a value that never reached the picture, so
+                // clamping it cannot lose an edit -- it makes the edit the one
+                // the engine can actually apply. Anything else (a session that
+                // is gone, a profile that does not exist after the paper
+                // fallback) is thrown unchanged: `applyParamsTo` clears its
+                // delta ledger on a throw, and a swallowed one would leave that
+                // ledger claiming the engine had been told something it had not.
+                final String repaired = app.spektralab.SelfHeal.retry(paramsJson, refused.getMessage());
+                if (repaired == null) throw refused;
+                nativeSetParams(handle, repaired);
+            }
         }
 
         /** The rebate's own layout: canvas_w/h, mm_per_px, vertical, gate quads.
@@ -315,6 +356,13 @@ public class SpektraLabEngine implements AutoCloseable {
             suspended = nativeSuspendSession(handle) == 0;
             return suspended;
         }
+
+        /** Why the last native call failed, or "" when it did not. */
+        public static String lastError() {
+            try { return nativeLastError(); } catch (Throwable t) { return ""; }
+        }
+
+        private static native String nativeLastError();
 
         /** Undo {@link #suspend}. A no-op when nothing was suspended. */
         public boolean resume() {
@@ -385,6 +433,18 @@ public class SpektraLabEngine implements AutoCloseable {
             synchronized (RENDER_LOCK) { return nativeCopyArgbRange(dst, rowOffset, rowCount); }
         }
 
+        /**
+         * The size of the frame {@link #copyArgbRange} would read right now, or
+         * null when there is none.
+         *
+         * <p>**The copy is not only a copy.** The view layer runs inside it, so
+         * an optics-only edit is a re-read of the same engine pixels: the live
+         * path asks this first and only renders when it answers null.
+         */
+        public int[] resultSize() {
+            synchronized (RENDER_LOCK) { return nativeResultSize(); }
+        }
+
         /** The decoded frame at `tier`, before the film. Keeps it alive for copyArgbRange. */
         public int[] exportSource(String tier) {
             synchronized (RENDER_LOCK) { return nativeExportSource(handle, tier); }
@@ -396,6 +456,24 @@ public class SpektraLabEngine implements AutoCloseable {
          * the only way to tell "the render is dark" from "the render is dark
          * *because* the meter took 1.7 stops off it".
          */
+        /**
+         * **RFC-023's solver: the scene and the paper, fitted together.**
+         *
+         * <p>`spk_scene_latitude` measures the paper's own boundaries (a neutral
+         * ramp through the real print, at this film, paper, filter and enlarger
+         * setting) and the scene's robust extremes, then solves the knee and the
+         * room that land the scene inside the medium. The reply carries
+         * `fit.params_delta` -- exactly the `spk_set_params` payload -- and a
+         * refused fit carries none, so it cannot be committed by accident.
+         *
+         * <p>Null when the engine refused; the caller keeps whatever curve it
+         * had. The probe is cached on both sides (medium by the wire params,
+         * scene by the meter key), so a repeat call is a few milliseconds.
+         */
+        public String sceneLatitude(String requestJson) {
+            synchronized (RENDER_LOCK) { return nativeSceneLatitude(handle, requestJson); }
+        }
+
         public String progressJson() {
             synchronized (RENDER_LOCK) { return nativeProgressJson(handle); }
         }
@@ -453,12 +531,54 @@ public class SpektraLabEngine implements AutoCloseable {
         }
 
         /**
+         * Enable HDR's file: the same JPEG, plus the gain map that says how much
+         * of the print's shoulder it left out (ISO 21496-1 / Ultra HDR 1.0).
+         *
+         * <p>The primary is written by the same encoder as {@link #exportJpeg},
+         * so a reader without gain-map support sees the SDR export to the byte.
+         * The curve is the session's own -- the engine measures the medium ramp
+         * for this film, paper, filter and enlarger setting and the C++ derives
+         * family A from it -- so Exp. Comp. and the enlarger move the highlights
+         * the way they move the print.
+         *
+         * @return {width, height, renderMs, totalMs, mean16, peMilli, gainMilli,
+         *         stripePermille, mapWritten}, where the last is 0 when the
+         *         medium had no shoulder and a plain JPEG was written instead.
+         */
+        public int[] exportUltraHdr(String path, int quality, int stripRows, String tier) {
+            return nativeExportUltraHdr(handle, path, quality, stripRows, tier);
+        }
+
+        /**
+         * The session's own gain curve, for the screen.
+         *
+         * <p>`{256 log2 gains..., GainMapMin, GainMapMax}` or null when this
+         * medium has no shoulder to give back. Exactly the table the exported
+         * gain map is made from -- the preview and the file cannot disagree.
+         */
+        public float[] gainCurve(float headroomStops) {
+            return nativeGainCurve(handle, headroomStops);
+        }
+
+        /**
          * The same render as 16-bit sRGB TIFF: no 8-bit quantisation, and the
          * profile is in the file rather than assumed by the reader. Returns
          * {width, height, renderMs, totalMs}.
          */
         public int[] exportTiff(String path, String tier) {
             synchronized (RENDER_LOCK) { return nativeExportTiff(handle, path, tier); }
+        }
+
+        /**
+         * The same 16-bit file with the transfer curve left off, tagged linear sRGB.
+         *
+         * <p>Lightroom reads this as light rather than display codes, so its own tone mapping
+         * and highlight recovery meet the render's real shoulder instead of a curve that has
+         * already been applied once. The numbers are the same picture: the linear buffer and an
+         * un-encoded display render agree to eight-bit quantization.
+         */
+        public int[] exportTiffLinear(String path, String tier) {
+            synchronized (RENDER_LOCK) { return nativeExportTiffLinear(handle, path, tier); }
         }
 
         /**
@@ -517,7 +637,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native String nativeCapabilities(long handle);
     private static native String nativeMemoryReport(long handle);
     private static native long nativeTrimPool(long handle);
-    private static native long nativeOpenSession(long engineHandle, ByteBuffer pixels, int width, int height, int channels);
+    private static native long nativeOpenSession(long engineHandle, long pixels, int width, int height, int channels);
     /** The GPU as JSON: binding range, heaps, workgroup limits. */
     public String deviceProfile() { return nativeDeviceProfile(handle); }
 
@@ -573,6 +693,11 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native long nativeOpenRawSessionTuned(long engineHandle, String filePath, String paramsJson,
                                                          int maxPixels, int maxLongEdge, float[] mul);
     private static native void nativeSetViewAdjust(double[] values);
+    private static native void nativeSetGlow(boolean on, int style, float amount, float range,
+                                             float spread, float warmth,
+                                             float direction, float softness);
+    private static native int nativeApplyGlow(int[] argb, int w, int h);
+    private static native String[] nativeGlowStyles();
     private static native void nativeSetViewCurves(double[] packed);
     private static native void nativeSetSourceDisplayEv(double ev, boolean autoLevel);
     private static native void nativeSetExportExif(String make, String model, String datetime,
@@ -601,6 +726,69 @@ public class SpektraLabEngine implements AutoCloseable {
     /** The optical page's continuous controls, in the kernel's own order. */
     public static void setViewAdjust(double[] values) {
         try { nativeSetViewAdjust(values); } catch (Throwable ignored) { }
+    }
+
+    // ---------------------------------------------------------------- glow
+    //
+    // Lightroom's five glow styles, reimplemented from its own binary and
+    // calibrated against its exports ('lrglow.cpp'). The pass runs on the
+    // finished picture -- after the film and after the view layer -- which is
+    // where Lightroom puts it. It is a screen-space operation on opaque ARGB,
+    // so the caller hands it a pixel array rather than asking the engine for a
+    // result: the engine's own pipeline knows nothing about it.
+    //
+    // Five parameters, Lightroom's names and ranges:
+    //   style   0 = Diffusion (漫射), 1 = Bloom (光华), 2 = Halation (光晕),
+    //           3 = Motion (动感), 4 = Streak (拖影). Lightroom's UI order is
+    //           Bloom, Diffusion, Halation, Motion -- `glowStyleNames()` follows
+    //           the enum, and the panel maps the other way.
+    //   amount  0..1   (UI 0..100)   how much of the glow is mixed in
+    //   range   0..1   (UI 0..100)   how bright a pixel must be to feed it
+    //   spread  0..1   (UI 0..100)   how far it reaches
+    //   warmth -1..1   (UI -100..100) blue -> neutral -> amber
+    public static void setGlow(boolean on, int style, float amount, float range,
+                               float spread, float warmth,
+                               float direction, float softness) {
+        try {
+            nativeSetGlow(on, style, amount, range, spread, warmth, direction, softness);
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * Applies the configured glow in place on {@code argb}.
+     *
+     * @return 1 applied, 0 off (or amount is zero), -1 bad arguments,
+     *         -2 out of memory. Any negative value means the array was left
+     *         untouched, so a caller can safely ignore the failure and keep
+     *         the un-glowed picture.
+     */
+    public static int applyGlow(int[] argb, int w, int h) {
+        if (argb == null || w <= 0 || h <= 0) return -1;
+        try { return nativeApplyGlow(argb, w, h); } catch (Throwable t) { return -1; }
+    }
+
+    /**
+     * Writes an ARGB_8888 bitmap as a JPEG through the export writer.
+     *
+     * <p>This exists for the one picture the app did not render: 原图. It goes
+     * through the same encoder a print does -- 4:4:4 chroma, sRGB ICC, Exif --
+     * and picks up the glow pass on the way in, so "export the original" is the
+     * file the canvas was showing. Eight bits in, eight bits out: nothing here
+     * invents precision the source never had.
+     *
+     * @return false when the bitmap cannot be read or the file cannot be written.
+     */
+    public static boolean writeBitmapJpeg(Bitmap bmp, String path, int quality) {
+        if (bmp == null || path == null) return false;
+        try { return nativeWriteBitmapJpeg(bmp, path, quality); }
+        catch (Throwable t) { return false; }
+    }
+
+    private static native boolean nativeWriteBitmapJpeg(Bitmap bmp, String path, int quality);
+
+    /** The five style names, indexed by the {@code style} argument. */
+    public static String[] glowStyleNames() {
+        try { return nativeGlowStyles(); } catch (Throwable t) { return null; }
     }
 
     /** Five tone curves, eight control points each, as (x, y) pairs. */
@@ -649,6 +837,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeSetParams(long sessionHandle, String paramsJson);
     private static native String nativeGetParams(long sessionHandle);
     private static native String nativeProgressJson(long sessionHandle);
+    private static native String nativeSceneLatitude(long sessionHandle, String requestJson);
 
     private static native String nativeStageSnapshot(long sessionHandle);
     private static native int[] nativeGetSessionDimensions(long sessionHandle);
@@ -658,9 +847,70 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native int[] nativeRenderBegin(long sessionHandle, String tier, boolean reprint);
     private static native int[] nativeExportSource(long sessionHandle, String tier);
     private static native int nativeCopyArgbRange(int[] dst, int rowOffset, int rowCount);
+    private static native int[] nativeResultSize();
     private static native void nativeRenderEnd();
     private static native int[] nativeExportJpeg(long handle, String path, int quality, int stripRows, String tier);
+    private static native int[] nativeExportUltraHdr(long handle, String path, int quality, int stripRows, String tier);
+    private static native float[] nativeGainCurve(long handle, float headroomStops);
+
+    /**
+     * The SDR bitmap, rewritten as an HDR one: linear light times
+     * `2^(gain * weight)` a pixel, in an `RGBA_F16` bitmap.
+     *
+     * <p>Both bitmaps must be the same size; `dst` must be
+     * `Bitmap.Config.RGBA_F16` (its `ColorSpace` is the caller's business --
+     * EXTENDED_SRGB is linear, which is what the numbers are). Returns 1 on
+     * success and a negative step number otherwise; never throws.
+     */
+    public static int hdrPreview(android.graphics.Bitmap src, android.graphics.Bitmap dst,
+                                 float[] curve, float weight) {
+        return nativeHdrPreview(src, dst, curve, weight);
+    }
+
+    /**
+     * How far above its own SDR value every pixel is declared to sit, in stops.
+     *
+     * <p>0 gives back the paper's shoulder and moves nothing else; 2.0 puts the
+     * print's white at 13x SDR white on a full-headroom panel, which is a light
+     * bulb rather than a photograph. The export and the screen take this same
+     * number, so they cannot disagree.
+     */
+    public static void setHdrFloor(float stops) { nativeSetHdrFloor(stops); }
+
+    private static native void nativeSetHdrFloor(float stops);
+
+    /**
+     * **A print on a lit panel.** The SDR bitmap, rewritten as what comes out
+     * of the light box: `I = backlight * Y^(p-1)` a channel, i.e. Beer-Lambert
+     * over the film's own density. `dst` must be `Bitmap.Config.RGBA_F16` of
+     * the same size; returns 1 on success, a negative step otherwise.
+     */
+    public static int transilluminate(android.graphics.Bitmap src, android.graphics.Bitmap dst,
+                                      float backlight, float p) {
+        return nativeTransilluminate(src, dst, backlight, p);
+    }
+
+    /**
+     * Fill a half-float bitmap with one **linear** colour (values above 1 are
+     * the point). The panel is a source, not a blend: an opaque fill drawn over
+     * the layer is the one formulation that cannot come out as grey.
+     */
+    public static int fillHalf(android.graphics.Bitmap dst, float r, float g, float b) {
+        return nativeFillHalf(dst, r, g, b);
+    }
+
+    private static native int nativeFillHalf(android.graphics.Bitmap dst,
+                                             float r, float g, float b);
+
+    private static native int nativeTransilluminate(android.graphics.Bitmap src,
+                                                    android.graphics.Bitmap dst,
+                                                    float backlight, float p);
+
+    private static native int nativeHdrPreview(android.graphics.Bitmap src,
+                                               android.graphics.Bitmap dst,
+                                               float[] curve, float weight);
     private static native int[] nativeExportTiff(long handle, String path, String tier);
+    private static native int[] nativeExportTiffLinear(long handle, String path, String tier);
     private static native int[] nativeExportDng(long handle, String path, String tier);
     private static native String nativeSolve(long handle, String target);
 

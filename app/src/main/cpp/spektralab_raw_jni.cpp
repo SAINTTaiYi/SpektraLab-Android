@@ -3,11 +3,14 @@
  * GPLv3. Decodes RAW files via LibRaw and opens engine sessions directly.
  */
 #include <jni.h>
+#include <exception>
+#include <new>
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdarg>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -64,10 +67,15 @@ static std::mutex g_raw_info_mutex;
 static std::unordered_map<jlong, RawSessionInfo> g_raw_info;
 
 
-static void throw_runtime(JNIEnv* env, const char* msg) {
+static void throw_runtime(JNIEnv* env, const char* fmt, ...) {
     if (env->ExceptionCheck()) return;
+    char buffer[512];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buffer, sizeof buffer, fmt, args);
+    va_end(args);
     jclass cls = env->FindClass("java/lang/RuntimeException");
-    if (cls) { env->ThrowNew(cls, msg); env->DeleteLocalRef(cls); }
+    if (cls) { env->ThrowNew(cls, buffer); env->DeleteLocalRef(cls); }
 }
 
 // Open a session from a RAW file path.
@@ -80,6 +88,28 @@ static void throw_runtime(JNIEnv* env, const char* msg) {
 // and two decodes must not share it.
 static spk::io::RawDecodeCache g_raw_cache;
 static std::mutex g_raw_cache_mutex;
+
+// **A big allocation inside the engine throws, and nothing caught it.**
+//
+// `std::vector` running out of memory raises `std::bad_alloc`; it escaped
+// through the JNI boundary, `std::terminate` ran, and the process aborted --
+// which is exactly what "imported a 66 MB photo and the app just went away"
+// looks like: signal 6 in libc++, no Java stack, no dialog. Every entry point
+// that can ask for hundreds of megabytes turns it into a RuntimeException
+// instead, so the app keeps the frame and can say what happened.
+#ifndef SPK_GUARD
+#define SPK_GUARD(env, label)                                                   \
+    catch (const std::bad_alloc&) {                                            \
+        throw_runtime(env, "out of memory: %s", label);                         \
+        return {};\
+    } catch (const std::exception& e_spk) {                                    \
+        throw_runtime(env, "%s threw: %s", label, e_spk.what());                            \
+        return {};\
+    } catch (...) {\
+        throw_runtime(env, "%s: unknown C++ exception", label);                   \
+        return {};\
+    }
+#endif
 
 JNI(void, nativeClearRawCache)(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lock(g_raw_cache_mutex);
@@ -189,7 +219,10 @@ static jlong open_raw_impl(JNIEnv* env, jlong engineHandle, jstring filePath,
     }
     
     char* open_json = nullptr;
-    spk_session* session = spk_open(engine, &img, params, &open_json);
+    spk_session* session = nullptr;
+    try {
+        session = spk_open(engine, &img, params, &open_json);
+    } SPK_GUARD(env, "spk_open")
     
     if (paramsJson) env->ReleaseStringUTFChars(paramsJson, params);
     if (open_json) spk_string_free(open_json);

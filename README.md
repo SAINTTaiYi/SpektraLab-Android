@@ -88,19 +88,37 @@ git apply /path/to/patches/engine-android.patch
 
 # 2) 资源：把 engine/resources/ 下的 profiles/、vulkan/、DI/、*.bin、*.json
 #    拷到 app/src/main/assets/resources/
+#    fotufilm 的资产（cfg/、stocks.bin、paper_*.bin、catalog.txt…）从
+#    fotufilm-android-probe 的 CI 产物按 docs/REPRODUCING.md 生成
 
-# 3) 五步构建，顺序不能省
-bash app/build/build-engine.sh     # 引擎 TU（改过头文件会自动全量重编）
-bash app/build/build-native.sh     # 两个 JNI → .so
-bash app/build/build-libs.sh       # staging 依赖库 + SONAME 等长改名
-bash app/build/build-dex.sh        # javac → d8
-bash build-apk.sh                  # aapt2 + 签名 + 依赖闭包检查
+# 3) 六步构建，顺序不能省
+bash app/build/build-engine.sh       # 引擎 TU（改过头文件会自动全量重编）
+bash app/build/build-native.sh       # 三个 JNI + lrglow + ultrahdr → .so
+bash app/build/build-fotu.sh         # 第二引擎的三个库（见下）
+bash app/build/build-libs.sh         # staging 依赖库 + SONAME 等长改名
+bash app/build/build-dex.sh          # javac → d8
+bash build-apk.sh                    # aapt2 + 签名 + 依赖闭包检查
 ```
 
 `build-libs.sh` 会把 `libjpeg.so.8` / `libz.so.1` 改名成 `libjpeg_8.so` / `libz_1.so`
 并就地改写 `.dynstr`：AOSP 的安装器只解压 `lib/` 下以 `.so` 结尾的条目，带版本号的名字
 会被静默跳过，然后在 `dlopen` 时报缺库。`check-libs.py` 会遍历每个 `.so` 的 `DT_NEEDED`
 阻止这种包被打出来。
+
+### 第二引擎（fotufilm）
+
+它是两半：**上游 fotufilm**（Halide AOT kernel 归档 + `libfotufilmcodecs.so`，第三方，
+不随本仓库分发）与**本项目的移植**（host、片边合成、印刷边框、标定头）。移植的源码就是
+`app/src/main/cpp/fotufilm/`——`host.cpp`、`tone.hpp`、`rebate/`（由 `rebate/extract.py`
+从引擎的 `overscan.cpp` 生成）、`print_frame.cpp` 等，共 39 个文件。
+
+```bash
+export FOTU_ART=/path/to/fotufilm/art      # include/ engine/ kernels/ jniLibs/
+FOTU_FROM_SOURCE=1 bash app/build/build-fotu.sh
+```
+
+不设 `FOTU_FROM_SOURCE=1` 时，`build-fotu.sh` 从预编好的目录 stage 同一份字节（脚本会
+打印它走了哪条路）。两条路的产物一致：仓库里的那份 `host.cpp` 就是编出当前 `.so` 的源文件。
 
 ## 目录
 
@@ -165,3 +183,11 @@ pool trim after every export so the launcher is not evicted.
 Known limits: arbitrary-angle rotation needs a whole-source binding and is refused on 128 MiB
 devices; contrast masks are not implemented by the Vulkan backend; DNGs are for desktop
 Lightroom — use TIFF + share from the phone.
+
+---
+
+## 二次开发 / AI
+
+- **改了就发。** 本仓库是 GPL-3.0-or-later：分发修改版（APK、上架、网盘、群文件、预装）必须同时公开**修改版的完整源码**，并保留全部声明。
+- AI 编程助手请先读 [`AGENTS.md`](AGENTS.md) 与 [`AI-NOTICE.md`](AI-NOTICE.md)；机器可读版本在 [`.ai/notice.json`](.ai/notice.json)。
+- 胶片与相纸的 profile、光谱数据走 CC BY-SA 4.0（spektrafilm、Fotufilm），改动后分发同样要求以相同许可公开。

@@ -49,6 +49,20 @@ cp "$PREFIX/lib/libjpeg.so.8"     "$DST"/libjpeg_8.so
 cp "$PREFIX/lib/libz.so.1"        "$DST"/libz_1.so
 cp app/build/native/libspektrafilm_engine.so "$DST"/
 
+# The second engine. Its libraries do not need the jpeg/zlib rename: the codec
+# build links the NDK stubs only (libz/libm/liblog/libdl), never libjpeg.so.8.
+# `libfotufilm_jni.so` is this tree's bridge, built by build-fotu.sh.
+for f in libfotufilmhost.so libfotufilmcodecs.so libfotufilm_jni.so; do
+  if [ -f "app/build/native/$f" ]; then
+    cp "app/build/native/$f" "$DST"/
+  elif [ -f "app/build/native/fotufilm/$f" ]; then
+    cp "app/build/native/fotufilm/$f" "$DST"/
+  else
+    echo "  $f: MISSING (run app/build/build-fotu.sh)" >&2
+    exit 1
+  fi
+done
+
 # The five vendor libraries must be the ones 1.2.7 shipped -- byte for byte.
 # A different libraw here would be a different decoder in an emergency build.
 python3 - "$DST" <<'PY'

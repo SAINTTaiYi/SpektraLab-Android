@@ -2,12 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="app.spektralab"
-    android:versionCode="385"
-    android:versionName="1.6.2m">
+    android:versionCode="743"
+    android:versionName="1.7.0">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" tools:ignore="GradleOverrides"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
+    <!-- The desk reads this app's own album folder. Without this, scoped storage
+         hands back only the files the current install wrote. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- One 8 ms tick per detent; without this the view haptics are a no-op
+         on ROMs that keep "touch vibration" off. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <!-- **What the pickers are.** targetSdk is 36, so package visibility is in
          force: without these declarations `resolveActivity("…GET_CONTENT")`
          answers null even when the system picker exists, and every storage
@@ -31,7 +37,8 @@
         </intent>
     </queries>
     <application
-        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowBackup="false"
         android:label="SpektraLab"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme"

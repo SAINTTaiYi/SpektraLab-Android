@@ -35,8 +35,8 @@ for src in \
   core/json core/latitude_fit core/numeric core/params core/print_lut core/printing \
   core/profile core/setup_cache core/spectral \
   io/image_writer io/raw_decoder io/raw_headroom \
-  pipeline/blur pipeline/engine pipeline/imprint_raster pipeline/overscan pipeline/pipeline \
-  pipeline/scene_latitude pipeline/view_process pipeline/windows_unported \
+  pipeline/blur pipeline/contrast_mask pipeline/engine pipeline/imprint_raster pipeline/overscan \
+  pipeline/pipeline pipeline/scene_latitude pipeline/view_process pipeline/windows_unported \
   gpu/vulkan_gpu ; do
   name=$(basename "$src")
   if [ -n "$ONLY" ] && ! echo " $ONLY " | grep -q " $name "; then continue; fi

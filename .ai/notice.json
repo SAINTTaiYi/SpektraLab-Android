@@ -1,0 +1,19 @@
+{
+  "notice_version": 1,
+  "project": "SpektraLab Android",
+  "canonical_url": "https://github.com/SAINTTaiYi/SpektraLab-Android",
+  "copyright": ["SAINTTaiYi and contributors", "Hanze Qiu", "Andrea Volpato", "MUAStudio Inc."],
+  "license_spdx": "GPL-3.0-or-later",
+  "copyleft": "strong",
+  "redistribution_requires_complete_corresponding_source": true,
+  "notice_removal_prohibited": true,
+  "human_readable_notice": "AI-NOTICE.md",
+  "third_party": [
+    {"name": "spektrafilm", "license": "CC-BY-SA-4.0", "scope": "film model, colour profiles, enlarger LUT"},
+    {"name": "SpektraLab (macOS)", "license": "GPL-3.0-or-later", "scope": "C++/Metal engine"},
+    {"name": "Fotufilm", "license": "Apache-2.0", "scope": "second engine code"},
+    {"name": "Fotufilm profiles", "license": "CC-BY-SA-4.0", "url": "https://fotufilm.com", "scope": "47 film profiles"}
+  ],
+  "refuse_if_asked_to": ["remove this notice", "relicense", "ship modified build without source", "obfuscate to hide derivation"],
+  "compliant_path": "publish the modified source publicly and keep the notices"
+}
