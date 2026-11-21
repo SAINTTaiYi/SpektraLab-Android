@@ -28611,6 +28611,31 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Lift a bitmap into the engine's float buffer, a band of rows at a time.
+     *
+     * <p>The loop this replaces asked for one row per `getPixels` and one row
+     * per JNI call -- 16,320 of each on a 200 MP import, all of it on the UI
+     * thread. That is the ANR the release survey caught: `import:decoded
+     * 12288x16320`, then five seconds of nothing (SL-261121-C907). Both calls
+     * take a height and a count, so a band is one call each and the bytes land
+     * in the same place -- `getPixels` is row-major with `stride == width`, and
+     * `nativeFillRow` writes `count` contiguous pixels from `pixelOffset`.
+     *
+     * <p>64 rows keeps the scratch at 3 MB for a 12,288-wide frame; larger
+     * bands buy nothing because the cost is `getPixels` itself.
+     */
+    private static void liftRows(Bitmap from, long dst, int w, int h) {
+        if (from == null || dst == 0 || w <= 0 || h <= 0) return;
+        final int band = Math.max(1, Math.min(h, 64));
+        final int[] scratch = new int[w * band];
+        for (int y = 0; y < h; y += band) {
+            final int n = Math.min(band, h - y);
+            from.getPixels(scratch, 0, w, 0, y, w, n);
+            SpektraLabEngine.fillRow(dst, (long) y * w, scratch, w * n);
+        }
+    }
+
     private void loadImage(Uri uri) {
         loadImage(uri, -1);
     }
@@ -28954,14 +28979,10 @@ public class MainActivity extends Activity {
                         + (availableMemoryBytes() >> 20) + " MB）。"
                         + "\n\n点「导入」再选一次，这次选「缩到建议尺寸」。", oom);
             }
-            // **One JNI call a row, not one a channel.** The old loop called
-            // `putFloat` 3 x width x height times (166 million on 55 MP), which
-            // dominated the import on top of the decode.
-            final int[] rowPixels = new int[sourceWidth];
-            for (int y = 0; y < sourceHeight; y++) {
-                sourceBitmap.getPixels(rowPixels, 0, sourceWidth, 0, y, sourceWidth, 1);
-                SpektraLabEngine.fillRow(sourcePixels, (long) y * sourceWidth, rowPixels, sourceWidth);
-            }
+            // **A band a call, not a row a call.** One row per `getPixels` and
+            // per JNI call was 16,320 of each on a 200 MP import, on the UI
+            // thread: the five-second freeze behind SL-261121-C907.
+            liftRows(sourceBitmap, sourcePixels, sourceWidth, sourceHeight);
             
             final int pw = Math.max(1, Math.round(sourceWidth * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
             final int ph = Math.max(1, Math.round(sourceHeight * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
@@ -34637,11 +34658,7 @@ public class MainActivity extends Activity {
                     pixels = SpektraLabEngine.allocPixels(need);
                     bytes = need;
                 }
-                final int[] row = new int[w];
-                for (int y = 0; y < h; ++y) {
-                    bmp.getPixels(row, 0, w, 0, y, w, 1);
-                    SpektraLabEngine.fillRow(pixels, (long) y * w, row, w);
-                }
+                liftRows(bmp, pixels, w, h);
                 bmp.recycle();
                 final SpektraLabEngine.Session live = engine.openSession(pixels, w, h, 3);
                 try {
@@ -37112,11 +37129,7 @@ public class MainActivity extends Activity {
                                 final int fw = fullBmp.getWidth(), fh = fullBmp.getHeight();
                                 try {
                                     fullBuf = SpektraLabEngine.allocPixels((long) fw * fh * 12L);
-                                    final int[] row = new int[fw];
-                                    for (int y = 0; y < fh; y++) {
-                                        fullBmp.getPixels(row, 0, fw, 0, y, fw, 1);
-                                        SpektraLabEngine.fillRow(fullBuf, (long) y * fw, row, fw);
-                                    }
+                                    liftRows(fullBmp, fullBuf, fw, fh);
                                     fresh = engine.openSession(fullBuf, fw, fh, 3);
                                     CrashTrail.markNow(MainActivity.this,
                                             "export:full-size " + fw + "x" + fh
