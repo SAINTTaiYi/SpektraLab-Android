@@ -2732,7 +2732,8 @@ public class MainActivity extends Activity {
     private final List<View> filmCards = new ArrayList<>();
     /** Real previews, per stock, from that stock's own render. A card never
      *  pretends to be a look the engine has not produced for this frame. */
-    private final java.util.Map<String, Bitmap> filmThumbs = new java.util.HashMap<>();
+    private final java.util.Map<String, Bitmap> filmThumbs =
+            new java.util.concurrent.ConcurrentHashMap<>();
     /** Each card's picture slot, so a finished thumbnail is swapped into one
      *  card instead of rebuilding the strip (a rebuild reset the scroll). */
     private final java.util.Map<String, android.widget.FrameLayout> filmCardImages = new java.util.HashMap<>();
@@ -2743,7 +2744,7 @@ public class MainActivity extends Activity {
      *  user render share RENDER_LOCK. */
     private volatile boolean prefetchRunning = false;
     private Thread prefetchThread = null;
-    private int prefetchGeneration = 0;
+    private volatile int prefetchGeneration = 0;
     /**
      * How many times a finished shelf pass has asked to run again.
      *
@@ -2754,7 +2755,34 @@ public class MainActivity extends Activity {
      * fujifilm cards never attempted at all. Two silent retries turn "some cards
      * never fill" into "the shelf takes a while".
      */
-    private int prefetchRetries;
+    private volatile int prefetchRetries;
+    /**
+     * The two shelves are two different machines -- Vulkan on the GPU, Halide on
+     * the CPU -- so each gets a worker. One thread alternating them made the
+     * shelf cost the *sum* of both; two make it the slower of the two.
+     */
+    private volatile boolean prefetchSpkRunning = false, prefetchFotuRunning = false;
+    private Thread prefetchFotuThread = null;
+    /** The union of the two queues of the current pass, for the retry count. */
+    private java.util.List<String> prefetchMissing = null;
+    /**
+     * Per card, UI thread only: how many passes have come back empty and why.
+     *
+     * <p>A card that cannot be drawn must not show a loader for ever. After
+     * {@link #PREFETCH_FAIL_SHOWN} passes it says so on the card, tapping it
+     * retries, and the first failure of each stock goes to the log -- which is
+     * the only way a field report can name the card that never filled.
+     */
+    private final java.util.Map<String, Integer> prefetchFails = new java.util.HashMap<>();
+    private final java.util.Map<String, String> prefetchFailWhy = new java.util.HashMap<>();
+    private static final int PREFETCH_FAIL_SHOWN = 3;
+    /** Why the last `renderStockThumbnail` gave up. One worker, so one slot. */
+    private volatile String lastThumbFailure = "";
+    /** Did this pass move `preview_long_edge`? Only then is it put back. */
+    private volatile boolean prefetchEdgeMoved = false;
+    /** The edge the current pass renders at. Portrait cards are 86 dp wide; the
+     *  grid's are 150, so only the grid still needs 512. */
+    private volatile int prefetchEdge = PREFETCH_LONG_EDGE;
     /** `film_stock` / `print_stock` the engine's session is actually holding,
      *  as a signature string. The catalogue queue borrows this one session to
      *  draw its cards and puts a film back when a card is done -- but "done"
@@ -15393,7 +15421,7 @@ public class MainActivity extends Activity {
         if (frames.isEmpty()) {
             currentFrame = -1;
             lastRenderedBitmap = null;
-            filmThumbs.clear();
+            clearShelfCache();
             if (compare != null) { compare.clear(); compare.resetView(); }
             // The session used to outlive its own frame: delete every chip and
             // "导出" still produced a picture from the closed-over state.
@@ -15854,6 +15882,22 @@ public class MainActivity extends Activity {
 
     /** The card a stock is drawn on. Both engines' ids for one film resolve to
      *  the same card, which carries the first engine's id. */
+    /**
+     * A new photograph: every card's picture and every card's verdict about
+     * itself belong to the old one.
+     */
+    private void clearShelfCache() {
+        filmThumbs.clear();
+        prefetchFails.clear();
+        prefetchFailWhy.clear();
+    }
+
+    /** Has this card failed often enough to say so on the card itself? */
+    private boolean prefetchFailureShown(String id) {
+        final Integer n = prefetchFails.get(id);
+        return n != null && n >= PREFETCH_FAIL_SHOWN;
+    }
+
     private static String cardKeyFor(String stock) {
         if (stock == null || !stock.startsWith(FotuFilm.PREFIX)) return stock;
         final String spk = FOTU_TWIN_SPK.get(stock.substring(FotuFilm.PREFIX.length()));
@@ -16322,6 +16366,11 @@ public class MainActivity extends Activity {
             TextView mark = label("—", 22, UI_MUTED, tfDisplay);
             mark.setGravity(android.view.Gravity.CENTER);
             imageBox.addView(mark, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        } else if (!filmThumbs.containsKey(id) && prefetchFailureShown(id)) {
+            // **A card that cannot be drawn says so.** An endless loader and a
+            // drawn cover both read as "still loading"; after three passes this
+            // is the honest state, and a tap retries it.
+            imageBox.addView(unavailableTile(), new android.widget.FrameLayout.LayoutParams(-1, -1));
         } else if (beforeBitmap == null || (isFotuStock(id) && !filmThumbs.containsKey(id))) {
             // **No photograph yet, so there is nothing to preview.** A name
             // typed into a grey rectangle says "empty slot"; a drawn box front
@@ -16618,6 +16667,15 @@ public class MainActivity extends Activity {
         if ("original".equals(id)) {
             toggleOriginal();
             return;
+        }
+        // **A card that gave up gets its next attempt from the tap.** Picking it
+        // renders the canvas (which seeds the card through `cacheFilmThumb`), and
+        // clearing the counter puts it back in the background queue as well.
+        if (prefetchFails.remove(id) != null) {
+            prefetchFailWhy.remove(id);
+            if (!prefetchSpkRunning && !prefetchFotuRunning && !rendering && !fotuRendering) {
+                startPrefetch();
+            }
         }
         final String twin = isFotuStock(id) ? null : fotuTwinOf(id);
         if (twin != null) {
@@ -24680,7 +24738,7 @@ public class MainActivity extends Activity {
         // Both are CPU work on one phone, and the second engine's chain decodes
         // the whole frame as floats: a shelf pass started during a canvas render
         // is what turned a two-second render into a stalled one.
-        if (rendering || fotuRendering || prefetchRunning) return;
+        if (rendering || fotuRendering || prefetchSpkRunning || prefetchFotuRunning) return;
         stopPrefetch();
         if (appPaused) return;
         // **A batch export is not a browsing session.** Reopening each frame
@@ -24701,6 +24759,8 @@ public class MainActivity extends Activity {
         for (int i = 0; i < filmIds.size(); ++i) {
             final String id = filmIds.get(i);
             if (filmThumbs.containsKey(id)) continue;
+            // It already said "无法预览"; a tap is the next attempt, not a pass.
+            if (prefetchFails.containsKey(id)) continue;
             if ("all".equals(brandFilter) || brandFilter.equals(brandOf(id))) pending.add(id);
             else rest.add(id);
         }
@@ -24708,9 +24768,7 @@ public class MainActivity extends Activity {
         // **The second engine's shelf.** The loop below walks `filmIds`, the
         // first engine's catalogue; the forty-seven fotufilm stocks live in
         // `fotuIds`, so that tab showed drawn covers for ever while every other
-        // tab filled in. Queued only while that shelf is on screen -- one card
-        // is two seconds of CPU here, not a fifth of a second -- and after the
-        // first engine's pass when both are showing.
+        // tab filled in.
         final java.util.List<String> fotuQueue = new java.util.ArrayList<>();
         for (int i = 0; i < fotuIds.size(); ++i) {
             final String fid = fotuIds.get(i);
@@ -24720,112 +24778,193 @@ public class MainActivity extends Activity {
             if (fotuMerged(fid)) continue;
             final String id = FotuFilm.PREFIX + fid;
             if (filmThumbs.containsKey(id)) continue;
+            if (prefetchFails.containsKey(id)) continue;
             if ("all".equals(brandFilter) || brandFilter.equals(brandOf(id))) fotuQueue.add(id);
         }
         if (pending.isEmpty() && fotuQueue.isEmpty()) return;
 
         final int generation = ++prefetchGeneration;
+        final java.util.List<String> all = new java.util.ArrayList<>(pending);
+        all.addAll(fotuQueue);
+        prefetchMissing = all;
         prefetchRunning = true;
         markFile("prefetch start engine=" + pending.size() + " fotu=" + fotuQueue.size()
                 + " sess=" + (session != null) + " before=" + (beforeBitmap != null));
-        prefetchThread = new Thread(() -> {
-            try {
-                // The queue renders the `live` tier, whose long edge is the
-                // session's `io.preview_long_edge`. `preview` is a fixed 3400 px
-                // in the engine, which is why the cards used to crawl: each one
-                // was a near-export-sized print. Set the edge once for the whole
-                // pass -- changing it per card drops the tier's cached image and
-                // costs more than the smaller render saves.
-                setPrefetchEdge(PREFETCH_LONG_EDGE);
+        // **One worker each.** They share nothing: the first engine has the
+        // session and RENDER_LOCK, the second has its own host lock and is pure
+        // CPU. Alternating them on one thread was the shelf's wall clock being
+        // the sum of two queues; this makes it the longer of the two, and the
+        // first card of each shelf lands at the same instant.
+        if (!pending.isEmpty()) {
+            prefetchSpkRunning = true;
+            prefetchThread = new Thread(() -> prefetchSpkPass(pending, generation), "film-prefetch");
+            prefetchThread.setPriority(Thread.MIN_PRIORITY);
+            prefetchThread.start();
+        }
+        if (!fotuQueue.isEmpty()) {
+            prefetchFotuRunning = true;
+            prefetchFotuThread = new Thread(() -> prefetchFotuPass(fotuQueue, generation), "fotu-prefetch");
+            prefetchFotuThread.setPriority(Thread.MIN_PRIORITY);
+            prefetchFotuThread.start();
+        }
+    }
+
+    /**
+     * The first engine's half of a shelf pass.
+     *
+     * <p>This worker owns the session, so it is the only one that moves
+     * `preview_long_edge`; the second engine's worker never touches it.
+     */
+    private void prefetchSpkPass(java.util.List<String> pending, int generation) {
+        final SpektraLabEngine prefetchEngine = engine;
+        int sinceTrim = 0;
+        try {
+            // The queue renders the `live` tier, whose long edge is the
+            // session's `io.preview_long_edge`. `preview` is a fixed 3400 px in
+            // the engine, which is why the cards used to crawl: each one was a
+            // near-export-sized print. Set the edge once for the whole pass.
+            prefetchEdge = filmCols > 1 ? PREFETCH_LONG_EDGE : 384;
+            setPrefetchEdge(prefetchEdge);
+            prefetchEdgeMoved = true;
+            for (int i = 0; i < pending.size(); ++i) {
+                if (generation != prefetchGeneration || !prefetchRunning) return;
+                final String id = pending.get(i);
+                if (filmThumbs.containsKey(id)) continue;
+                final long t0 = nowMs();
+                final Bitmap thumb = renderStockThumbnail(id);
+                final long ms = nowMs() - t0;
                 // **A card is a pipeline rebuild, and a rebuild leaves planes.**
-                // Twenty-five of them, back to back, is the biggest allocation
-                // storm the app performs: measured on the bench, each stock
-                // leaves about 5.5 MB live beside seven pinned tables, so the
-                // shelf alone walks away with 300 MB that the next photograph
-                // then has to find room beside. Giving the idle planes back
-                // every six cards costs one re-allocation per six and keeps the
-                // shelf's footprint flat.
-                final SpektraLabEngine prefetchEngine = engine;
-                int sinceTrim = 0;
-                // **The two shelves take turns.**
-                //
-                // The second engine's queue used to run *after* all twenty-five
-                // first-engine cards, and a newer generation cancels the queue --
-                // so in any session that renders something, its twenty-nine cards
-                // were never reached at all. Measured: three passes, every engine
-                // card 180-200 ms, `thumbs=27`, not one fotufilm card attempted.
-                // One of each, and the first cards of both shelves land in the
-                // first two seconds.
-                int fotuAt = 0;
-                for (int card = 0; card < pending.size() + fotuQueue.size(); ++card) {
-                    if (generation != prefetchGeneration || !prefetchRunning) return;
-                    // **Second engine first, every round.** Its body below is full
-                    // of `continue`s (already have a thumb, engine returned null),
-                    // and a `continue` taken first thing would starve the other
-                    // shelf exactly as the old ordering did.
-                    if (fotuAt < fotuQueue.size()) {
-                        final String fid = fotuQueue.get(fotuAt++);
-                        if (!prefetchFotuCards(java.util.Collections.singletonList(fid), generation)) return;
-                    }
-                    if (card < pending.size()) {
-                    final String id = pending.get(card);
-                    final long t0 = nowMs();
-                    final Bitmap thumb = renderStockThumbnail(id);
-                    final long ms = nowMs() - t0;
-                    if (++sinceTrim >= 6) {
-                        sinceTrim = 0;
-                        if (prefetchEngine != null) {
-                            try { prefetchEngine.trimPool(); } catch (Throwable ignored) { }
-                        }
-                    }
-                    if (thumb == null) {
-                        markFile("prefetch no-thumb " + id + " " + ms + " ms");
-                        continue;
-                    }
-                    markFile("prefetch ok " + id + " " + ms + " ms");
-                    try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable ignored) { }
-                    runOnUiThread(() -> {
-                        if (generation != prefetchGeneration) return;
-                        filmThumbs.put(id, thumb);
-                        updateCardThumb(id);
-                    });
+                // Giving the idle planes back every six cards keeps the shelf's
+                // footprint flat without paying a re-allocation per card.
+                if (++sinceTrim >= 6) {
+                    sinceTrim = 0;
+                    if (prefetchEngine != null) {
+                        try { prefetchEngine.trimPool(); } catch (Throwable ignored) { }
                     }
                 }
-            } finally {
-                // A queue from a previous frame can outlive the import that
-                // replaced it. Knocking `prefetchRunning` down and resetting
-                // the edge here would stop the *live* queue mid-shelf, and the
-                // cards after that point would simply never fill.
-                if (generation == prefetchGeneration) {
-                    setPrefetchEdge(PREVIEW_LONG_EDGE);
-                    prefetchRunning = false;
+                if (thumb == null) {
+                    final String why = lastThumbFailure;
+                    runOnUiThread(() -> notePrefetchFailure(id, why));
+                    continue;
                 }
-                markFile("prefetch done gen=" + generation + "/" + prefetchGeneration
-                        + " thumbs=" + filmThumbs.size());
-                // Anything still missing gets another pass, twice. Not more: a
-                // card whose render genuinely fails must not spin for ever.
-                if (generation == prefetchGeneration && prefetchRetries < 2) {
-                    int missing = 0;
-                    for (String id : pending) if (!filmThumbs.containsKey(id)) ++missing;
-                    for (String id : fotuQueue) if (!filmThumbs.containsKey(id)) ++missing;
-                    if (missing > 0) {
-                        ++prefetchRetries;
-                        markFile("prefetch retry #" + prefetchRetries + " missing=" + missing);
-                        runOnUiThread(() -> {
-                            if (!appPaused && !batchExportRunning && !prefetchRunning) startPrefetch();
-                        });
-                    } else {
-                        prefetchRetries = 0;
-                    }
-                }
-                try {
-                    DebugSink.text("prefetch", "done gen=" + generation + "/" + prefetchGeneration
-                            + " thumbs=" + filmThumbs.size());
-                } catch (Throwable ignored) { }
+                try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable ignored) { }
+                runOnUiThread(() -> {
+                    if (generation != prefetchGeneration) return;
+                    filmThumbs.put(id, thumb);
+                    prefetchFails.remove(id);
+                    prefetchFailWhy.remove(id);
+                    updateCardThumb(id);
+                });
             }
-        }, "film-prefetch");
-        prefetchThread.setPriority(Thread.MIN_PRIORITY);
-        prefetchThread.start();
+        } finally {
+            if (generation == prefetchGeneration) prefetchSpkRunning = false;
+            prefetchFinished(generation);
+        }
+    }
+
+    /** The second engine's half. Its own lock, its own assets, no session. */
+    private void prefetchFotuPass(java.util.List<String> fotuQueue, int generation) {
+        try {
+            prefetchFotuCards(fotuQueue, generation);
+        } finally {
+            if (generation == prefetchGeneration) prefetchFotuRunning = false;
+            prefetchFinished(generation);
+        }
+    }
+
+    /**
+     * A pass has ended. Only the last worker to leave speaks.
+     *
+     * <p>It puts the preview edge back -- leaving it at the shelf's 512 was the
+     * canvas rendering at card size until the user touched something -- counts
+     * what is still missing and asks for one more pass with a delay, so a pass
+     * that was cut short by a render heals itself instead of needing a tap.
+     */
+    private void prefetchFinished(int generation) {
+        if (prefetchSpkRunning || prefetchFotuRunning) return;   // the other one is still going
+        // **Put the edge back even if this pass is stale.** A pass can be
+        // retired mid-loop by an import, and if the only thing that ever
+        // restored `preview_long_edge` lived behind the generation check, the
+        // canvas would keep rendering at the shelf's 384 px until something
+        // else moved it.
+        //
+        // Only if this pass moved it: a pass with no first-engine cards must not
+        // restate the edge, because a `preview_long_edge` change drops the live
+        // tier's cached negative.
+        if (prefetchEdgeMoved) {
+            prefetchEdgeMoved = false;
+            setPrefetchEdge(PREVIEW_LONG_EDGE);
+        }
+        if (generation != prefetchGeneration) return;
+        prefetchRunning = false;
+        final java.util.List<String> all = prefetchMissing;
+        int missing = 0;
+        if (all != null) for (String id : all) if (!filmThumbs.containsKey(id)) ++missing;
+        markFile("prefetch done gen=" + generation + "/" + prefetchGeneration
+                + " thumbs=" + filmThumbs.size() + " missing=" + missing);
+        try {
+            DebugSink.text("prefetch", "done gen=" + generation + "/" + prefetchGeneration
+                    + " thumbs=" + filmThumbs.size() + " missing=" + missing);
+        } catch (Throwable ignored) { }
+        // Six, not two: a pass can be cut short by the user's own renders, and
+        // those are not failures. A card that really cannot be drawn stops
+        // being queued after `PREFETCH_FAIL_SHOWN` anyway, so this only bounds
+        // the passes that never reach that state.
+        if (missing > 0 && prefetchRetries < 6) {
+            ++prefetchRetries;
+            markFile("prefetch retry #" + prefetchRetries + " missing=" + missing);
+            // Not immediately: an immediate retry lands inside the render that
+            // just cut the pass short and dies the same way.
+            uiHandler.postDelayed(() -> {
+                if (!appPaused && !batchExportRunning && !prefetchRunning
+                        && !rendering && !fotuRendering) startPrefetch();
+            }, 1500);
+        } else if (missing == 0) {
+            prefetchRetries = 0;
+        }
+    }
+
+    /** Called on the UI thread: this card's render came back empty. */
+    private void notePrefetchFailure(String id, String why) {
+        // "no session" and "session moved" describe the frame, not the card: an
+        // import in flight would otherwise mark half the shelf unusable in
+        // three quick passes.
+        if (why != null && (why.startsWith("no session") || why.startsWith("session moved"))) return;
+        final Integer had = prefetchFails.get(id);
+        final int n = (had == null ? 0 : had) + 1;
+        prefetchFails.put(id, n);
+        prefetchFailWhy.put(id, why == null ? "" : why);
+        if (n == 1) {
+            // The first failure of each stock is the one worth reporting: it
+            // names the card and the reason, which is exactly what a "some
+            // cards never load" report cannot tell us from a screenshot.
+            try { DebugSink.text("thumb", "failed " + id + " · " + why); } catch (Throwable ignored) { }
+        }
+        if (n >= PREFETCH_FAIL_SHOWN) markCardUnavailable(id, why);
+    }
+
+    /** Replace a card's picture slot with a definite state, not a loader. */
+    private void markCardUnavailable(String id, String why) {
+        final android.widget.FrameLayout box = filmCardImages.get(cardKeyFor(id));
+        if (box == null || filmThumbs.containsKey(id)) return;
+        box.removeAllViews();
+        box.addView(unavailableTile(), new android.widget.FrameLayout.LayoutParams(-1, -1));
+        markFile("thumb unavailable " + id + " · " + why);
+    }
+
+    /** "无法预览 / 点一下重试" -- two lines, card sized. */
+    private View unavailableTile() {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(android.view.Gravity.CENTER);
+        box.setBackgroundColor(UI_GROUND);
+        TextView head = label("无法预览", 8.5f, UI_MUTED, tfHan);
+        head.setGravity(android.view.Gravity.CENTER);
+        TextView sub = label("点一下重试", 6.5f, UI_MUTED, tfHan);
+        sub.setGravity(android.view.Gravity.CENTER);
+        box.addView(head, new LinearLayout.LayoutParams(-1, -2));
+        box.addView(sub, new LinearLayout.LayoutParams(-1, -2));
+        return box;
     }
 
     /**
@@ -24856,7 +24995,10 @@ public class MainActivity extends Activity {
                 // 横屏的卡片是竖屏的 1.75 倍宽，缩略图跟着要更大的源。
                 file = fotuDevelop(id, medium, filmCols > 1 ? 480 : FOTU_CARD_EDGE, "c", false);
                 final Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath());
-                if (bmp == null) continue;
+                if (bmp == null) {
+                    runOnUiThread(() -> notePrefetchFailure(full, "decode null"));
+                    continue;
+                }
                 final int tw = shelfThumbWidthPx();
                 final int th = Math.max(1, Math.round(tw * bmp.getHeight() / (float) bmp.getWidth()));
                 final Bitmap small = Bitmap.createScaledBitmap(bmp, tw, th, true);
@@ -24873,6 +25015,8 @@ public class MainActivity extends Activity {
                 });
             } catch (Throwable t) {
                 markFile("prefetch fotu-fail " + full + ": " + t);
+                final String why = String.valueOf(t);
+                runOnUiThread(() -> notePrefetchFailure(full, why));
                 try { DebugSink.text("prefetch", "fotu " + full + ": " + t); } catch (Throwable ignored) { }
             } finally {
                 // The chain hands back a JPEG in cacheDir; one per card per pass
@@ -24914,7 +25058,13 @@ public class MainActivity extends Activity {
     private void stopPrefetch() {
         prefetchGeneration++;
         prefetchRunning = false;
-        prefetchRetries = 0;
+        prefetchSpkRunning = false;
+        prefetchFotuRunning = false;
+        // `prefetchRetries` is deliberately NOT reset here: a user render calls
+        // `startPrefetch` on every frame, and a counter that is cleared on every
+        // start is not a bound at all -- the shelf would retry a card that
+        // genuinely cannot be drawn for ever. It is cleared when a pass ends
+        // with nothing missing.
     }
 
     /** One stock, one small render at the shelf's own size.
@@ -24924,7 +25074,7 @@ public class MainActivity extends Activity {
      *  no bookkeeping here to fall out of step. */
     private Bitmap renderStockThumbnail(String stock) {
         final SpektraLabEngine.Session s = session;
-        if (s == null) { markFile("thumb: no session " + stock); return null; }
+        if (s == null) { lastThumbFailure = "no session"; markFile("thumb: no session " + stock); return null; }
         // A fotufilm card is drawn, not developed: its id is not a profile file
         // name, and letting it through would leave this card showing whatever
         // the previous stock left on the session.
@@ -24936,7 +25086,7 @@ public class MainActivity extends Activity {
         CrashTrail.mark(this, "prefetch:card " + stock);
         synchronized (renderMutex) {
             try {
-                if (s != session) { markFile("thumb: session moved " + stock); return null; }
+                if (s != session) { lastThumbFailure = "session moved"; markFile("thumb: session moved " + stock); return null; }
                 // **The whole parameter set, not just film+paper.** A delta
                 // that carries `film_stock` is a stock change, and the engine
                 // answers a stock change by rebuilding the parameter tree --
@@ -24966,18 +25116,20 @@ public class MainActivity extends Activity {
                         ? targetPaper
                         : (printStock != null && printIds.contains(printStock)
                                 ? printStock : "kodak_portra_endura");
-                applyParams(stock, cardPaper, PREFETCH_LONG_EDGE);
+                applyParams(stock, cardPaper, prefetchEdge);
                 // `live` honours preview_long_edge (800 here); `preview` is a
                 // fixed 3400 px and made every card an export-sized print.
                 final int[] dims = s.renderBegin("live");
                 final int w = dims[0], h = dims[1];
                 if (w <= 0 || h <= 0) {
+                    lastThumbFailure = "no size " + java.util.Arrays.toString(dims);
                     markFile("thumb: no size " + stock + " " + java.util.Arrays.toString(dims));
                     return null;
                 }
                 final int[] pixels = new int[w * h];
                 final int copied = s.copyArgbRange(pixels, 0, h);
                 if (copied != w * h) {
+                    lastThumbFailure = "short copy " + copied + "/" + (w * h);
                     markFile("thumb: short copy " + stock + " " + copied + "/" + (w * h));
                     return null;
                 }
@@ -24995,6 +25147,7 @@ public class MainActivity extends Activity {
                 // is still loading.
                 final PictureCheck.Result cardLook = PictureCheck.of(sampleGrid(full));
                 if (!cardLook.ok()) {
+                    lastThumbFailure = "flat " + cardLook.describe();
                     markFile("thumb: flat " + stock + " " + cardLook.describe());
                     SelfHeal.repaired("thumb-flat", stock + " " + cardLook.describe());
                     full.recycle();
@@ -25006,6 +25159,7 @@ public class MainActivity extends Activity {
                 if (small != full) full.recycle();
                 return small;
             } catch (Throwable t) {
+                lastThumbFailure = "threw " + t;
                 markFile("thumb: threw " + stock + ": " + t);
                 try { DebugSink.text("prefetch", "render " + stock + ": " + t); } catch (Throwable ignored) { }
                 return null;
@@ -28668,7 +28822,7 @@ public class MainActivity extends Activity {
             if (sourcePixels != 0) { SpektraLabEngine.freePixels(sourcePixels); sourcePixels = 0; }
             // The previous file's unpacked plane is not this frame's problem.
             try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
-            filmThumbs.clear();
+            clearShelfCache();
             // The canvas is not a control. `setOriginalVisual` only paints the
             // 原图 button; what CompareView holds is `after` (the last render)
             // and it survives a new session. That was the whole "I changed the
@@ -29371,7 +29525,7 @@ public class MainActivity extends Activity {
             //     id with no frame identity in the key.
             stopPrefetch();
             if (compare != null) compare.clear();
-            filmThumbs.clear();
+            clearShelfCache();
             lastRenderedBitmap = null;
             refreshPanelLocks();
             // **Not `clearBusyPlate()`.** That emptied the canvas for the
@@ -31546,18 +31700,24 @@ public class MainActivity extends Activity {
      *
      * <p>Three tables per (stock, medium) are 561 KB each and building them
      * costs 0.5 s of the chain. They are pure functions of the pair, so they
-     * survive between renders; ninety-six files is about 55 MB and holds most
-     * of the second engine's shelf, which is what makes a card forty
-     * milliseconds instead of half a second.
+     * survive between renders, and a card is 100 ms with them against 250-450
+     * without -- measured on the whole 29-card shelf, cold against warm.
+     *
+     * <p>**The cap has to be larger than one shelf.** Each (stock, medium) is
+     * three files and the shelf itself is 29 of them: 87 files, 48 MB. At
+     * ninety-six the very next render on another medium -- the canvas is one
+     * more -- evicted the oldest entries, so the following pass rebuilt what it
+     * had just thrown away and every card paid the full 450 ms again. 160 holds
+     * the whole shelf plus the handful of media a session actually touches.
      */
     private String fotuTableCache() {
         final java.io.File dir = new java.io.File(getCacheDir(), "fotu-tables");
         if (!dir.isDirectory() && !dir.mkdirs()) return null;
         final java.io.File[] files = dir.listFiles();
-        if (files != null && files.length > 96) {
+        if (files != null && files.length > 160) {
             java.util.Arrays.sort(files,
                     (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-            for (int i = 0; i < files.length - 96; ++i) files[i].delete();
+            for (int i = 0; i < files.length - 160; ++i) files[i].delete();
         }
         return dir.getAbsolutePath();
     }
