@@ -217,6 +217,8 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | LookCodec extraction (~250 lines) | `9c3ec0d` | javac |
 | AppFailure classification + stage tag | `9c3ec0d` | javac |
 | Dialog registry + uiWait inline path | `9c3ec0d` | javac |
+| Checker unit tests + device smoke script | `d44f9bb` | test_checkers.py, docs/testing.md |
+| SessionState + ThumbCache extraction | `d44f9bb` | javac, APK build |
 
 ## Updating this plan
 
