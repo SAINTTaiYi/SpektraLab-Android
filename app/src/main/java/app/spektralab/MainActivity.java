@@ -89,8 +89,10 @@ public class MainActivity extends Activity {
     private static boolean testDeterministic = false;
     private static boolean testAutoFilm = false;
 
-    /** Data-layer boundary for photo copies; see AndroidPhotoRepository. */
+    /** Data-layer boundaries; implementations are in app.spektralab.data. */
     private app.spektralab.domain.PhotoRepository photoRepository;
+    private app.spektralab.data.PresetRepository presetRepository;
+    private app.spektralab.domain.AppPreferences appPreferences;
 
     private Bitmap sourceBitmap;
     private Uri sourceUri;
@@ -388,6 +390,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         photoRepository = new app.spektralab.data.AndroidPhotoRepository(this);
+        presetRepository = new app.spektralab.data.SharedPreferencesPresetRepository(this);
+        appPreferences = new app.spektralab.data.SharedPreferencesAppPreferences(this, "ui");
         // Device-test hooks, set only by device-golden.ps1 through intent extras.
         final android.content.Intent launch = getIntent();
         if (launch != null) {
@@ -420,7 +424,7 @@ public class MainActivity extends Activity {
         // **Before the first layout.** A palette applied afterwards would mean
         // rebuilding every widget, so the preference is read once here and the
         // switch asks for a restart.
-        applyPalette(getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false));
+        applyPalette(appPreferences.getBoolean("dark", false));
         CrashTrail.mark(this, "app:onCreate");
         // The native side, before anything reads it: every object the engine
         // is linked against is loaded by path, and a failure is kept (see
@@ -7471,9 +7475,9 @@ public class MainActivity extends Activity {
     // to understand, and the receiver can paste it back or read it.
 
     // Preset persistence and share compaction are pure data work; see PresetStore.
-    private org.json.JSONArray presetList() { return PresetStore.load(this); }
-    private void storePresetList(org.json.JSONArray list) { PresetStore.save(this, list); }
-    private static org.json.JSONObject lookCompact(Look l) { return PresetStore.compact(l); }
+    private org.json.JSONArray presetList() { return presetRepository.load(); }
+    private void storePresetList(org.json.JSONArray list) { presetRepository.save(list); }
+    private org.json.JSONObject lookCompact(Look l) { return presetRepository.compact(l); }
 
     /** "fujifilm_c200" reads badly in a chat; its label reads fine. */
     private String stockDisplay(String id) {
@@ -10786,8 +10790,7 @@ public class MainActivity extends Activity {
                 // The palette is read once in onCreate; a restart is the whole
                 // rebuild, and the current session's state is already saved on
                 // pause, so nothing the user did is lost by asking for it.
-                getSharedPreferences("ui", MODE_PRIVATE).edit()
-                        .putBoolean("dark", !dark).apply();
+                appPreferences.putBoolean("dark", !dark);
                 // **Never `null` here.** `showSheetBody` calls
                 // `onPick.accept(index)` on every row, so a null listener turned
                 // each tap on 「好」 into a NullPointerException -- a hundred
@@ -13516,7 +13519,13 @@ public class MainActivity extends Activity {
             // waiting for the lock.
             if (s != session || fullGen != fullGeneration.get()) return;
             try {
-                applyParams(stock, paper, LIVE_LONG_EDGE);
+                // Capture the look for this frame, then let the domain use case
+                // apply it and start the reprint. No mutable Activity field is
+                // read after this point.
+                final app.spektralab.domain.EditorState liveState =
+                        new app.spektralab.domain.EditorState(
+                                stock, paper, meterMethod, frame, showingOriginal,
+                                rendering, geometrySeq);
                 // **Reprint, not render.** The delta above only names what
                 // moved, so a print- or view-layer change never touches the
                 // cached negative and this skips the whole film side: 32 ms
@@ -13525,7 +13534,9 @@ public class MainActivity extends Activity {
                 // full develop -- correct, just slow, and only on the sliders
                 // that genuinely need it (grain, halation, geometry, rebate).
                 final long liveStart = System.currentTimeMillis();
-                final int[] dims = s.renderBegin("live", true);
+                final int[] dims = new app.spektralab.domain.RenderLookUseCase().render(
+                        s, liveState, "live", LIVE_LONG_EDGE, true,
+                        (target, state, edge) -> applyParams(state.filmStock, (int) edge));
                 final int w = dims[0], h = dims[1];
                 if (w <= 0 || h <= 0) throw new RuntimeException("empty live frame");
                 if (livePixels == null || livePixels.length < w * h) livePixels = new int[w * h];

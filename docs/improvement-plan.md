@@ -231,6 +231,7 @@ Baseline measured at `1.6.2m (385)` on branch `feat/windows-debug-builds`:
 | On-device golden / banding comparison | `0b634e0` | 3 hashes identical |
 | Android-skill Phase A (interfaces, use cases, fakes) | `1d1692e` | DomainTest + golden hash |
 | Phase B start: EditorState + RenderLookUseCase | `f1cfd4c` | DomainTest + emulator golden |
+| Preset/preferences repositories + live-preview state | pending | DomainTest + emulator UI tap |
 
 ## Updating this plan
 

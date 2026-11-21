@@ -1,5 +1,6 @@
 package app.spektralab.testing;
 
+import app.spektralab.domain.AppPreferences;
 import app.spektralab.domain.EditorState;
 import app.spektralab.domain.EngineApi;
 import app.spektralab.domain.ImportPlanner;
@@ -91,6 +92,11 @@ public final class DomainTest {
         FakeSession reprint = new FakeSession();
         new RenderLookUseCase().render(reprint, state, "live", 800, true, (s, st, e) -> { });
         check(reprint.calls.contains("renderBegin:live:true"), "reprint flag reaches the session");
+
+        AppPreferences prefs = new FakeAppPreferences();
+        check(!prefs.getBoolean("dark", false), "preferences fallback");
+        prefs.putBoolean("dark", true);
+        check(prefs.getBoolean("dark", false), "preferences write/read round trip");
 
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");

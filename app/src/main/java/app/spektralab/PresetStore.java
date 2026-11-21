@@ -4,7 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Preset persistence and share compaction; no UI or Activity state. */
-final class PresetStore {
+public final class PresetStore {
     private PresetStore() {}
 
 static org.json.JSONArray load(android.content.Context c) {
@@ -71,7 +71,7 @@ static org.json.JSONArray load(android.content.Context c) {
     }
 
     /** Drop the keys still holding their default, and the flat curves. */
-    static org.json.JSONObject compact(Look l) {
+    public static org.json.JSONObject compact(Look l) {
         final org.json.JSONObject full = LookCodec.toJson(l);
         final org.json.JSONObject out = new org.json.JSONObject();
         final java.util.Iterator<String> it = full.keys();

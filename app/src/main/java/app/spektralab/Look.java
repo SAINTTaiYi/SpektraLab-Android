@@ -1,7 +1,7 @@
 package app.spektralab;
 
 /** The edit recipe attached to one photograph. Persisted as JSON in session state. */
-final class Look {
+public final class Look {
     String filmStock;
     String printStock;
     float printExposure, grainAmount, halationAmount, glareAmount, filmFormatMm;

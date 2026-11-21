@@ -57,13 +57,15 @@ Done so far: `EngineApi`/`SessionApi` are implemented by the real facade;
 and `FakeEngine`/`FakeSession`/`FakePhotoRepository` have JVM tests in
 `DomainTest`. Both banded and whole-plane device hashes remain identical.
 
-Phase B started: `EditorState` is captured on the UI thread and the render
-worker consumes it through `RenderLookUseCase`; JVM tests cover the params →
-render order. Golden hashes remain identical on both the physical device and
-the Orca-attached Android emulator (`emulator-5554`, API 37).
+Phase B started: `EditorState` is captured on the UI thread and both the full
+render and live-preview workers consume it through `RenderLookUseCase`; JVM
+tests cover the params → render order. Golden hashes remain identical on the
+physical device and the Orca-attached emulator (`emulator-5554`, API 37);
+tapping a film card in Orca switched stock/paper without a crash.
 
-Remaining in Phase A: repository interfaces for presets, the stock catalog and
-preferences; their fakes.
+Phase A repositories now cover photos, presets and preferences with fakes.
+Remaining: the stock-catalog repository (its label decoration is coupled to
+localization, so it needs a small label-decorator seam).
 
 1. Define `EngineApi` (create/open session/render/export/trim) and `SessionApi`
    (setParams, renderBegin, copyArgbRange, solve, close) around the existing
