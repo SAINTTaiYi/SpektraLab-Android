@@ -89,6 +89,9 @@ public class MainActivity extends Activity {
     private static boolean testDeterministic = false;
     private static boolean testAutoFilm = false;
 
+    /** Data-layer boundary for photo copies; see AndroidPhotoRepository. */
+    private app.spektralab.domain.PhotoRepository photoRepository;
+
     private Bitmap sourceBitmap;
     private Uri sourceUri;
     /** An ACTION_VIEW URI that arrived before the canvas was ready. */
@@ -384,6 +387,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        photoRepository = new app.spektralab.data.AndroidPhotoRepository(this);
         // Device-test hooks, set only by device-golden.ps1 through intent extras.
         final android.content.Intent launch = getIntent();
         if (launch != null) {
@@ -11110,59 +11114,13 @@ public class MainActivity extends Activity {
      *  failure; the caller reports it rather than importing a URI that will
      *  not open next time. */
     private Uri privateCopy(Uri src) {
-        java.io.File dst = null;
-        try {
-            final String name = getFileName(src);
-            final java.io.File dir = new java.io.File(getFilesDir(), "import");
-            if (!dir.isDirectory() && !dir.mkdirs()) return null;
-            // Own copies survive restarts, so they need a bound. Keep the newest
-            // forty (a long batch import); the strip keeps its
-            // URIs and a lost copy only means one re-pick, not lost work.
-            final java.io.File[] old = dir.listFiles();
-            if (old != null) {
-                java.util.Arrays.sort(old, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-                long total = 0;
-                int count = 0;
-                for (java.io.File f : old) if (f.isFile()) { total += f.length(); ++count; }
-                // Evict oldest until both the count and the byte budget hold.
-                for (java.io.File f : old) {
-                    if (count <= 40 && total <= (2L << 30)) break;
-                    if (f.isFile() && f.delete()) {
-                        total -= f.length();
-                        --count;
-                    }
-                }
-            }
-            dst = new java.io.File(dir,
-                    System.currentTimeMillis() + "_" + (name == null ? "photo" : name));
-            // ACTION_VIEW from a file manager hands us a file:// URI. The
-            // platform ContentResolver does not open those; read the path
-            // directly so "open with" works as advertised in the manifest.
-            final InputStream in;
-            if ("file".equalsIgnoreCase(src.getScheme())) {
-                final java.io.File source = new java.io.File(src.getPath());
-                if (!source.isFile()) return null;
-                in = new java.io.FileInputStream(source);
-            } else {
-                in = openUri(src);
-            }
-            try (InputStream input = in;
-                 java.io.FileOutputStream out = new java.io.FileOutputStream(dst)) {
-                if (input == null) return null;
-                final byte[] buf = new byte[1 << 16];
-                int read;
-                while ((read = input.read(buf)) > 0) out.write(buf, 0, read);
-            }
-            try { DebugSink.text("import", "copied " + name + " -> " + dst.getName()
-                    + " (" + dst.length() + " bytes)"); } catch (Throwable spkIgnored) { Diagnostics.ignored("listFiles:11134", spkIgnored); }
-            return Uri.fromFile(dst);
-        } catch (Throwable t) {
-            // A half-copied file is worse than no file: the next launch would
-            // hand a truncated RAW to the decoder and blame the photograph.
-            if (dst != null) dst.delete();
-            try { DebugSink.text("import", "copy failed: " + t); } catch (Throwable spkIgnored) { Diagnostics.ignored("listFiles:11140", spkIgnored); }
-            return null;
-        }
+        if (src == null) return null;
+        final String copied = photoRepository.persist(src.toString());
+        return copied == null ? null : Uri.parse(copied);
+    }
+
+    private boolean canReadUri(Uri uri) {
+        return photoRepository.canRead(uri == null ? null : uri.toString());
     }
 
     /**
@@ -11176,19 +11134,6 @@ public class MainActivity extends Activity {
             return new java.io.FileInputStream(uri.getPath());
         }
         return getContentResolver().openInputStream(uri);
-    }
-
-    /** Can this URI still be opened? A restored frame's grant may be gone. */
-    private boolean canReadUri(Uri uri) {
-        if (uri == null) return false;
-        if ("file".equalsIgnoreCase(uri.getScheme())) {
-            return new java.io.File(uri.getPath()).isFile();
-        }
-        try (InputStream in = openUri(uri)) {
-            return in != null;
-        } catch (Throwable t) {
-            return false;
-        }
     }
 
     private void loadImage(Uri uri) {

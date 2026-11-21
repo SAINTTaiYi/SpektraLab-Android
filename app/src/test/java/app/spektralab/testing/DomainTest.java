@@ -69,6 +69,12 @@ public final class DomainTest {
         check(opened != null && !opened.isClosed(), "fake engine opens a session");
         check(engine.trimPool() == 1024L, "fake engine trims the pool");
 
+        FakePhotoRepository photos = new FakePhotoRepository().readable("content://pick/1");
+        check(photos.canRead("content://pick/1"), "fake repo reports a readable URI");
+        String copy = photos.persist("content://pick/1");
+        check(copy != null && photos.canRead(copy), "persist creates a readable copy");
+        check("1".equals(photos.displayName("content://pick/1")), "display name from URI");
+
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");
             System.exit(1);

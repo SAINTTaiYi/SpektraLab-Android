@@ -1,10 +1,10 @@
 package app.spektralab;
 
 /** One place for failures that used to be swallowed without a trace. */
-final class Diagnostics {
+public final class Diagnostics {
     private Diagnostics() {}
 
-    static void ignored(String where, Throwable t) {
+    public static void ignored(String where, Throwable t) {
         try { DebugSink.text("ignored", where + ": " + brief(t)); }
         catch (Throwable ignored) { }
     }

@@ -52,11 +52,13 @@ Dependency rule, enforced by a new `app/build/check-package-rules.py`:
 ### Phase A — interfaces and fakes (1–2 weeks) — IN PROGRESS
 
 Done so far: `EngineApi`/`SessionApi` are implemented by the real facade;
-`ImportPlanner` is used by `MainActivity`; `RenderPreviewUseCase` and the
-`FakeEngine`/`FakeSession` doubles have JVM tests in `DomainTest`.
+`ImportPlanner` is used by the import path; `PhotoRepository` is implemented by
+`AndroidPhotoRepository` and used for copy/read checks; `RenderPreviewUseCase`
+and `FakeEngine`/`FakeSession`/`FakePhotoRepository` have JVM tests in
+`DomainTest`. Both banded and whole-plane device hashes remain identical.
 
-Remaining: repository interfaces (`PhotoRepository`, `PresetRepository`,
-`StockCatalog`, `PreferencesStore`) and their fakes.
+Remaining in Phase A: repository interfaces for presets, the stock catalog and
+preferences; their fakes.
 
 1. Define `EngineApi` (create/open session/render/export/trim) and `SessionApi`
    (setParams, renderBegin, copyArgbRange, solve, close) around the existing
