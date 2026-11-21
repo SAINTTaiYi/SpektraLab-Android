@@ -20,6 +20,8 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
 import app.spektralab.ui.UiPalette;
+import app.spektralab.ui.CropOverlay;
+import app.spektralab.ui.RotateScale;
 import app.spektralab.ui.HistogramView;
 import app.spektralab.ui.RatioMark;
 import app.spektralab.ui.GuideView;
@@ -1370,7 +1372,31 @@ public class MainActivity extends Activity {
         busyLabel.setVisibility(View.GONE);
         stage.addView(busyLabel, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
-        cropOverlay = new CropOverlay();
+        cropOverlay = new CropOverlay(this, new CropOverlay.Delegate() {
+                @Override public android.graphics.RectF imageRect() {
+                    return compare == null ? null : compare.imageRect();
+                }
+                @Override public boolean onTouchCompare(android.view.MotionEvent e) {
+                    return compare != null && compare.onTouchEvent(e);
+                }
+                @Override public void onCommit(float x, float y, float w, float h,
+                                               boolean held, int drag) {
+                    pendingCropX = x; pendingCropY = y;
+                    pendingCropW = w; pendingCropH = h;
+                    if (cropRatioIndex == -2) {
+                        // already custom
+                    } else if (cropRatioIndex == -1) {
+                        final boolean whole = w >= 0.999f && h >= 0.999f
+                                && x <= 0.001f && y <= 0.001f;
+                        if (!whole) cropRatioIndex = -2;
+                    } else if (drag != 1 && !held) {
+                        cropRatioIndex = -2;
+                    }
+                    Probe.log("crop", "drag=" + drag + " held=" + held
+                            + " ratio=" + cropRatioIndex + " W=" + w + " H=" + h);
+                    showComposePage(0);
+                }
+            });
         cropOverlay.setVisibility(View.GONE);
         stage.addView(cropOverlay, new android.widget.FrameLayout.LayoutParams(-1, -1));
 
@@ -5699,7 +5725,11 @@ public class MainActivity extends Activity {
         // **The gesture is on the picture; the scale is the readout.** This
         // page used to make the finger turn a dial while the picture sat still,
         // which is the wrong way round: 修偏 is done by watching the horizon.
-        final RotateScale arc = new RotateScale(this);
+        final RotateScale arc = new RotateScale(this, tfBody, new RotateScale.Delegate() {
+                @Override public void onDragStart() { rotationBeforeDrag = geometryRotation; }
+                @Override public void onPreview(float delta) { previewRotate(delta); }
+                @Override public void onCommit(float delta) { commitRotate(delta); }
+            });
         arc.setAngle(geometryRotation);
         rotateArc = arc;
         android.widget.FrameLayout arcBox = new android.widget.FrameLayout(this);
@@ -5870,119 +5900,7 @@ public class MainActivity extends Activity {
      * pixel is a fortieth of a degree. Level is a place, and the commit still
      * snaps to it (see `commitRotate`).
      */
-    private final class RotateScale extends View {
-        /** Degrees of value the arc spans across its own width. */
-        private static final float SPAN_DEG = 44f;
-
-        private final android.graphics.Paint ink =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final android.graphics.Paint labelPaint =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private float angle = 0f;
-        private float downX = 0f;
-        private boolean dragging = false;
-
-        RotateScale(android.content.Context c) {
-            super(c);
-            ink.setStrokeCap(android.graphics.Paint.Cap.ROUND);
-            labelPaint.setTextAlign(android.graphics.Paint.Align.CENTER);
-            labelPaint.setTypeface(tfBody);
-        }
-
-        void setAngle(float deg) {
-            if (Math.abs(angle - deg) < 0.005f) return;
-            angle = deg;
-            invalidate();
-        }
-
-        /** One pixel is a fortieth of a degree at the usual width. */
-        private float pxPerDeg() {
-            return Math.max(1f, getWidth() / SPAN_DEG);
-        }
-
-        @Override public boolean onTouchEvent(android.view.MotionEvent e) {
-            switch (e.getActionMasked()) {
-                case android.view.MotionEvent.ACTION_DOWN:
-                    downX = e.getX();
-                    rotationBeforeDrag = geometryRotation;
-                    dragging = true;
-                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
-                    return true;
-                case android.view.MotionEvent.ACTION_MOVE:
-                    if (!dragging) return true;
-                    // **Relative to where the finger landed**, not to the last
-                    // event: a scrubber that integrates its own deltas drifts
-                    // against the refresh rate, and this one is calibrated in
-                    // pixels.
-                    previewRotate((e.getX() - downX) / pxPerDeg());
-                    return true;
-                case android.view.MotionEvent.ACTION_UP:
-                    if (dragging) {
-                        dragging = false;
-                        commitRotate((e.getX() - downX) / pxPerDeg());
-                    }
-                    return true;
-                case android.view.MotionEvent.ACTION_CANCEL:
-                    dragging = false;
-                    return true;
-                default:
-                    return super.onTouchEvent(e);
-            }
-        }
-
-        @Override protected void onDraw(android.graphics.Canvas canvas) {
-            final float w = getWidth(), h = getHeight();
-            if (w <= 0f || h <= 0f) return;
-            final float cx = w / 2f;
-            final float baseY = h - dp(10);
-            final float halfW = w / 2f - dp(3);
-            final double halfRad = Math.toRadians(SPAN_DEG / 2.0);
-            final float r = (float) (halfW / Math.sin(halfRad));
-            final float cy = baseY - r;
-
-            // Ticks live on the value, not on the screen: tick `k` is the mark
-            // for `k` degrees, so it slides as `angle` moves and the ones every
-            // five stay the ones every five.
-            // **The ticks that are in view are the ones near the value, not the
-            // ones near zero.** Iterating -22..22 emptied the scale the moment
-            // the angle passed the width of the arc: at 45 degrees every tick
-            // worth drawing was in the 20s and 30s, outside the loop.
-            final int from = (int) Math.ceil(angle - SPAN_DEG / 2f) - 1;
-            final int to = (int) Math.floor(angle + SPAN_DEG / 2f) + 1;
-            for (int k = from; k <= to; ++k) {
-                final float rel = k - angle;
-                if (Math.abs(rel) > SPAN_DEG / 2f) continue;
-                final double phi = Math.toRadians(rel);
-                final float x = cx + (float) (r * Math.sin(phi));
-                final float y = cy + (float) (r * Math.cos(phi));
-                if (k % 5 == 0) {
-                    ink.setColor(UiPalette.INK);
-                    ink.setAlpha(190);
-                    ink.setStrokeWidth(dp(1.6f));
-                    final float len = dp(7);
-                    canvas.drawLine(x, y,
-                            x + (float) (len * Math.sin(phi)),
-                            y + (float) (len * Math.cos(phi)), ink);
-                } else {
-                    ink.setColor(UiPalette.INK);
-                    ink.setAlpha(120);
-                    canvas.drawCircle(x, y, dp(1.1f), ink);
-                }
-            }
-
-            // The pointer: fixed at the middle, longer than any tick, pointing
-            // away from the centre the way the ruler does.
-            ink.setColor(UiPalette.INK);
-            ink.setAlpha(235);
-            ink.setStrokeWidth(dp(1.8f));
-            canvas.drawLine(cx, baseY, cx, baseY + dp(7), ink);
-
-            labelPaint.setColor(UiPalette.INK);
-            labelPaint.setTextSize(dp(13));
-            canvas.drawText(String.format(java.util.Locale.US, "%.2f°", angle),
-                    cx, baseY - dp(20), labelPaint);
-        }
-    }
+    
 
     private View circleAction(String glyph, String caption, Runnable tap) {
         final LinearLayout box = new LinearLayout(this);
@@ -6076,245 +5994,7 @@ public class MainActivity extends Activity {
      * <p>Everything is normalised to the picture, so it holds at any canvas
      * size -- the same numbers `geometry_crop_*` takes.
      */
-    private final class CropOverlay extends View {
-        private final android.graphics.RectF image = new android.graphics.RectF();
-        private float nx = 0f, ny = 0f, nw = 1f, nh = 1f;
-        private float aspect = 0f;                 // picture w/h; 0 = free
-        private int drag = 0;                      // 0 none, 1 move, 2 TL, 3 TR, 4 BL, 5 BR
-        private float downX, downY, sx, sy, sw, sh;
-        /** True while the last drag actually held the card's ratio. */
-        private boolean ratioHeld;
-
-        CropOverlay() { super(MainActivity.this); }
-
-        void sync(float x, float y, float w, float h, float a) {
-            nx = x; ny = y; nw = w; nh = h; aspect = a;
-            invalidate();
-        }
-
-        private void pullImage() {
-            if (compare != null) image.set(compare.imageRect());
-        }
-
-        private float px(float n) { return image.left + n * image.width(); }
-        private float py(float n) { return image.top + n * image.height(); }
-
-        @Override protected void onDraw(android.graphics.Canvas canvas) {
-            pullImage();
-            if (image.isEmpty() || image.width() <= 0f) return;
-
-            final float l = px(nx), t = py(ny), r = px(nx + nw), b = py(ny + nh);
-
-            final android.graphics.Paint dim = new android.graphics.Paint();
-            dim.setColor(0x99000000);
-            canvas.drawRect(0, 0, getWidth(), t, dim);
-            canvas.drawRect(0, b, getWidth(), getHeight(), dim);
-            canvas.drawRect(0, t, l, b, dim);
-            canvas.drawRect(r, t, getWidth(), b, dim);
-
-            final android.graphics.Paint edge =
-                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            edge.setStyle(android.graphics.Paint.Style.STROKE);
-            edge.setStrokeWidth(dp(1.4f));
-            edge.setColor(0xFFFFFFFF);
-            canvas.drawRect(l, t, r, b, edge);
-
-            final android.graphics.Paint thirds =
-                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            thirds.setStyle(android.graphics.Paint.Style.STROKE);
-            thirds.setStrokeWidth(dp(0.8f));
-            thirds.setColor(0x66FFFFFF);
-            for (int i = 1; i < 3; ++i) {
-                final float x = l + (r - l) * i / 3f;
-                final float y = t + (b - t) * i / 3f;
-                canvas.drawLine(x, t, x, b, thirds);
-                canvas.drawLine(l, y, r, y, thirds);
-            }
-
-            final android.graphics.Paint grip =
-                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            grip.setStyle(android.graphics.Paint.Style.STROKE);
-            grip.setStrokeWidth(dp(3f));
-            grip.setColor(0xFFFFFFFF);
-            final float arm = Math.min(dp(22), Math.min(r - l, b - t) * 0.28f);
-            canvas.drawLine(l, t, l + arm, t, grip);
-            canvas.drawLine(l, t, l, t + arm, grip);
-            canvas.drawLine(r, t, r - arm, t, grip);
-            canvas.drawLine(r, t, r, t + arm, grip);
-            canvas.drawLine(l, b, l + arm, b, grip);
-            canvas.drawLine(l, b, l, b - arm, grip);
-            canvas.drawLine(r, b, r - arm, b, grip);
-            canvas.drawLine(r, b, r, b - arm, grip);
-        }
-
-        private int cornerAt(float x, float y) {
-            final float tolerance = dp(30);
-            final float l = px(nx), t = py(ny), r = px(nx + nw), b = py(ny + nh);
-            if (Math.hypot(x - l, y - t) < tolerance) return 2;
-            if (Math.hypot(x - r, y - t) < tolerance) return 3;
-            if (Math.hypot(x - l, y - b) < tolerance) return 4;
-            if (Math.hypot(x - r, y - b) < tolerance) return 5;
-            if (x > l && x < r && y > t && y < b) return 1;
-            return 0;
-        }
-
-        @Override public boolean onTouchEvent(android.view.MotionEvent e) {
-            pullImage();
-            if (image.width() <= 0f) return false;
-            switch (e.getActionMasked()) {
-                case android.view.MotionEvent.ACTION_DOWN: {
-                    final int hit = cornerAt(e.getX(), e.getY());
-                    if (hit == 0) return false;
-                    drag = hit;
-                    downX = e.getX(); downY = e.getY();
-                    sx = nx; sy = ny; sw = nw; sh = nh;
-                    // A box that already has a card's shape starts out held;
-                    // a free / "整幅" box starts out not.
-                    ratioHeld = aspect > 0.0001f;
-                    final android.view.ViewParent parent = getParent();
-                    if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
-                    return true;
-                }
-                case android.view.MotionEvent.ACTION_POINTER_DOWN:
-                    // **A second finger is a pinch, and returning false here
-                    // would not hand it over** -- this view already owns the
-                    // gesture, and Android does not re-dispatch to a sibling.
-                    // So the pinch is forwarded explicitly.
-                    drag = 0;
-                    return compare != null && compare.onTouchEvent(e);
-                case android.view.MotionEvent.ACTION_MOVE: {
-                    if (e.getPointerCount() > 1 && compare != null) return compare.onTouchEvent(e);
-                    if (drag == 0) return false;
-                    applyDrag(e.getX(), e.getY());
-                    return true;
-                }
-                case android.view.MotionEvent.ACTION_UP:
-                case android.view.MotionEvent.ACTION_CANCEL: {
-                    if (e.getPointerCount() > 1 && compare != null) return compare.onTouchEvent(e);
-                    if (drag != 0) {
-                        // **commit first, clear afterwards.** `commitCrop`
-                        // needs to know whether this was a move or a corner
-                        // drag to decide if the ratio card still owns the box.
-                        commitCrop();
-                    } else if (compare != null) {
-                        compare.onTouchEvent(e);        // close a pinch cleanly
-                    }
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private void applyDrag(float x, float y) {
-            final float dxN = (x - downX) / Math.max(1f, image.width());
-            final float dyN = (y - downY) / Math.max(1f, image.height());
-            final float min = 0.04f;
-
-            if (drag == 1) {
-                nx = Math.max(0f, Math.min(1f - sw, sx + dxN));
-                ny = Math.max(0f, Math.min(1f - sh, sy + dyN));
-            } else {
-                // The opposite corner is the anchor.
-                final boolean left = (drag == 2 || drag == 4);
-                final boolean up = (drag == 2 || drag == 3);
-                final float ax = left ? sx + sw : sx;
-                final float ay = up ? sy + sh : sy;
-                float mx = left ? sx + dxN : sx + sw + dxN;
-                float my = up ? sy + dyN : sy + sh + dyN;
-                mx = Math.max(0f, Math.min(1f, mx));
-                my = Math.max(0f, Math.min(1f, my));
-
-                float w = Math.abs(mx - ax);
-                float h = Math.abs(my - ay);
-                if (aspect > 0.0001f && image.width() > 0f) {
-                    // The ratio is in picture pixels; normalised space is
-                    // stretched by the picture's own aspect.
-                    final float aspN = aspect * (image.height() / image.width());
-                    if (w / Math.max(1e-5f, h) > aspN) h = w / aspN; else w = h * aspN;
-                    // **Shrink both sides together at the picture edge.**
-                    // Clamping w and h independently here (what the old code
-                    // did) changes the ratio the moment a drag reaches an
-                    // edge -- which is how a fixed-ratio card silently turned
-                    // into a custom box without any other card being tapped.
-                    final float roomW = left ? ax : 1f - ax;
-                    final float roomH = up ? ay : 1f - ay;
-                    if (roomW > 1e-3f && roomH > 1e-3f) {
-                        if (w > roomW && w > 1e-5f) { h *= roomW / w; w = roomW; }
-                        if (h > roomH && h > 1e-5f) { w *= roomH / h; h = roomH; }
-                        if (w < min || h < min) {
-                            final float lift = Math.max(min / Math.max(1e-5f, w),
-                                    min / Math.max(1e-5f, h));
-                            if (lift > 1f) { w *= lift; h *= lift; }
-                        }
-                        ratioHeld = true;
-                    } else {
-                        // The anchor sits against the edge: there is no room
-                        // to hold the shape, so this box is honestly custom.
-                        w = Math.max(min, Math.min(1f, w));
-                        h = Math.max(min, Math.min(1f, h));
-                        ratioHeld = false;
-                    }
-                } else {
-                    w = Math.max(min, Math.min(1f, w));
-                    h = Math.max(min, Math.min(1f, h));
-                    ratioHeld = false;
-                }
-                w = Math.max(1e-5f, Math.min(1f, w));
-                h = Math.max(1e-5f, Math.min(1f, h));
-
-                nx = Math.max(0f, Math.min(1f - w, left ? ax - w : ax));
-                ny = Math.max(0f, Math.min(1f - h, up ? ay - h : ay));
-                nw = w; nh = h;
-            }
-            invalidate();
-        }
-
-        private void commitCrop() {
-            // **A proposal, not a render.** The picture only changes when 应用
-            // is pressed; dragging keeps the frame and the photograph in the
-            // same space, which is what makes them line up.
-            pendingCropX = nx; pendingCropY = ny;
-            pendingCropW = nw; pendingCropH = nh;
-            keepRatioClaim();
-            Probe.log("crop", "drag=" + drag + " held=" + ratioHeld
-                    + " ratio=" + cropRatioIndex + " W=" + nw + " H=" + nh
-                    + " aspect=" + aspect);
-            drag = 0;
-            showComposePage(0);
-        }
-
-        /**
-         * Keep the card that owns this shape, if it still owns it.
-         *
-         * <p>A move only changes the origin, so the claim survives untouched.
-         * A corner drag is held to the ratio by {@link #applyDrag}, so it
-         * survives too. The one honest exception is a box that had to give up
-         * its shape because it would have left the picture.
-         *
-         * <p>This used to be an unconditional {@code cropRatioIndex = -2} on
-         * every touch-up, so a single slide inside a fixed ratio permanently
-         * unlocked the ratio: the cards lost their selection, the summary
-         * read "custom", and the next corner drag was free.
-         */
-        private void keepRatioClaim() {
-            if (cropRatioIndex == -2) return;       // already custom
-            if (cropRatioIndex == -1) {
-                // "原始 / 整幅" is a claim as well: the whole frame.
-                final boolean whole = nw >= 0.999f && nh >= 0.999f
-                        && nx <= 0.001f && ny <= 0.001f;
-                if (!whole) cropRatioIndex = -2;
-                return;
-            }
-            if (drag == 1) return;                  // a move keeps the shape
-            // **No geometry compare here on purpose.** `applyDrag` already
-            // holds the shape to the card's ratio and sets `ratioHeld` only
-            // when it could; comparing `nw/nh` to the ratio would re-derive
-            // the same thing from the display rect, which lags the canvas by
-            // a render after 应用裁切 and would knock the card off for no
-            // visible reason.
-            if (!ratioHeld) cropRatioIndex = -2;
-        }
-    }
+    
 
     /** A crop ratio drawn at that shape: 3:2 is a wide box, 1:1 a square,
      *  6:17 a slash. The card's caption says which gate it came from. */
