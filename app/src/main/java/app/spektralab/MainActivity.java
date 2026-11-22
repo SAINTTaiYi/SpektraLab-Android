@@ -49,7 +49,7 @@ import java.nio.ByteOrder;
 public class MainActivity extends Activity {
     SpektraLabEngine engine;
     /** This GPU's limits, read once per engine. Drives the import cap and the export tiers. */
-    private DeviceProbe probe = DeviceProbe.parse("{}");
+    DeviceProbe probe = DeviceProbe.parse("{}");
     /** The canary runs once per process, on its own thread. */
     private boolean canaryStarted = false;
     /** Set by the long-press on 导入: keep the decoder's own size and say it may fail. */
@@ -96,13 +96,13 @@ public class MainActivity extends Activity {
      *  renders holding the GPU while the system is deciding whether to reclaim
      *  the process. */
     private boolean appPaused = false;
-    private String rawFilePath = null;
+    String rawFilePath = null;
     // The last file that reached the gallery, so it can be handed straight to
     // another app. A picker that filters by MIME will not show a TIFF on a ROM
     // whose picture list does not know the type; an explicit ACTION_SEND does,
     // because the type travels in the intent instead of being guessed.
-    private Uri lastExportUri = null;
-    private String lastExportMime = null;
+    Uri lastExportUri = null;
+    String lastExportMime = null;
     /** Shown only after a TIFF export: the one format the picker hides. */
     TextView sharePill = null;
     // Device-golden test hooks (default 0/false; never set by normal UI use).
@@ -116,30 +116,30 @@ public class MainActivity extends Activity {
     private app.spektralab.data.StockCatalogRepository stockCatalogRepository;
     private app.spektralab.domain.AppPreferences appPreferences;
     private app.spektralab.domain.ImportController importController;
-    private app.spektralab.data.MediaStoreExport exportStore;
-    private final app.spektralab.domain.ExportController exportController =
+    app.spektralab.data.MediaStoreExport exportStore;
+    final app.spektralab.domain.ExportController exportController =
             new app.spektralab.domain.ExportController();
     private final app.spektralab.domain.RenderController renderController =
             new app.spektralab.domain.RenderController();
 
     private Bitmap sourceBitmap;
-    private Uri sourceUri;
+    Uri sourceUri;
     /** An ACTION_VIEW URI that arrived before the canvas was ready. */
     private Uri pendingIncomingUri = null;
-    private Bitmap lastRenderedBitmap;
-    private ByteBuffer sourcePixels;
-    private int sourceWidth, sourceHeight;
+    Bitmap lastRenderedBitmap;
+    ByteBuffer sourcePixels;
+    int sourceWidth, sourceHeight;
     /** The pixel budget this import was given. Re-reading it after the decode
      *  reports a smaller number -- the decode itself has taken the memory --
      *  so the dialog ended up quoting a cap it never applied. */
-    private int importCapPixels = 0;
+    int importCapPixels = 0;
     // The actual decoded frame, not the RAW sensor's dimensions. The latter can
     // be 51 MP while this session holds 12.8 MP, and export must open the same
     // frame -- never a second decode at a different size.
-    private int importedWidth = 0, importedHeight = 0;
+    int importedWidth = 0, importedHeight = 0;
     // Composition is part of the frame's Look, and goes through the engine's
     // geometry node -- never a second bitmap transform at export time.
-    private int geometryTurns = 0;
+    int geometryTurns = 0;
     /** 构图 page: which sub-page is showing (0 crop, 1 rotate). */
     private int composeSubPage = 0;
     /** The crop card that is lit: -1 original, otherwise an EDGE_* index. */
@@ -174,12 +174,12 @@ public class MainActivity extends Activity {
     private float canvasPinchStartPanX = 0f, canvasPinchStartPanY = 0f;
     /** The draggable frame over the canvas, alive only on 构图 → 裁切. */
     private CropOverlay cropOverlay;
-    private float geometryRotation = 0.0f;
-    private float geometryCropW = 1.0f, geometryCropH = 1.0f;
-    private float geometryCropX = 0.0f, geometryCropY = 0.0f;
-    private CompareView compare;
+    float geometryRotation = 0.0f;
+    float geometryCropW = 1.0f, geometryCropH = 1.0f;
+    float geometryCropX = 0.0f, geometryCropY = 0.0f;
+    CompareView compare;
     /** What the import put on the stage: the frame before any film. */
-    private Bitmap beforeBitmap;
+    Bitmap beforeBitmap;
     TextView statusText;
     /** **A way out that is on screen for the whole batch.** `showExportDialog`
      *  already offers 停止, but it is two taps deep and the sheet that holds it
@@ -233,8 +233,8 @@ public class MainActivity extends Activity {
     /** null until the user picks a film: a fresh launch must not look like
      *  a Portra 400 session, and must not render one behind their back. */
     String filmStock = null;
-    private String printStock = "kodak_portra_endura";
-    private float printExposure = 1.0f;
+    String printStock = "kodak_portra_endura";
+    float printExposure = 1.0f;
     /**
      * The engine's `camera.auto_exposure`, which is also the "As Shot" switch.
      *
@@ -257,7 +257,7 @@ public class MainActivity extends Activity {
      *  `balanced` lifts +5.4 EV and `protect_highlights` +2.4, so "on" meant
      *  either a grey wash or a kept window depending on a constant nobody could
      *  see. */
-    private String meterMethod = "protect_highlights";
+    String meterMethod = "protect_highlights";
     private TextView meterChip;
     /** The EDR switch in the print panel; `edrOn` is still the value. */
     private Square edrMark;
@@ -380,7 +380,7 @@ public class MainActivity extends Activity {
     private String dataText = "", dateTextB = "";
     private int cameraSeed = 1, frameSeed = 1;
     private float filmFormatMm = 36.0f;    // frame's long edge, 135 = 36 mm
-    private boolean uiReady = false;
+    boolean uiReady = false;
     private String lastImportError = null;
     /// Where `reportPreviousExit` left the file, if there was one this launch.
     private String lastCrashFile = null;
@@ -551,7 +551,7 @@ public class MainActivity extends Activity {
 
     // RFC-032/031, the two things the phone build never exposed: the rebate the
     // frame was cut from, and the date a point-and-shoot burned into it.
-    private boolean overscanOn = false;
+    boolean overscanOn = false;
     private String overscanFormat = "135";
     private boolean dateOn = false;
     private String dateText = null;
@@ -895,7 +895,7 @@ public class MainActivity extends Activity {
     private float viewHighlights = 0f, viewShadows = 0f;
     private float viewBlack = 0f, viewWhite = 0f, viewVignette = 0f;
     /** The camera's own exposure offset, in stops: applied by the engine. */
-    private float cameraEv = 0f;
+    float cameraEv = 0f;
     /**
      * The exposure the engine's meter actually applied.
      *
@@ -912,7 +912,7 @@ public class MainActivity extends Activity {
      * what {@link #appliedEvBelongsToCurrentFrame} guards. Kept for the log
      * line, where the two numbers side by side are what showed they differ.
      */
-    private double meteredEv = 0.0;
+    double meteredEv = 0.0;
     /**
      * The EV the last **successful render** actually applied, read back from
      * `progressJson()`'s `auto_exposure_ev`.
@@ -928,8 +928,8 @@ public class MainActivity extends Activity {
      * a white field with only the rebate left (ref SL-261107-503A: exported
      * mean 224/223/217 against a canvas of 103, 67 % of it past 250).
      */
-    private double lastAppliedEv = 0.0;
-    private boolean lastAppliedEvValid = false;
+    double lastAppliedEv = 0.0;
+    boolean lastAppliedEvValid = false;
     /**
      * Which frame {@link #lastAppliedEv} belongs to, as that frame's URI.
      *
@@ -947,7 +947,7 @@ public class MainActivity extends Activity {
     /** Vignette falloff start, as a percentage of the half-diagonal. */
     private static final float VIEW_VIGNETTE_MID = 50f;
 
-    private static final int PREVIEW_LONG_EDGE = 2048;
+    static final int PREVIEW_LONG_EDGE = 2048;
     /** The engine refuses `preview_long_edge` below 800 (params.cpp), so the
      *  catalogue pass uses exactly that floor: the smallest legal frame. */
     private static final int PREFETCH_LONG_EDGE = 800;
@@ -1841,7 +1841,7 @@ public class MainActivity extends Activity {
     }
 
     /** build + version + device: the first three lines of every report. */
-    private String reportHead() {
+    String reportHead() {
         return "build=" + buildLine() + "\n"
                 + "version=" + versionLine()
                 + "device=" + deviceLine() + "\n";
@@ -3209,7 +3209,7 @@ public class MainActivity extends Activity {
      *  fresh export session that does not receive them decodes as-shot -- the
      *  preview is neutral, the file is yellow, and nothing in the parameter
      *  tree explains the difference. */
-    private volatile float[] wbUserMul = null;
+    volatile float[] wbUserMul = null;
     /** True while the file is being re-read; renders stand down meanwhile. */
     private volatile boolean wbDecoding = false;
     private volatile boolean wbPending = false;
@@ -6644,7 +6644,7 @@ public class MainActivity extends Activity {
      *  A state file written by another build, or a key collision, must not reach
      *  the engine as a value the user cannot act on: the render fails with a
      *  message about a string they never typed. */
-    private static String sanitizeMeter(String m) { return LookCodec.sanitizeMeter(m); }
+    static String sanitizeMeter(String m) { return LookCodec.sanitizeMeter(m); }
 
     private String meterName(String id) {
         if (id == null || id.isEmpty()) return tr("meter.off");
@@ -7578,7 +7578,7 @@ public class MainActivity extends Activity {
     }
 
     /** The old four-step ribbon is gone; the render state is in the canvas foot. */
-    private void setStep(int active) { }
+    void setStep(int active) { }
 
     private void setTab(int active) {
         activeTabIndex = active;
@@ -9212,7 +9212,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private long availableMemoryBytes() {
+    long availableMemoryBytes() {
         try {
             android.app.ActivityManager am =
                     (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
@@ -9248,7 +9248,7 @@ public class MainActivity extends Activity {
      * 1.6 covers the worst of them with margin. A frame that lands a little
      * small is a picture; one that lands over the limit is a dead end.
      */
-    private int maxImportPixels(boolean withRebate) {
+    int maxImportPixels(boolean withRebate) {
         try { ensureEngine(); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:11700", spkIgnored); }
         probeNow();
         long byBinding = Long.MAX_VALUE;
@@ -9290,7 +9290,7 @@ public class MainActivity extends Activity {
         return (int) Math.min(Math.max(px, 1_000_000L), Integer.MAX_VALUE);
     }
 
-    private int maxImportPixels() {
+    int maxImportPixels() {
         return maxImportPixels(overscanOn);
     }
 
@@ -9836,7 +9836,7 @@ public class MainActivity extends Activity {
      * scrolls, can be selected, and copies itself in one tap -- an error the
      * user cannot forward is an error nobody can fix.
      */
-    private void showErrorDialog(String title, String body) {
+    void showErrorDialog(String title, String body) {
         showTextDialog(title, body, true);
     }
 
@@ -9999,7 +9999,7 @@ public class MainActivity extends Activity {
         return result;
     }
     
-    private String getFilePathFromUri(Uri uri) {
+    String getFilePathFromUri(Uri uri) {
         // For content:// URIs, we need to copy to a temp file
         if (uri.getScheme().equals("content")) {
             try {
@@ -10511,7 +10511,7 @@ public class MainActivity extends Activity {
 
     private static String b(boolean v) { return v ? "true" : "false"; }
 
-    private static String f(String fmt, double v) {
+    static String f(String fmt, double v) {
         return String.format(java.util.Locale.US, fmt, v);
     }
 
@@ -10563,7 +10563,7 @@ public class MainActivity extends Activity {
     }
 
     /** True when {@link #lastAppliedEv} was measured on the frame in front of us. */
-    private boolean appliedEvBelongsToCurrentFrame() {
+    boolean appliedEvBelongsToCurrentFrame() {
         if (!lastAppliedEvValid) return false;
         final String here = frameUri(currentFrame);
         return here != null && here.equals(lastAppliedEvUri);
@@ -10597,7 +10597,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper,
+    void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper,
                                int longEdge, String space) {
         applyParamsTo(target, stock, paper, longEdge, space, false);
     }
@@ -10614,7 +10614,7 @@ public class MainActivity extends Activity {
      * it had never been touched. The engine is fine -- `print_exposure`
      * 0.25/1.00/4.00 renders 188.65/78.29/15.29 on the host.
      */
-    private void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper,
+    void applyParamsTo(SpektraLabEngine.Session target, String stock, String paper,
                                int longEdge, String space, boolean force) {
         if (force) {
             // Cold bookkeeping, not a behaviour change: with an empty ledger
@@ -10865,7 +10865,7 @@ public class MainActivity extends Activity {
      * when the throttle has expired; the thread is a daemon and is interrupted
      * in a `finally`, so it can never outlive the call it is watching.
      */
-    private Thread startTick(final String tag, final SpektraLabEngine.Session s) {
+    Thread startTick(final String tag, final SpektraLabEngine.Session s) {
         final Thread t = new Thread(() -> {
             int n = 0;
             try {
@@ -10891,7 +10891,7 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private static void stopTick(Thread t) {
+    static void stopTick(Thread t) {
         if (t != null) t.interrupt();
     }
 
@@ -10984,7 +10984,7 @@ public class MainActivity extends Activity {
      * finish and then throw its bitmap away, which is exactly what the
      * generation check is for.
      */
-    private void cancelLivePreview() {
+    void cancelLivePreview() {
         liveGeneration.incrementAndGet();
         liveWanted = false;
     }
@@ -11511,7 +11511,7 @@ public class MainActivity extends Activity {
      * Re-import at a size this device can actually bind, then render again.
      * One offer per import: a loop of dialogs is worse than the error.
      */
-    private void offerSmallerImport() {
+    void offerSmallerImport() {
         if (sourceUri == null || e1001Offered) return;
         e1001Offered = true;
         // The same ceiling the import uses, at 75 % of it. When the probe had
@@ -11755,7 +11755,7 @@ new BatchExportWorker(this).run(format, tier);
         return new java.io.File(getCacheDir(), "vk.log");
     }
 
-    private void uploadVkLog() {
+    void uploadVkLog() {
         try {
             java.io.File f = vkLogFile();
             if (!f.exists() || f.length() == 0) {
@@ -11790,7 +11790,7 @@ new BatchExportWorker(this).run(format, tier);
     }
 
     /** Upload the native export black box, if the JNI left one. */
-    private void uploadExportProgress(java.io.File out) {
+    void uploadExportProgress(java.io.File out) {
         try {
             java.io.File prog = new java.io.File(out.getAbsolutePath() + ".prog");
             if (!prog.exists()) return;
@@ -11808,7 +11808,7 @@ new BatchExportWorker(this).run(format, tier);
      *  Printed next to the export's own size: when the two disagree the file
      *  carries a band that was never drawn, and that is the whole of the
      *  "the rebate flies in the export but not in the preview" report. */
-    private String overscanCanvasLabel() {
+    String overscanCanvasLabel() {
         try {
             final String g = session == null ? null : session.overscanGeometry();
             if (g == null) return "";
@@ -11827,7 +11827,7 @@ new BatchExportWorker(this).run(format, tier);
     }
 
     /** {make, model, datetime, shutter, aperture, iso, focal} for a RAW frame. */
-    private String[] sourceExifForExport() {
+    String[] sourceExifForExport() {
         final String[] none = {"", "", "", "", "", "", ""};
         final java.util.Locale us = java.util.Locale.US;
         try {
@@ -11850,7 +11850,7 @@ new BatchExportWorker(this).run(format, tier);
      * platform reader only for what that parse could not find. Both halves are
      * logged, so a missing field names the reader that dropped it.
      */
-    private String[] jpegSourceExif() {
+    String[] jpegSourceExif() {
         final String[] nativeFields = {"", "", "", "", "", "", ""};
         final String[] platformFields = {"", "", "", "", "", "", ""};
         int headBytes = 0;
@@ -11975,7 +11975,7 @@ new BatchExportWorker(this).run(format, tier);
      * spacing, and the whole line -- enough to tell 17 bars 200 px apart on a
      * 3400 px canvas from a barcode that is supposed to be there.
      */
-    private static String edgeRulerVerdict(String progPath) {
+    static String edgeRulerVerdict(String progPath) {
         try {
             final java.io.File f = new java.io.File(progPath);
             if (!f.exists() || f.length() <= 0 || f.length() > 65536) return null;
@@ -12038,9 +12038,9 @@ new BatchExportWorker(this).run(format, tier);
     }
 
     /** The file just written does not match the canvas; the worker decides. */
-    private volatile boolean exportCorruptNow = false;
+    volatile boolean exportCorruptNow = false;
     /** One automatic retry per user-initiated export. */
-    private volatile boolean exportRetried = false;
+    volatile boolean exportRetried = false;
 
     void exportImage(String format, String tier) {
         exportRetried = false;
@@ -12048,770 +12048,7 @@ new BatchExportWorker(this).run(format, tier);
     }
 
     void exportImage(String format, String tier, final Runnable onDone) {
-        CrashTrail.mark(this, "export:begin");
-        // **The export's exposure, decided once, before any branch.** The open
-        // params, the forced delta and the pin all have to agree: the canvas'
-        // meter flag, the canvas' EV, and only the *user's* offset in
-        // `exposure_compensation_ev` (see `applyParamsTo`).
-        final String exportMeter = sanitizeMeter(meterMethod);
-        final boolean exportAutoExposure = !exportMeter.isEmpty();
-        // Only the frame the canvas last measured may hand its EV over; a batch
-        // walks the strip without rendering, so the previous frame's EV would
-        // otherwise be pinned onto this one.
-        final boolean pinEv = exportAutoExposure && appliedEvBelongsToCurrentFrame();
-        // A live frame is 800 px and this is about to build a 4175 px one;
-        // letting the two queue behind the same lock buys nothing.
-        cancelLivePreview();
-        final app.spektralab.domain.ExportPlan exportPlan =
-                app.spektralab.domain.ExportPlan.forFormat(format);
-        final boolean dng = ".dng".equals(exportPlan.extension);
-        final boolean tiff = ".tif".equals(exportPlan.extension);
-        final String ext = exportPlan.extension;
-        final String mime = exportPlan.mime;
-        if (sharePill != null) sharePill.setVisibility(View.GONE);
-        if (engine == null || session == null) {
-            showInAppToast(tr("export.import_a_photo_first"));
-            if (onDone != null) onDone.run();
-            return;
-        }
-        if (filmStock == null) {
-            showInAppToast(tr("export.choose_a_film_before_exporting"));
-            if (onDone != null) onDone.run();
-            return;
-        }
-        // The shelf queue prints 800 px cards through this same session, and a
-        // card that lands between "start export" and the first strip swaps
-        // film_stock under the full-size render. That -- not the params delta --
-        // is what used to come back as a flat grey.
-        stopPrefetch();
-        new Thread(() -> {
-            java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ext);
-            try {
-                UiDispatcher.post(() -> {
-                    statusText.setText(tr("export.exporting_preparing_full_size_render"));
-                    exportProgressBar.setVisibility(View.VISIBLE);
-                    setStep(3);
-                });
-                // A stock delta before an export is fine -- measured, not
-                // assumed (`full_after_delta`: mean 104.2 std 11945 before,
-                // 102.4 std 12481 after, and the two hashes differ). It is the
-                // same delta the preview renders with, which is the point.
-                try {
-                    DebugSink.text("export-params", "film=" + filmStock + " print=" + printStock
-                            + " pex=" + printExposure + " (no delta sent)");
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("equals:14820", spkIgnored); }
-
-                // **The numbers the export is about to spend, before it spends
-                // them.** Which frame, which cap, whether the rebate is on, and
-                // what the phone says is free -- the four things that decide
-                // whether the next two minutes fit.
-                try {
-                    // The crop travels with the plan: a "garbled once" report is
-                    // almost always geometry, and the one number that explains it
-                    // is the window the render was asked for.
-                    DebugSink.textNow("export-crop", String.format(java.util.Locale.US,
-                            "x=%.4f y=%.4f w=%.4f h=%.4f turns=%d rot=%.2f",
-                            geometryCropX, geometryCropY, geometryCropW, geometryCropH,
-                            geometryTurns, geometryRotation));
-                    DebugSink.textNow("export-plan", "src=" + sourceWidth + "x" + sourceHeight
-                            + " importCap=" + importCapPixels + " frameCap=" + maxImportPixels()
-                            + " overscan=" + overscanOn + " tier=" + tier
-                            + " avail=" + (availableMemoryBytes() >> 20) + "MiB");
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("equals:14838", spkIgnored); }
-                final long t0 = System.currentTimeMillis();
-                // The stop pill used to be checked only between frames: a batch of
-                // twenty pictures could not be stopped once one export started.
-                if (batchExportAbort) throw new IllegalStateException(tr("export.stopped"));
-                final java.util.concurrent.atomic.AtomicBoolean spinning =
-                        new java.util.concurrent.atomic.AtomicBoolean(true);
-                final java.util.concurrent.atomic.AtomicLong lastMem =
-                        new java.util.concurrent.atomic.AtomicLong(-5);
-                final android.os.Handler ticker = new android.os.Handler(android.os.Looper.getMainLooper());
-                Runnable tick = new Runnable() {
-                    @Override public void run() {
-                        if (!spinning.get()) return;
-                        long el = (System.currentTimeMillis() - t0) / 1000;
-                        statusText.setText(tr("export.exporting") + tier + tr("export.rendering_for") + el + tr("export.s"));
-                        // **What the export is holding, every five seconds.**
-                        // A black screen leaves no stack and no exception -- the
-                        // last line before the process dies is the only evidence
-                        // there is. `textNow` posts synchronously because the
-                        // queue does not survive the crash this exists to
-                        // explain, and the line carries the pool's peak together
-                        // with the system's own free-memory figure so "the
-                        // engine asked for too much" and "the phone had too
-                        // little" stay distinguishable.
-                        if (el % 5 == 0 && lastMem.getAndSet(el) != el) {
-                            try {
-                                final long avail = availableMemoryBytes();
-                                DebugSink.textNow("export-mem", el + "s avail=" + (avail >> 20)
-                                        + "MiB " + (engine == null ? "no engine" : engine.memoryReport()));
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:14867", spkIgnored); }
-                        }
-                        ticker.postDelayed(this, 1000);
-                    }
-                };
-                // The memory probe must not live on the UI thread: the export
-                // blocks it, which is why the 12-second crash left no samples.
-                Thread memTicker = new Thread(() -> {
-                    while (spinning.get()) {
-                        try {
-                            final long el = (System.currentTimeMillis() - t0) / 1000;
-                            final String line = el + "s avail="
-                                    + (availableMemoryBytes() >> 20) + "MiB "
-                                    + (engine == null ? "no engine" : engine.memoryReport());
-                            // **On disk first.** `textNow` needs the network; a
-                            // phone in flight mode -- or a process killed at the
-                            // moment it mattered -- loses the sample entirely,
-                            // which is why the 18-second export crash came back
-                            // with none. The ring is a SharedPreferences write
-                            // and survives the kill; the report picks it up.
-                            CrashTrail.markNow(MainActivity.this, "export-mem " + line);
-                            DebugSink.textNow("export-mem", line);
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("currentTimeMillis:14889", spkIgnored); }
-                        try { Thread.sleep(5000); } catch (InterruptedException ie) { break; }
-                    }
-                }, "SpektraLab-export-memory");
-                memTicker.setDaemon(true);
-                memTicker.start();
-                UiDispatcher.post(tick);
-                // A full-size export does not need the preview bitmaps resident.
-                // Keep the frame and its Look; these two are only the display.
-                final Bitmap savedBefore = beforeBitmap;
-                final Bitmap savedAfter = lastRenderedBitmap;
-                UiDispatcher.post(() -> {
-                    beforeBitmap = null;
-                    lastRenderedBitmap = null;
-                    if (compare != null) compare.clear();
-                });
-                int[] info;
-                try {
-                    synchronized (renderMutex) {
-                        CrashTrail.markNow(MainActivity.this, "export:lock");
-                        // **Give the pool back before the export asks for more.**
-                        // The preview that has just been rendered leaves its
-                        // working set pooled, and a 40 MP export then wants the
-                        // whole thing again. Measured on the owner's phone: the
-                        // export dies at 153 s with the launcher behind it.
-                        try {
-                            final long freed = engine.trimPool();
-                            DebugSink.text("export", "pre-export trim freed " + (freed >> 20)
-                                    + " MiB; report " + engine.memoryReport());
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:14918", spkIgnored); }
-                        // **A session of its own for the export.** The preview
-                        // session has already rasterised the rebate's masks at
-                        // the preview's millimetres per pixel. Rendering that
-                        // same session at "full" rebuilds the *layout* -- the
-                        // geometry it reports is right -- but the rasterised
-                        // edge-print masks are still the preview's, so the film
-                        // edge lands at the wrong scale: the top band prints
-                        // twice and the second copy sits on the picture. That
-                        // is "the preview is fine and the export is flying".
-                        // A fresh session's first render *is* the export tier,
-                        // so its masks can only be the export's size.
-                        // **Give the preview's planes back for the duration.**
-                        // At 41 MP the preview session holds 373 MiB of source
-                        // that the export session is about to want, and closing
-                        // it would lose the look being exported. Suspending
-                        // writes those planes to the cache directory and drops
-                        // the device copies; `resume` puts them back. Refused
-                        // when there is no scratch directory, which is a no-op
-                        // rather than a failure.
-                        final SpektraLabEngine.Session keep = session;
-                        boolean keepSuspended = false;
-                        boolean keepClosed = false;
-                        // **A batch closes this session a moment later anyway.**
-                        // Suspending writes a frame's worth of planes to the
-                        // cache directory and resuming allocates them again --
-                        // once per frame, for a session that is about to die.
-                        if (keep != null && !batchExportRunning) {
-                            try {
-                                keepSuspended = keep.suspend();
-                                DebugSink.text("export", "preview suspended=" + keepSuspended
-                                        + "; report " + engine.memoryReport());
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:14950", spkIgnored); }
-                        }
-                        CrashTrail.markNow(MainActivity.this, "export:suspend " + keepSuspended);
-                        SpektraLabEngine.Session fresh = null;
-                        // **No area cap here.** This read `<= 30 MP`, a leftover
-                        // from when `sourcePixels` was a `ByteBuffer.allocateDirect`
-                        // capped by the heap growth limit. A 44 MP JPEG fell through
-                        // it, had no `rawFilePath` either, and so exported on the
-                        // *preview* session: `full` on a 2048 px source, which is
-                        // both the wrong size and the shape that failed on the
-                        // Mali report. The buffer is malloc'd now and the cap is
-                        // thirty times smaller than what the phones can hold.
-                        if (keep != null && sourcePixels != null && sourceWidth > 0 && sourceHeight > 0) {
-                            // **The export goes back to the file for its size.**
-                            // `sourcePixels` carries whatever the import's
-                            // memory estimate allowed, and that estimate moves
-                            // with free RAM: the same JPEG landed at 42 MP one
-                            // minute and 36 MP the next, so two exports of one
-                            // photograph came out 7523x5642 and 6990x5242.
-                            // Re-decoding at the file's own size is the only
-                            // answer that does not depend on what the phone was
-                            // doing at import time. If it does not fit, the
-                            // engine says which plane it wanted -- an honest
-                            // refusal beats a silently smaller file.
-                            Bitmap fullBmp = null;
-                            ByteBuffer fullBuf = null;
-                            try {
-                                final String path = sourceUri != null ? getFilePathFromUri(sourceUri) : null;
-                                if (path != null) {
-                                    final android.graphics.BitmapFactory.Options o =
-                                            new android.graphics.BitmapFactory.Options();
-                                    o.inSampleSize = 1;
-                                    o.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                                    fullBmp = android.graphics.BitmapFactory.decodeFile(path, o);
-                                }
-                            } catch (Throwable ignored) { fullBmp = null; }
-                            final boolean bigger = fullBmp != null
-                                    && (long) fullBmp.getWidth() * fullBmp.getHeight()
-                                       > (long) sourceWidth * sourceHeight;
-                            if (bigger) {
-                                final int fw = fullBmp.getWidth(), fh = fullBmp.getHeight();
-                                try {
-                                    fullBuf = SpektraLabEngine.allocDirect((long) fw * fh * 12L)
-                                            .order(ByteOrder.nativeOrder());
-                                    final int[] row = new int[fw];
-                                    for (int y = 0; y < fh; y++) {
-                                        fullBmp.getPixels(row, 0, fw, 0, y, fw, 1);
-                                        for (int px : row) {
-                                            fullBuf.putFloat(((px >> 16) & 0xFF) / 255.0f);
-                                            fullBuf.putFloat(((px >> 8) & 0xFF) / 255.0f);
-                                            fullBuf.putFloat((px & 0xFF) / 255.0f);
-                                        }
-                                    }
-                                    fullBuf.rewind();
-                                    fresh = engine.openSession(fullBuf, fw, fh, 3);
-                                    CrashTrail.markNow(MainActivity.this,
-                                            "export:full-size " + fw + "x" + fh
-                                                    + " (import was " + sourceWidth + "x" + sourceHeight + ")");
-                                } catch (Throwable e) {
-                                    fresh = null;
-                                    try { DebugSink.textNow("export-full",
-                                            "could not re-decode at " + fw + "x" + fh + ": " + e); }
-                                    catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:15012", spkIgnored); }
-                                } finally {
-                                    if (fullBmp != null) fullBmp.recycle();
-                                    if (fullBuf != null) SpektraLabEngine.freeDirect(fullBuf);
-                                }
-                            }
-                            if (fresh == null) {
-                                try { fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3); }
-                                catch (Throwable ignored) { fresh = null; }
-                            }
-                            CrashTrail.markNow(MainActivity.this,
-                                    "export:session " + (fresh != null ? "fresh" : "none"));
-                        } else if (keep != null && rawFilePath != null) {
-                            // **No budget gate here.** One was added in 1.4.1t and it
-                            // refused frames the engine goes on to render: it compared
-                            // the canvas against `maxPixelsByMemory(available)` before
-                            // the export had trimmed the preview's pool, and 100 B/px
-                            // is the whole-frame figure, not the banded one. Refusing
-                            // is not the fix for a large frame -- rendering it is.
-                            // A frame that genuinely does not fit fails in the engine
-                            // and says which plane it wanted; that message is true,
-                            // this one was a guess.
-                            final int budgetPixels = importedWidth > 0 && importedHeight > 0
-                                    ? importedWidth * importedHeight
-                                    : (importCapPixels > 0 ? importCapPixels
-                                       : sourceWidth * sourceHeight);
-                            try {
-                                // **The export renders the frame that was imported,
-                                // never the file's own size.** This passed 0, 0 --
-                                // "no cap" -- so a 51 MP negative was decoded a second
-                                // time at native size even when the import had landed
-                                // at 7 MP, and a rebate canvas is 1.51x that: 77 MP,
-                                // 924 MB per plane, several planes. Measured on the
-                                // owner's phone, 2026-11-03: a full export after a
-                                // preview export of the same frame took the screen
-                                // black and the launcher with it.
-                                // **The budget the import actually used**, not the
-                                // session's dimensions: `getDimensions()` answers the
-                                // *source* size for a raw, so the export re-decoded at
-                                // 51 MP what the import had settled at 12.8 MP -- and a
-                                // rebate canvas is 1.51x that. Measured twice: black
-                                // screen, launcher restart, on a 12 GB phone.
-                                // The budget is checked above, before the `try`, so a
-                                // refusal reaches the user instead of becoming a null
-                                // session. Here we only size the decode by it.
-                                // **0, 0 -- the file's own size, not the import's.**
-                                // This used to pass the budget the import settled
-                                // on, which is derived from free RAM and therefore
-                                // moves: the same frame exported 42 MP and then
-                                // 36 MP without anything changing. An export that
-                                // changes size between two presses of the same
-                                // button is not a memory strategy, it is a bug.
-                                // If the frame genuinely does not fit, the engine
-                                // refuses and names the plane -- that message is
-                                // true, and it is the one to show.
-                                final int exportPixels = 0;
-                                final int exportEdge = 0;
-                                final float[] wbMul = wbUserMul;
-                                Probe.log("wb", "export tier=" + tier + " mul=" + Probe.mul(wbMul)
-                                        + " px=" + exportPixels + " edge=" + exportEdge);
-                                // **What the fresh session is opened with.** The
-                                // enlarger exposure has now been sent three ways
-                                // (delta, forced delta, open params) and the owner
-                                // still sees no change in the file, so the next
-                                // report has to say which value actually left the
-                                // app. `export-params` reads the session's copy;
-                                // this line is the string the engine parsed.
-                                try {
-                                    DebugSink.text("export-open", "pex=" + f("%.6f", printExposure)
-                                            + " auto=" + exportAutoExposure
-                                            + " pin=" + (pinEv ? f("%.6f", lastAppliedEv) : "none")
-                                            + " offset=" + f("%.4f", cameraEv)
-                                            + " paper=" + printStock + " raw=" + rawFilePath);
-                                } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:15085", spkIgnored); }
-                                final String openJson = app.spektralab.domain.ExportPlan.openParams(
-                                        printStock, exportAutoExposure, cameraEv, printExposure);
-                                fresh = wbMul != null
-                                        ? engine.openRawSessionTuned(rawFilePath, openJson,
-                                                exportPixels, exportEdge, wbMul)
-                                        : engine.openRawSession(rawFilePath, openJson,
-                                                exportPixels, exportEdge);
-                            } catch (Throwable ignored) { fresh = null; }
-                            CrashTrail.markNow(MainActivity.this,
-                                    "export:raw-session " + (fresh != null ? "fresh" : "none"));
-                        }
-                        // **Never swap the global session for an export.**
-                        // The export runs on its own local object; assigning it
-                        // to `session` let a concurrent UI call write the next
-                        // preview's parameters into the export's frame.
-                        final SpektraLabEngine.Session exportSession = fresh != null ? fresh : keep;
-                        // **Two working sets do not fit on the phones that fail.**
-                        //
-                        // `suspend` snapshots the preview's planes to the cache
-                        // directory and drops the device copies -- but it can
-                        // fail, and when it does this code used to carry on and
-                        // open the export session anyway: one whole frame
-                        // resident plus another being allocated. Measured on a
-                        // 26 MP export (Adreno 650): `preview suspended=false`,
-                        // then VkResult -2.
-                        //
-                        // So: if the suspend did not happen, or the room it left
-                        // is still not enough for the export's own working set,
-                        // close the preview outright. The frame comes back in the
-                        // `finally` below -- a few seconds of re-import traded for
-                        // an export that exists.
-                        // **A batch closes this session itself, a frame later.** Closing
-                        // it here too would also post a re-import after every
-                        // frame, straight into the batch loop's next reopen.
-                        if (fresh != null && keep != null && !batchExportRunning) {
-                            final boolean wasSuspended = keepSuspended;
-                            // 5.1 planes of 12 B/px plus the encoder's tables,
-                            // measured on the host at 20.9 MP (`mem_export`).
-                            final long needBytes = app.spektralab.domain.ExportSessionPlan
-                                    .workingSetBytes(sourceWidth, sourceHeight);
-                            // **More than half of what is left is more than the
-                            // two of them can share.** `avail` is MemAvailable,
-                            // so it already excludes the preview's own arena;
-                            // this asks whether one export working set still
-                            // fits in what remains after it.
-                            final long avail = availableMemoryBytes();
-                            if (app.spektralab.domain.ExportSessionPlan.closePreview(
-                                    true, batchExportRunning, wasSuspended, needBytes, avail)) {
-                                try { keep.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15192", spkIgnored); }
-                                if (session == keep) session = null;
-                                keepSuspended = false;
-                                keepClosed = true;
-                                try {
-                                    DebugSink.text("export", "preview closed for the export"
-                                            + " suspended=" + wasSuspended
-                                            + " need=" + (needBytes >> 20)
-                                            + " avail=" + (avail >> 20) + " MiB");
-                                } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15201", spkIgnored); }
-                            }
-                        }
-                        if (exportSession == null) {
-                            // The frame's session went away between `export:lock`
-                            // and here. Saying so is the honest end of this
-                            // frame; dereferencing it was a null pointer.
-                            try {
-                                DebugSink.text("export-error", "tier=" + tier + " no session for the export");
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15210", spkIgnored); }
-                            UiDispatcher.post(() -> {
-                                showInAppToast(tr("export.skipping_this_photo_it_is"));
-                                if (onDone != null) onDone.run();
-                            });
-                            return;
-                        }
-                        if (fresh != null) {
-                            try { DebugSink.text("export", "fresh session for tier=" + tier); }
-                            catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15219", spkIgnored); }
-                        } else if (keepSuspended && keep != null) {
-                            // **The export is about to run on the session we just
-                            // suspended.** Every branch that builds a fresh session is
-                            // wrapped in `catch (Throwable) { fresh = null; }`, so a
-                            // refused budget, a raw path the picker never gave us, or a
-                            // decode failure all land here -- and `suspend()` has already
-                            // dropped the preview's `source` plane while leaving its
-                            // dimensions. `tier_image` then hands the pipeline an Image
-                            // with a shape and no buffer: `affine: input plane has no
-                            // buffer (7387x4952x3)`, on a frame that previews perfectly.
-                            // Give the planes back before the export asks for them.
-                            try { keep.resume(); } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15231", spkIgnored); }
-                            keepSuspended = false;
-                            try { DebugSink.text("export", "no fresh session; preview resumed"); }
-                            catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15234", spkIgnored); }
-                        }
-                        try {
-                            // Everything the preview drew with, re-stated: a
-                            // stock, a paper, a gate, an edge text or a date
-                            // that moved since the last render would otherwise
-                            // be exported as the *preview* had it, or not at all.
-                            // Re-state the complete Look on the export object,
-                            // without routing it through the global `session`.
-                            // **Exports are sRGB, whatever the canvas is set to.**
-                            // The JPEG and TIFF writers carry an sRGB ICC; a P3
-                            // image with an sRGB profile would be read as the
-                            // wrong colours by everything that believes it.
-                            // **Force.** Diffed against the canvas session this
-                            // was a no-op, so every export kept the parameters
-                            // its session was opened with -- the enlarger
-                            // exposure among them.
-                            applyParamsTo(exportSession, filmStock,
-                                    printStock == null ? "kodak_portra_endura" : printStock,
-                                    PREVIEW_LONG_EDGE, "sRGB", true);
-                            // **Same frame, same EV, same node.** Pinning puts
-                            // the meter's gain back in `film_prefix`, where the
-                            // canvas applied it -- not after the highlight
-                            // rolloff, where an export used to put it. When the
-                            // EV belongs to another frame (a batch walking the
-                            // strip) clearing is the honest state: the meter is
-                            // on and its own whole-frame measurement is exactly
-                            // what the canvas would have got.
-                            try {
-                                if (pinEv) {
-                                    exportSession.pinAutoExposureEv(lastAppliedEv);
-                                } else if (exportAutoExposure) {
-                                    // **A batch walks the strip without rendering**,
-                                    // so the canvas' measured EV belongs to the
-                                    // frame before this one and cannot be pinned
-                                    // here. Letting the fresh session meter on its
-                                    // own was the other half of "导出只有片边、内容
-                                    // 一片白": the same meter that occasionally
-                                    // clamps on a full-size decode. Measure once,
-                                    // explicitly, and pin that answer -- then
-                                    // clamp the pathological tail, because a meter
-                                    // that cannot see the frame returns the end of
-                                    // its range and paints the whole negative
-                                    // white.
-                                    double ev = Double.NaN;
-                                    try {
-                                        final org.json.JSONObject solved =
-                                                new org.json.JSONObject(exportSession.solve("both"));
-                                        final org.json.JSONObject by =
-                                                solved.optJSONObject("exposure_ev_by_method");
-                                        final String m = exportMeter.isEmpty() ? "balanced" : exportMeter;
-                                        if (by != null && by.has(m)) ev = by.optDouble(m, Double.NaN);
-                                    } catch (Throwable ignored2) { ev = Double.NaN; }
-                                    final boolean sane = !Double.isNaN(ev) && Math.abs(ev) <= 8.0;
-                                    if (!sane) ev = lastAppliedEvValid ? lastAppliedEv : 0.0;
-                                    exportSession.pinAutoExposureEv(ev);
-                                    try {
-                                        DebugSink.text("export-meter", "method=" + exportMeter
-                                                + " solved=" + f("%.4f", ev)
-                                                + (sane ? "" : " (clamped)")
-                                                + " sameFrame=" + lastAppliedEvValid);
-                                    } catch (Throwable spkIgnored) { Diagnostics.ignored("abs:15295", spkIgnored); }
-                                } else {
-                                    exportSession.clearPinAutoExposureEv();
-                                }
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("abs:15299", spkIgnored); }
-                            // **Which object got the parameters.** The owner's
-                            // files come out at print_exposure 1.0 while this app
-                            // sends 0.41 -- on the same frame the host answers
-                            // 21410 vs 11996, so the engine is fine and the
-                            // parameter is fine. Either this session is not the
-                            // one that renders, or something replaces its value
-                            // between here and the write. These two lines answer
-                            // that with identity, not inference.
-                            try {
-                                final String gp = exportSession.getParams();
-                                int j = gp.indexOf("\"print_exposure\"");
-                                DebugSink.text("export-ident", "sent hash=" + System.identityHashCode(exportSession)
-                                        + " fresh=" + (fresh != null) + " keep=" + (keep != null)
-                                        + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15314", spkIgnored); }
-                            try {
-                                DebugSink.text("export-exposure", "tier=" + tier
-                                        + " auto=" + exportAutoExposure
-                                        + " method=" + (exportMeter.isEmpty() ? "balanced" : exportMeter)
-                                        + " pin=" + (pinEv ? f("%.4f", lastAppliedEv) + " same-frame" : "none")
-                                        + " seenEv=" + f("%.4f", lastAppliedEv)
-                                        + (lastAppliedEvValid ? "" : " (none)")
-                                        + " solveEv=" + f("%.4f", meteredEv)
-                                        + " offset=" + f("%.2f", cameraEv));
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15324", spkIgnored); }
-                            try {
-                                DebugSink.text("overscan-geom", "tier=" + tier + " before "
-                                        + exportSession.overscanGeometry());
-                                DebugSink.text("export-params", "tier=" + tier + " " + exportSession.getParams());
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15329", spkIgnored); }
-                            // **Metadata goes in with the pixels.** The writer
-                            // appends one APP1 segment and then the ICC profile;
-                            // nothing reopens the finished file afterwards.
-                            try {
-                                if (rawFilePath != null && session != null) {
-                                    final String[] meta = sourceExifForExport();
-                                    SpektraLabEngine.setExportExif(meta[0], meta[1], meta[2],
-                                            meta[3], meta[4], meta[5], meta[6]);
-                                    DebugSink.text("exif", "raw source metadata: "
-                                            + meta[0] + " / " + meta[1] + " / " + meta[2]
-                                            + " / " + meta[3] + "s / f" + meta[4]
-                                            + " / ISO" + meta[5] + " / " + meta[6] + "mm");
-                                } else if (sourceUri != null) {
-                                    final String[] meta = jpegSourceExif();
-                                    SpektraLabEngine.setExportExif(meta[0], meta[1], meta[2],
-                                            meta[3], meta[4], meta[5], meta[6]);
-                                }
-                            } catch (Throwable metaError) {
-                                DebugSink.text("exif", "export metadata skipped: " + metaError);
-                            }
-                            // **The export's own black box.** This call runs the
-                            // whole film and print chain at `full` and then
-                            // encodes it; on a 51 MP frame it is a minute and a
-                            // half of native code with no Java frame anywhere in
-                            // it. The ticker makes "it died somewhere" into "it
-                            // died after 74 seconds".
-                            try {
-                                final String gp = exportSession.getParams();
-                                int j = gp.indexOf("\"print_exposure\"");
-                                DebugSink.text("export-ident", "call hash=" + System.identityHashCode(exportSession)
-                                        + " " + (j >= 0 ? gp.substring(j, Math.min(gp.length(), j + 34)) : "no-pex"));
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15361", spkIgnored); }
-                            if (batchExportAbort) throw new IllegalStateException(tr("export.stopped"));
-                            CrashTrail.markNow(this, "export:write " + tier + " " + format);
-                            Thread wtick = startTick("export", exportSession);
-                            try {
-                                info = exportController.export(exportSession, format, tier,
-                                        tmp.getAbsolutePath(), 95);
-                            } finally {
-                                stopTick(wtick);
-                            }
-                            CrashTrail.markNow(this, "export:written " + info[0] + "x" + info[1]);
-                            try {
-                                DebugSink.text("overscan-geom", "tier=" + tier + " " + info[0] + "x" + info[1]
-                                        + " " + exportSession.overscanGeometry());
-                            } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15378", spkIgnored); }
-                        } finally {
-                            if (fresh != null) {
-                                try { fresh.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15381", spkIgnored); }
-                                // **The export's pool goes back before the
-                                // preview's planes come back.** `resume`
-                                // allocates persistent buffers, and they cannot
-                                // come out of an arena the export is still
-                                // sitting in -- the whole reason the preview was
-                                // suspended is that the two do not fit at once.
-                                try { engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15388", spkIgnored); }
-                            }
-                            if (keepSuspended && keep != null) {
-                                try { keep.resume(); } catch (Throwable spkIgnored) { Diagnostics.ignored("getParams:15391", spkIgnored); }
-                            }
-                            final boolean closedForExport = keepClosed;
-                            if (closedForExport) {
-                                // The preview session was closed to make room for
-                                // the export, so the canvas has nothing behind it.
-                                // Re-open the same frame the way a chip does.
-                                UiDispatcher.post(() -> {
-                                    if (!uiReady) return;
-                                    if (currentFrame < 0 || currentFrame >= frames.size()) return;
-                                    CrashTrail.mark(MainActivity.this, "export:reopen after close");
-                                    reopenFrameForced(currentFrame);
-                                });
-                            }
-                        }
-                        // **Hand the pool back before anything else runs.** A
-                        // 51 MP full render leaves its whole working set
-                        // pooled, and the pool only returns it when the *last*
-                        // session closes or a different frame is opened --
-                        // neither of which a reused preview session ever does.
-                        // Measured: without this the launcher and SystemUI were
-                        // evicted and the phone froze for about a minute after
-                        // an export that had itself succeeded.
-                        try {
-                            final long freed = engine.trimPool();
-                            DebugSink.text("export", "pool trim freed "
-                                    + (freed >> 20) + " MiB; report " + engine.memoryReport());
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:15418", spkIgnored); }
-                    }
-                } finally {
-                    spinning.set(false);
-                    try { memTicker.interrupt(); } catch (Throwable spkIgnored) { Diagnostics.ignored("trimPool:15422", spkIgnored); }
-                    UiDispatcher.post(() -> {
-                        if (beforeBitmap == null) beforeBitmap = savedBefore;
-                        if (lastRenderedBitmap == null) lastRenderedBitmap = savedAfter;
-                        if (compare != null) {
-                            compare.setBefore(beforeBitmap);
-                            compare.setAfter(lastRenderedBitmap);
-                        }
-                    });
-                }
-                uploadExportProgress(tmp);
-                uploadVkLog();
-                int w = info[0], h = info[1];
-                long renderMs = info[2];
-                if (w <= 0 || h <= 0 || !tmp.exists() || tmp.length() == 0) {
-                    throw new RuntimeException(tr("export.the_engine_did_not_produce"));
-                }
-
-                // (The capture fields are written by the JPEG encoder itself,
-                // handed over just above. This used to reopen the finished file
-                // and save attributes through the platform class; its guard read
-                // `"jpg".equals(ext)` against an `ext` of ".jpg", so for a whole
-                // release no export carried any of it -- silently.)
-                final int fw = w, fh = h;
-                UiDispatcher.post(() -> statusText.setText(tr("export.exporting_saving_to_the_photo") + fw + "x" + fh + "..."));
-                String fileName = "SpektraLab_" + System.currentTimeMillis() + ext;
-                final Uri outUri = exportStore.write(tmp, fileName, ext, mime);
-                // **Does the file look like the picture we think we wrote?**
-                // Two measurements of the smoothed result: the mean difference
-                // between neighbouring rows and between neighbouring columns.
-                // A photograph has both (their ratio sits near 1); a frame
-                // stretched along one axis does not. Cheap enough for every
-                // export, and the only evidence a "garbled, once, never again"
-                // report can leave behind.
-                exportCorruptNow = false;
-                {
-                    // The canvas is only *this* frame's while a batch is not
-                    // walking the strip behind our back.
-                    final double ncc = batchExportRunning ? -1
-                            : app.spektralab.data.ExportVerifier.matchesCanvas(tmp.getAbsolutePath(), lastRenderedBitmap);
-                    if (ncc >= 0 && ncc < 0.55) {
-                        exportCorruptNow = true;
-                        try {
-                            DebugSink.textNow("export-corrupt",
-                                    String.format(java.util.Locale.US,
-                                        "canvas NCC %.3f at %dx%d tier=%s overscan=%s — file kept? no, retrying",
-                                        ncc, w, h, tier, overscanOn) + "\n" + reportHead());
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("writeExportFile:15469", spkIgnored); }
-                    } else if (ncc >= 0) {
-                        try { DebugSink.text("export-selfcheck", String.format(
-                                java.util.Locale.US, "canvas NCC %.3f", ncc)); }
-                        catch (Throwable spkIgnored) { Diagnostics.ignored("writeExportFile:15473", spkIgnored); }
-                    }
-                }
-                {
-                    final String verdict = exportCorruptNow ? null : app.spektralab.data.ExportVerifier.inspect(tmp.getAbsolutePath());
-                    if (verdict != null) {
-                        try { DebugSink.textNow("export-selfcheck", verdict); } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15479", spkIgnored); }
-                        // **Say it out loud.** This measurement has existed since
-                        // the "garbled, once, never again" report, but it only
-                        // ever reached the status bar -- and the field reports
-                        // that followed all say the same thing: the user found
-                        // out from the gallery. The 26.7 MP export behind
-                        // SL-261110-F51B was 616 KB (0.023 B/px against a
-                        // normal 0.5-1) and the app called it a success.
-                        // The file stays -- the render cost minutes -- but it
-                        // is named as suspect and the user is told to try again.
-                        UiDispatcher.post(() -> {
-                            if (statusText != null) statusText.setText(tr("export.the_export_did_not_pass") + verdict);
-                            showInAppToast(tr("export.the_export_may_be_corrupted"));
-                        });
-                    }
-                }
-                // **And the one measurement the edge probe already made.**
-                // It only ever reached a file nobody reads, which is why a
-                // "column of bars on the left edge" report could not be tied to
-                // a side, a spacing or a canvas size. One upload, only when the
-                // answer is not null: a clean export stays silent.
-                {
-                    final String ruler = edgeRulerVerdict(tmp.getAbsolutePath() + ".prog");
-                    if (ruler != null) {
-                        // **Synchronous.** This runs on the export worker, not
-                        // the UI thread, and the whole point is that the report
-                        // survives the user switching away mid-export -- the
-                        // queued path is exactly what lost the last three.
-                        try {
-                            DebugSink.textNow("edge-ruler", ruler + "\n" + reportHead());
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15509", spkIgnored); }
-                        UiDispatcher.post(() -> {
-                            if (statusText != null) statusText.setText(tr("export.edge_check") + ruler);
-                        });
-                    }
-                }
-                try {
-                    long len = tmp.length();
-                    DebugSink.text("export", "format=" + format + " tier=" + tier + " w=" + w + " h=" + h + " renderMs=" + renderMs
-                            + (info.length > 4 ? " mean16=" + info[4] : "")
-                            + (info.length > 6 ? " pipelinePe=" + (info[5] / 1000.0)
-                                    + " pipelineGain=" + (info[6] / 1000.0) : "")
-                            + " bytes=" + len);
-                    // The exported bytes used to be copied into a byte[] of up to
-                    // 30 MB and passed to DebugSink.bytes(), which discards them.
-                    // The file size above is the whole diagnostic; do not read it
-                    // back into the heap at the end of a minutes-long export.
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15526", spkIgnored); }
-                final long secs = Math.max(1, (System.currentTimeMillis() - t0) / 1000);
-                final long fRender = renderMs;
-                final long bytes = tmp.exists() ? tmp.length() : 0;
-                final String sizeLabel = bytes > 0
-                        ? String.format("%.1f MB", bytes / 1048576.0) : "?";
-                UiDispatcher.post(() -> {
-                    lastExportUri = outUri;
-                    lastExportMime = mime;
-                    // A separate control, and only when it has something to do:
-                    // every other format opens where it lands, and a permanent
-                    // share button on a photograph app reads as "post to
-                    // social", which is not what this is.
-                    if (sharePill != null) sharePill.setVisibility((tiff || dng) ? View.VISIBLE : View.GONE);
-                    // Dimensions and file size together: "3.3 MB" alone reads as
-                    // a bug when the frame is 16 MP, and the reason is worth
-                    // saying out loud rather than guessing at later.
-                    final String canvas = overscanCanvasLabel();
-                    final String canvasNote = canvas.isEmpty() ? "" : tr("export.canvas") + canvas;
-                    final String tiffHint = tiff
-                            ? tr("export.tiff_use_share_next_to")
-                            : dng ? tr("export.dng_16_bit_linear_for") : "";
-                    if (!exportCorruptNow)
-                        showInAppToast(tr("export.saved") + fw + "x" + fh + canvasNote + " · " + sizeLabel + tiffHint);
-                    else
-                        showInAppToast(tr("export.the_export_did_not_pass_2"));
-                    statusText.setText(tr("export.exported") + fw + "x" + fh + canvasNote + " · " + sizeLabel
-                        + " (" + secs + tr("export.s_including") + (fRender / 1000.0) + tr("export.s_rendering") + tiffHint);
-                    exportProgressBar.setVisibility(View.GONE);
-                    setStep(2);
-                });
-            } catch (Throwable e) {
-                final String msg = describe(e);
-                DebugSink.text("failure", AppFailure.of(AppFailure.Stage.EXPORT, e).stage
-                        + ": " + msg);
-                try { DebugSink.text("export-error", "tier=" + tier + " " + msg); } catch (Throwable spkIgnored) { Diagnostics.ignored("describe:15561", spkIgnored); }
-                uploadExportProgress(tmp);
-                uploadVkLog();
-                UiDispatcher.post(() -> {
-                    statusText.setText(tr("export.export_failed") + SpkError.shortForm(msg));
-                    showErrorDialog(tr("export.export_failed_2"), SpkError.format(msg)
-                            + "\n\n" + sourceWidth + "×" + sourceHeight
-                            + "\n" + probe.describe());
-                    exportProgressBar.setVisibility(View.GONE);
-                    setStep(2);
-                });
-                final int code = SpkError.codeOf(msg);
-                if (code == 1001 || code == 1009) offerSmallerImport();
-            } finally {
-                if (tmp.exists()) tmp.delete();
-                // **An export that came back as noise is not an export.**
-                // The render cost fifteen seconds; a silent bad file costs the
-                // user a trip to the gallery and a bug report. Retry once, on
-                // the UI thread, and let the second attempt report.
-                if (exportCorruptNow && !exportRetried && !batchExportRunning) {
-                    exportRetried = true;
-                    UiDispatcher.post(() -> {
-                        if (statusText != null) statusText.setText(tr("export.the_export_did_not_pass_3"));
-                        exportImage(format, tier, onDone);
-                    });
-                    return;
-                }
-                if (exportCorruptNow) {
-                    UiDispatcher.post(() -> showInAppToast(tr("export.the_export_may_be_corrupted_2")));
-                }
-                if (onDone != null) UiDispatcher.post(onDone);
-            }
-        }).start();
+new ExportWorker(this).run(format, tier, onDone);
     }
 
     /**
@@ -12820,7 +12057,7 @@ new BatchExportWorker(this).run(format, tier);
      * found`, `cannot locate symbol ...`), and that sentence is the entire bug
      * report. The old form printed only the outer class name.
      */
-    private static String describe(Throwable t) {
+    static String describe(Throwable t) {
         final StringBuilder b = new StringBuilder();
         for (Throwable c = t; c != null && b.length() < 600; c = c.getCause()) {
             if (b.length() > 0) b.append(" <- ");
