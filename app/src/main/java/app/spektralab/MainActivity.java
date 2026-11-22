@@ -2185,82 +2185,29 @@ public class MainActivity extends Activity {
      *  read as two different things.
      */
     private View buildSourceBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.VERTICAL);
-        bar.setBackgroundColor(UiPalette.PAPER);
-        sourceBar = bar;
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), 0, dp(4), 0);
-        sourceRow = row;
-
-        TextView add = label("\uff0b", 17, UiPalette.BLUE, tfDisplay);
-        add.setGravity(android.view.Gravity.CENTER);
-        add.setOnClickListener(v -> showImportMenu());
-        row.addView(add, new LinearLayout.LayoutParams(dp(40), dp(48)));
-
-        // The strip. Empty until a photograph is opened: no placeholder tile,
-        // because an empty shelf is not a missing control.
-        thumbScroll = new HorizontalScrollView(this);
-        thumbScroll.setHorizontalScrollBarEnabled(false);
-        thumbScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        thumbStrip = new LinearLayout(this);
-        thumbStrip.setOrientation(LinearLayout.HORIZONTAL);
-        thumbStrip.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        thumbScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
-        row.addView(thumbScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
-
-        TextView fold = label("\u2039", 15, UiPalette.MUTED, tfHan);
-        fold.setGravity(android.view.Gravity.CENTER);
-        fold.setOnClickListener(v -> setShelfCollapsed(true));
-        row.addView(fold, new LinearLayout.LayoutParams(dp(28), dp(48)));
-
-        bar.addView(row, new LinearLayout.LayoutParams(-1, dp(62)));
-        return bar;
+        final app.spektralab.ui.PanelFactories.SourceBar built =
+                app.spektralab.ui.PanelFactories.sourceBar(this,
+                        (text, sp, color, tf) -> label(text, sp, color, tf),
+                        tfDisplay, tfHan, getResources().getDisplayMetrics().density,
+                        this::showImportMenu, () -> setShelfCollapsed(true));
+        sourceBar = built.root;
+        sourceRow = built.row;
+        thumbScroll = built.scroll;
+        thumbStrip = built.strip;
+        return built.root;
     }
 
     /** Folded: three cards stacked at the canvas's lower-left corner, the way a
      *  short stack of prints looks -- one picture, two edges behind it, and a
      *  chevron that says the rest of the strip is that way. */
     private View buildShelfHandle() {
-        final int card = dp(52), step = dp(4);
-        android.widget.FrameLayout handle = new android.widget.FrameLayout(this);
-        handle.setVisibility(View.GONE);
-
-        for (int i = 2; i >= 1; --i) {
-            View edge = new View(this);
-            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-            bg.setColor(i == 2 ? 0xFFD9D9D3 : 0xFFECECE7);
-            bg.setCornerRadius(dp(7));
-            bg.setStroke(Math.max(1, dp(1)), UiPalette.LINE);
-            edge.setBackground(bg);
-            android.widget.FrameLayout.LayoutParams lp =
-                    new android.widget.FrameLayout.LayoutParams(card, card);
-            lp.leftMargin = step * i;
-            lp.topMargin = step * i;
-            handle.addView(edge, lp);
-        }
-
-        shelfHandleImage = new ImageView(this);
-        shelfHandleImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        shelfHandleImage.setClipToOutline(true);
-        shelfHandleImage.setOutlineProvider(new android.view.ViewOutlineProvider() {
-            @Override public void getOutline(View v, android.graphics.Outline o) {
-                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), dp(7));
-            }
-        });
-        handle.addView(shelfHandleImage, new android.widget.FrameLayout.LayoutParams(card, card));
-
-        TextView chevron = label("\u203a", 14, UiPalette.onCanvas(), tfDisplay);
-        chevron.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
-        chevron.setPadding(0, 0, dp(5), 0);
-        chevron.setShadowLayer(dp(2), 0, 0, 0xCC000000);
-        handle.addView(chevron, new android.widget.FrameLayout.LayoutParams(card, card));
-
-        handle.setOnClickListener(v -> setShelfCollapsed(false));
-        return handle;
+        final app.spektralab.ui.PanelFactories.ShelfHandle built =
+                app.spektralab.ui.PanelFactories.shelfHandle(this,
+                        (text, sp, color, tf) -> label(text, sp, color, tf),
+                        tfDisplay, getResources().getDisplayMetrics().density,
+                        () -> setShelfCollapsed(false));
+        shelfHandleImage = built.image;
+        return built.root;
     }
 
     private Look captureLook() {
