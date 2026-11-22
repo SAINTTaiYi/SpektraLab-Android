@@ -357,7 +357,7 @@ public class MainActivity extends Activity {
             "", "balanced", "highlight_weighted", "protect_highlights", "protect_shadows",
             "center", "center_weighted", "average", "median"};
     private static final String[] METER_NAMES = {
-            "关闭", "平衡", "亮部重点", "保护高光", "保留暗部", "中心", "中心加权", "平均", "中位数"};
+            "关", "平衡", "亮部重点", "保护高光", "保留暗部", "中心", "中心加权", "平均", "中位数"};
     private static final String[] METER_NOTES = {
             "不测光，用文件自己的曝光",
             "全幅中位数对准中灰；暗场景会被提亮好几挡",
@@ -589,6 +589,9 @@ public class MainActivity extends Activity {
         // rebuilding every widget, so the preference is read once here and the
         // switch asks for a restart.
         applyPalette(getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false));
+        // **Before the first widget**, like the palette: every label is built
+        // from its Chinese source and translated on the way into the widget.
+        Lang.init(this);
         // **Before the first layout**, so a phone held sideways builds the two
         // columns once instead of building the portrait tree and re-parenting it.
         applyOrientationPref();
@@ -5109,12 +5112,17 @@ public class MainActivity extends Activity {
     }
 
     private TextView label(String s, float sp, int color, Typeface tf) {
-        TextView t = new TextView(this);
+        s = Lang.t(s);                     // the tables live in Lang (assets/i18n)
+        TextView t = new TransText(this);
         if (hasCjk(s)) {
             t.setText(mixedText(s));       // Latin on Inter, Chinese on OPPO, run by run
         } else {
             t.setText(s);
-            if (tf != null) t.setTypeface(tf);
+            // **Inter for Latin.** Callers say `tfHan` for every row label; in
+            // English the text has no Chinese left, and OPPO's Latin is not the
+            // face this interface is set in.
+            final Typeface face = tf == tfHan ? tfBody : tf;
+            if (face != null) t.setTypeface(face);
         }
         t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, snapSp(sp));
         t.setTextColor(color);
@@ -5139,6 +5147,7 @@ public class MainActivity extends Activity {
     }
 
     private CharSequence mixedText(String text) {
+        text = Lang.t(text);               // idempotent: English is not a key
         android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(text);
         int i = 0;
         while (i < text.length()) {
@@ -5153,12 +5162,33 @@ public class MainActivity extends Activity {
     }
 
     private TextView mixedLabel(String text, float sp, int color) {
-        TextView t = new TextView(this);
+        text = Lang.t(text);
+        TextView t = new TransText(this);
         t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, snapSp(sp));
         t.setTextColor(color);
         t.setText(mixedText(text));
         t.setIncludeFontPadding(false);
         return t;
+    }
+
+    /**
+     * A TextView that translates its text on the way in.
+     *
+     * <p>The status line alone is written from forty places
+     * (`statusText.setText("渲染中…")`), all of them Chinese source, and much of
+     * it is set long after the view was built. Translating here means those
+     * call sites need no edit at all — and a message that arrives later is
+     * translated too, which a one-off pass over the view tree could not do.
+     */
+    private static final class TransText extends TextView {
+        TransText(android.content.Context c) { super(c); }
+
+        @Override public void setText(CharSequence text, BufferType type) {
+            // A Spanned came from `mixedText`, which has already been through
+            // `Lang`; running it again would flatten the runs into one face.
+            if (text != null && !(text instanceof android.text.Spanned)) text = Lang.t(text);
+            super.setText(text, type);
+        }
     }
 
     private View hairline(int color) {
@@ -23990,7 +24020,7 @@ public class MainActivity extends Activity {
     }
 
     private static String meterName(String id) {
-        if (id == null || id.isEmpty()) return "关闭";
+        if (id == null || id.isEmpty()) return "关";
         for (int i = 0; i < METER_IDS.length; ++i) if (METER_IDS[i].equals(id)) return METER_NAMES[i];
         return id;
     }
@@ -26883,6 +26913,7 @@ public class MainActivity extends Activity {
         private void drawTag(android.graphics.Canvas canvas, String text,
                              float anchorX, float top, boolean rightAligned) {
             if (text == null || text.isEmpty()) return;
+            text = Lang.t(text);           // 冲印前 / 冲印后 are drawn, not set
             final android.graphics.Paint p = new android.graphics.Paint(
                     android.graphics.Paint.ANTI_ALIAS_FLAG);
             p.setTypeface(tagFace != null ? tagFace : android.graphics.Typeface.DEFAULT_BOLD);
@@ -27734,6 +27765,7 @@ public class MainActivity extends Activity {
         settingsFilledSection = String.valueOf(settingsSection);
         settingsTitle.setText(mixedText(root ? "设置"
                 : "theme".equals(settingsSection) ? "外观与主题"
+                : "lang".equals(settingsSection) ? "语言"
                 : "about".equals(settingsSection) ? "关于与诊断"
                 : "licence".equals(settingsSection) ? "开源许可" : "设置"));
         settingsDone.setVisibility(root ? View.VISIBLE : View.GONE);
@@ -27741,6 +27773,7 @@ public class MainActivity extends Activity {
 
         if (root) fillSettingsRoot();
         else if ("theme".equals(settingsSection)) fillSettingsTheme();
+        else if ("lang".equals(settingsSection)) fillSettingsLang();
         else if ("about".equals(settingsSection)) fillSettingsAbout();
         else fillSettingsLicence();
 
@@ -27769,6 +27802,9 @@ public class MainActivity extends Activity {
         settingsGroup("外观 \u00b7 APPEARANCE");
         settingsAdd(settingsRow("主题", null, themeValue(), true,
                 () -> showSettings("theme")));
+        settingsRule();
+        settingsAdd(settingsRow("语言", "界面文字；改完需要重新打开应用", langValue(), true,
+                () -> showSettings("lang")));
         settingsRule();
         settingsAdd(settingsRow("屏幕方向", "横屏时画布在左、参数在右", orientationValue(), true,
                 this::showOrientationSheet));
@@ -27850,6 +27886,50 @@ public class MainActivity extends Activity {
             settingsAdd(settingsRow("立即重新打开", "保存当前进度，然后重建界面", null, true,
                     this::relaunchForTheme));
         }
+    }
+
+    /** 语言 / LANGUAGE — one of three, and a restart to make it real. */
+    private void fillSettingsLang() {
+        final String cur = getSharedPreferences("ui", MODE_PRIVATE).getString("lang", Lang.FOLLOW);
+        final boolean pending = !cur.equals(Lang.mode());
+        final TextView note = mixedLabel(pending
+                ? "已选好。重新打开应用后生效 —— 当前照片、参数和摆位都会保留。"
+                : "现在用的是这一套。换语言要重新打开应用；照片和参数会保留。",
+                8.5f, UI_MUTED);
+        note.setPadding(dp(16), dp(16), dp(16), dp(2));
+        note.setLineSpacing(dp(2), 1f);
+        settingsBody.addView(note);
+
+        settingsGroup("语言 \u00b7 LANGUAGE");
+        settingsAdd(settingsCheckRow("跟随系统", "系统是中文就用中文，其它语言用英文",
+                Lang.FOLLOW.equals(cur), () -> setLang(Lang.FOLLOW)));
+        settingsRule();
+        settingsAdd(settingsCheckRow("中文", null, Lang.ZH.equals(cur), () -> setLang(Lang.ZH)));
+        settingsRule();
+        settingsAdd(settingsCheckRow("English", null, Lang.EN.equals(cur), () -> setLang(Lang.EN)));
+
+        if (pending) {
+            settingsGroup("生效 \u00b7 APPLY");
+            settingsAdd(settingsRow("立即重新打开", "保存当前进度，然后重建界面", null, true,
+                    this::relaunchForTheme));
+        }
+    }
+
+    /**
+     * The pref is written but `Lang` is left alone on purpose: the page has to
+     * keep reading the old language until the Activity is rebuilt, or the note
+     * would flip to "已选好" and the rows would redraw in a language the rest of
+     * the screen is not in yet.
+     */
+    private void setLang(String m) {
+        getSharedPreferences("ui", MODE_PRIVATE).edit().putString("lang", m).apply();
+        fillSettings();
+    }
+
+    private String langValue() {
+        final String m = getSharedPreferences("ui", MODE_PRIVATE).getString("lang", Lang.FOLLOW);
+        final String name = Lang.ZH.equals(m) ? "中文" : Lang.EN.equals(m) ? "English" : "跟随系统";
+        return name + (m.equals(Lang.mode()) ? "" : " \u00b7 待生效");
     }
 
     private void fillSettingsAbout() {
@@ -28200,7 +28280,7 @@ public class MainActivity extends Activity {
         final StringBuilder b = new StringBuilder();
         b.append(mp == 0 ? "像素上限按设备" : "像素上限 " + mp + " MP");
         if (sim > 0) b.append(" \u00b7 绑定 ").append(sim).append(" MiB");
-        if (band > 0) b.append(" \u00b7 分带 ").append(band >= 100000000 ? "关闭" : (band / 1000000) + "M");
+        if (band > 0) b.append(" \u00b7 分带 ").append(band >= 100000000 ? "无" : (band / 1000000) + "M");
         return b.toString();
     }
 

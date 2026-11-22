@@ -1,0 +1,235 @@
+# Phrase table: replaced inside longer, composed messages.
+# Longest match wins; only applied when the text still has CJK.
+\n\n中性滤镜（引擎按胶片与光源查表）\n青 	\n\nNeutral filters (the engine looks these up from the film and the light source)\nCyan 
+  · 现在	  · now
+ B）	 B)
+ GB 内存（解码 + 显存），本机当前可用 	 GB of memory (decode + GPU), this device has 
+ GB；	 GB free;
+ GB；不够时会直接闪退，渲染约	 GB; when it does not fit it simply dies, and rendering takes about 
+ MB 内存，本机现在给不出来（可用 	 MB, and this device can't give that right now (
+ MB 连续内存，本机现在可用 	 MB of contiguous memory, and this device has 
+ MB。	 MB free.
+ MB）。	 MB free).
+ MB）。\n\n点「导入」再选一次，这次选「缩到建议尺寸」。	 MB).\n\nTap "Import" and pick it again, this time with "Scale to the suggested size".
+ MB），本机现在给不出来。关掉其它应用再试，或重新导入时选「缩到…」。	 MB, and this device cannot give that right now. Close other apps and try again, or re-import with "Scale to…".
+ MP 重新导入并渲染？画面会小一些，但能出图。	 MP and render? The picture will be smaller, but it will come out.
+ MP（建议 	 MP (suggested 
+ MP）。	 MP).
+ MP）。\n\n按原图：渲染约	 MP).\n\nAt original size: rendering takes about 
+ MP）。\n\n按原图：需要约	 MP).\n\nAt original size: needs about 
+ MP）和硬上限 42 MP 仍然有效。模拟驱动绑定让引擎按小绑定分带渲染，	 MP on this device) and the hard 42 MP cap still apply. Simulating driver binding makes the engine band to a small binding,
+ MP）和硬上限 42 MP 仍然有效。模拟驱动绑定让引擎按小绑定分带渲染，改完要重启应用才生效。两者一起开 = 假装自己是 128 MiB 的机型，但允许导入更大的帧。	 MP) and the 42 MP hard cap still apply. Simulating a driver binding makes the engine render in bands for that smaller binding; restart the app for it to take effect. Both together = pretend to be a 128 MiB device while still allowing larger frames.
+ MP，渲染会慢）	 MP; rendering will be slow)
+ MiB（分块）	 MiB (tiled)
+ ms/帧 · 	 ms/frame · 
+ px）	 px)
+ · RAW 工作尺寸	 · RAW working size
+ · 上次启动	 · last launch
+ · 分带 	 · bands 
+ · 动图未写入	 · clip not written
+ · 单缓冲 	 · single buffer 
+ · 反转	 · Reversal
+ · 品红 	 · magenta 
+ · 实况（动图 ≤	 · live (clip ≤
+ · 实况（含动图）	 · live (with clip)
+ · 实测可到 	 · measured up to 
+ · 实测未能突破	 · probe could not exceed it
+ · 实测确认	 · confirmed by probe
+ · 张数 	 · frame no. 
+ · 待生效	 · pending
+ · 无单缓冲上限	 · no single-buffer limit
+ · 漏光 	 · leak 
+ · 点一下复制	 · tap to copy
+ · 片边已关闭	 · rebate off
+ · 电影	 · movie
+ · 画布 	 · canvas 
+ · 绑定 	 · binding 
+ · 负片	 · negative
+ · 边 	 · margin 
+ · 这张相纸没有可还原的高光肩部，存的是普通 JPEG	 · this paper has no recoverable highlight shoulder; a normal JPEG was saved
+ · 雾 	 · fog 
+ · 黄 	 · yellow 
+ · 黑白	 · B&W
+ 发我。	.
+ 套	 sets
+ 字节（共 	 bytes (of 
+ 已 	 for 
+ 帧 · 	 frames · 
+ 帧（fotufilm）...	 frames (fotufilm)...
+ 张	 photo(s)
+ 张失败（多半是没选胶片或打不开）	 failed (usually no film picked, or won't open)
+ 张成功	 succeeded
+ 张照片	 photo(s)
+ 张照片…	 photos…
+ 张照片的读取权限已失效，已从照片栏移除	 photo(s) lost read permission and were removed from the strip
+ 张照片（点开时生效）	 photo(s) (applies when opened)
+ 张（JPEG · 全尺寸）	 photos (JPEG · full size)
+ 支胶片 · 	 films · 
+ 格式	 format
+ 片边	 rebate
+ 的比例，片门仍是 	; the gate stays 
+ 的片门是 	 and the gate is 
+ 种媒介	 media
+ 秒	 s
+ 秒 · 参数已保存	 s · settings saved
+ 秒...	 s...
+ 秒。	 s.
+ 秒。\n缩到	 s.\nScale to 
+ 秒）	 s)
+ 秒，其中渲染 	 s, of which rendering 
+ 秒；交给 GPU 需要约 	 s; handing it to the GPU needs about 
+ 组=	 groups=
+ 行数=	 rows=
+ 间距=	 pitch=
+%（	% (
+16 位 TIFF 是同一个渲染的另一个写法：相纸最亮那一档有三千多个码，	16-bit TIFF is the same render written differently: the paper's brightest step has over three thousand codes,
+FOTUFILM 面板初始化失败：	FOTUFILM panel failed to initialise:
+RAW加载失败 	RAW load failed 
+SpektraLab — Hanze Qiu。把上面的引擎重写成 C++ / Metal 并做出 macOS 应用，	SpektraLab — Hanze Qiu. Rewrote that engine in C++ / Metal and built the macOS app,
+[E-1107] 暂不支持 	[E-1107] Unsupported 
+[E-2002] 更新公告格式错误：	[E-2002] Update announcement is malformed: 
+\\nUltra HDR 是同一张 JPEG 加一份增益图：HDR 屏上高光更亮，	\\nUltra HDR is the same JPEG plus a gain map: highlights get brighter on an HDR screen,
+\\n\\n「恢复放大机」会把亮度、黄、品红、预闪归零，	\\n\\n"Restore enlarger" zeroes the brightness, yellow, magenta and pre-flash,
+\\n\\n按原图：渲染约 	\\n\\nAt original size: rendering takes about 
+\\n\\n按原图：需要约 	\\n\\nAt original size: needs about 
+\\n\\n本机按可用内存建议约 	\\n\\nThis device suggests about 
+\\n\\n缩到 	\\n\\nScale to 
+\\n实况照片：成片始终是全尺寸，区别在动图 —— 原生按相机录的像素，	\\nLive photo: the still is always full size — the difference is the clip. Native uses the pixels the camera recorded,
+\\n缩到 	\\nScale to 
+exit: 读不到 ApplicationExitInfo（	exit: cannot read ApplicationExitInfo (
+fotufilm 介质 · 	fotufilm medium · 
+fotufilm 渲染失败（返回 	fotufilm render failed (code 
+fotufilm-native 未加载（	fotufilm-native not loaded (
+fotufilm：片边和画面一起冲出来 —— 片门阴影、齿孔、厂标、张数、	On fotufilm the rebate is developed together with the picture — gate shadow, sprockets, edge print, frame number and
+spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与放大 LUT，	spektrafilm — Andrea Volpato. The film process model, measured colour profiles and enlarger LUTs,
+、	, 
+。	. 
+。\n\n裁成片门能还原他的片边，但要	.\n\nCropping to the gate restores its rebate, but it costs 
+。\\n\\n	.\\n\\n
+「	"
+「相纸」是印出来那张纸的白边，「片夹边」是暗房把片夹锉宽留下的黑线，	"Paper" is the white border of the paper it was printed on, "carrier edge" is the black line a darkroom leaves when it files the carrier wider,
+」	"
+」。	".
+」。约 	". About 
+」的骨架（cfg/	": no skeleton (cfg/
+上面两个 = 解码时改（等于换一种光拍，会重新解码）；下面两个 = 冲印后再偏色（立刻生效，	The top two change decoding (like shooting under different light — the frame is decoded again); the bottom two tint after printing (instant,
+不够时会直接闪退，渲染约 	when it doesn't fit it just dies, and rendering takes about 
+保存失败：	Save failed:
+像素上限 	Pixel cap 
+像素上限只改「按绑定范围算」的那一道；内存上限（这台机器约 	The pixel cap only changes the "computed from the binding range" gate; the memory limit (about 
+像素上限：	Pixel cap: 
+全尺寸 	Full size 
+写出来的画面是坏的：整幅几乎同一个颜色，或整幅逐行噪声。不是你的图的问题。\n\n已经换了一条渲染路径重试，还是这样，所以这次没有把文件留在相册里。换一张、或者换一支胶片再回来，通常就正常了；如果每次都是同一张出问题，把记录号 	The picture written out was broken: almost one flat colour, or row-by-row noise. This is not your photo.\n\nA different render path was tried and it came out the same, so the file was not left in the album this time. Another picture, or another film, usually behaves; if the same picture fails every time, send me the reference 
+准备 fotufilm 资源（首次约 32 MB）…	Preparing fotufilm resources (about 32 MB the first time)…
+准备动图…	Preparing the clip…
+分享失败：	Share failed:
+分带上限：	Band limit: 
+删掉其中几张…	Remove some of them…
+原图 	Original 
+发现新版本 	New version 
+失败 · 	Failed · 
+如果每次都是同一张出问题，把记录号 	if the same photo fails every time, send me the reference 
+它的光谱反演标定还不准：实测绿色偏差 20 到 30 度，	Its spectral inversion isn't calibrated yet: greens measured 20–30 degrees off,
+实况照片 · 全尺寸（动图 	Live photo · full size (clip 
+导入失败：	Import failed:
+导入这张图需要 	Importing this image needs 
+导出中（	Exporting (
+导出中：fotufilm 全尺寸渲染…	Exporting: fotufilm full-size render…
+导出中：写入相册 	Exporting: writing to the gallery 
+导出中：动图 	Exporting: clip 
+导出中：原图全尺寸…	Exporting: original at full size…
+导出内容异常，换一条路重导一次…	The export looks wrong, retrying down another path…
+导出内容异常，正在自动重导一次…	The export looks wrong, re-exporting automatically once…
+导出内容异常，自动重导一次…	The export looks wrong, re-exporting automatically once…
+导出失败 	Export failed 
+导出文件是空的（	The exported file is empty (
+导出结构异常：	Export came out malformed: 
+导出：	Export: 
+已保存 	Saved 
+已保存到相册：	Saved to your gallery: 
+已保存原图 	Saved original 
+已加入 	Added 
+已复制记录号 	Reference copied 
+已导出 	Exported 
+已导出原图 	Exported the original 
+已应用到 	Applied to 
+已应用预设「	Preset applied: "
+已是最新版本 	Already on the latest version 
+已移除 	Removed 
+引擎库没有加载成功（libspektrafilm_engine.so）。这是安装包里的原生库没有就位，	The engine library didn't load (libspektrafilm_engine.so). A native library in the package isn't in place,
+批量 · 全部 	Batch · all 
+批量导出 	Batch export 
+批量导出完成：	Batch export done:
+把这张的参数应用到其它照片…	Apply this photo's settings to others…
+按原图 	At original size 
+按片门比例重试导出…	Retrying the export at the gate's ratio…
+按约 	Re-import at about 
+文件头只有 	File header is only 
+显卡掉线，正在重建…	GPU device lost, rebuilding…
+普通屏幕和相册看到的还是普通 JPEG；全尺寸那一档就是同一件事，	while ordinary screens and galleries still see a normal JPEG. The full-size entry is the same thing,
+更多格式：TIFF 16 位 / DNG…	More formats: 16-bit TIFF / DNG…
+最后一步：	Last step:
+本仓库。Vulkan 后端、JNI、界面、分带渲染与显存管理、色相校正标定，	This repository. Vulkan backend, JNI, UI, banded rendering and memory management, hue-correction calibration,
+模拟驱动绑定：	Simulate driver binding: 
+正在加入 	Adding 
+正在把照片复制到应用目录…	Copying the photo into the app folder…
+正在渲染，完成后按新选择再画一次…	Rendering — it will draw again with the new choice when done…
+没有可用的浏览器：	No browser available: 
+测光 	Metered 
+渲染中…	Rendering…
+渲染停在 	Render stuck at 
+渲染失败 	Render failed 
+渲染完成，但系统相册没有接受这个文件：\n\n	Rendered, but the system album did not accept the file:\n\n
+渲染引擎没能在这台设备上启动：Vulkan 设备建立失败，	The render engine couldn't start on this device: creating the Vulkan device failed,
+点「导入」重新选择这张照片；新版本会把文件复制到应用自己的目录，	Tap "Import" to pick it again; newer builds copy the file into the app's own folder,
+照片 	Photo 
+片门 → 	Gate → 
+片门与照片比例不符：到「边框」页换一个同比例的片门，	Gate and photo ratios don't match: pick a gate with the same ratio on the Frame page,
+电影片 / 页片的画框（印刷边框），不是片边；会裁成 	Movie / sheet frame (print frame), not a rebate; it will crop to 
+画布 	Canvas 
+画面已裁成 	Picture cropped to 
+画面异常 · 	Image looks wrong · 
+相册写入失败（	Gallery write failed (
+第 	No. 
+缩到 	Scale to 
+裁成 	Crop to 
+裁掉 	off 
+要写入的文件不见了：	The file to write is gone: 
+解码未授权：这是尼康高效率压缩（HE/HE★）RAW，	Decode not licensed: this is a Nikon high-efficiency (HE/HE★) RAW and
+记录号 	Reference 
+请复制下面的完整信息，方便定位问题。记录号 	Copy everything below so the problem can be located. Reference 
+边缘检测：	Edge check: 
+这一页建不起来：	This page failed to build:
+这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，	This page changes the light the photo was taken under: white balance lives in the demosaic,
+这个文件用的是本机没有解码器的压缩（DNG 的 JPEG XL，	This file uses a compression this device has no decoder for (JPEG XL in DNG,
+这四个都是给电脑用的：手机相册多半不显示 16 位 TIFF，	All four are for a computer: phone galleries usually won't show 16-bit TIFF,
+这张 RAW 是 	This RAW is 
+这张照片是 	This photo is 
+这张照片裁不成 	This photo can't be cropped to 
+选它会居中裁成 	Picking it crops centred to 
+配光中…	Balancing…
+配光完成 	Balanced: 
+重建失败，请手动重新打开：	Rebuild failed, please reopen manually:
+重新解码…	Re-decoding…
+键入…	Type it…
+青 	cyan 
+预设用的是 	The preset uses 
+！	!
+（	 (
+（原图太大，按本机上限缩到长边 	(original too big; scaled to long edge 
+（按本机内存，长边 	(scaled to long edge 
+（文件头 	 (header 
+）	)
+）\\n	)\\n
+）。\n不裁就只套颜色和参数，片边关闭。	).\nWithout cropping, only the colour and settings are applied and the rebate stays off.
+）。\\n	).\\n
+）。照片已经渲染好，	). The photo is already rendered, 
+）：渲染中 	): rendering 
+，	, 
+，片边就能印了	, and then the rebate can be printed
+，约 	 , about 
+，跳过 	, skipped 
+：	: 
+：更快更稳，细节会少一些。	: faster and more stable, a little less detail.
+：更快更稳，细节会少一些。\n\n本机按可用内存建议约 	: faster and more stable, a little less detail.\n\nThis device suggests about 
+；	; 

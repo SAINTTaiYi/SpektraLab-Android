@@ -114,7 +114,9 @@ public final class SpkError {
     }
 
     /** Short form for a status line, without the engine text. */
-    public static String shortForm(String raw) {
+    public static String shortForm(String raw) { return Lang.t(shortFormRaw(raw)); }
+
+    private static String shortFormRaw(String raw) {
         if (isPermissionFailure(raw)) return "[E-1304] 照片权限已失效，请重新导入";
         int code = codeOf(raw);
         if (code == 0) code = 9000;
@@ -126,7 +128,9 @@ public final class SpkError {
         return "[E-" + code + "] " + explain(code);
     }
 
-    public static String explain(int code) {
+    public static String explain(int code) { return Lang.t(explainRaw(code)); }
+
+    private static String explainRaw(int code) {
         switch (code) {
             // 1xxx — the GPU, or the frame it was asked to take
             // **Never "use a smaller size".** The banded renderer exists so a

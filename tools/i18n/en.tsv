@@ -1,0 +1,1132 @@
+# SpektraLab UI strings - Chinese source <TAB> English.
+# Loaded once by `Lang`. Lines starting with # are comments.
+\n\n「恢复放大机」会把亮度、黄、品红、预闪归零，让画面回到配光算出的中性。	\n\n"Restore enlarger" zeroes brightness, yellow, magenta and pre-flash, returning the picture to the neutral the printing balance computed.
+\n\n中性滤镜（引擎按胶片与光源查表）\n青	\n\nNeutral filters (the engine looks these up from the film and the light source)\nCyan 
+\n\n会从相册里真正删掉，无法恢复。	\n\nThis really deletes it from the album; it cannot be undone.
+\n\n系统当时内存不够，把应用回收了——多半是这张图太大，不是程序出错。\n\n把这份记录发我可以确认尺寸；也可以直接重开，导入时选「缩到建议尺寸」。	\n\nThe system ran out of memory and reclaimed the app — most likely this picture is too large, not a program error.\n\nSend me this record and I can confirm the size; you can also just reopen and choose "Scale to the suggested size" when importing.
+\n\n这台机器的崩溃日志对定位很关键。要不要发我一份？	\n\nThis machine's crash log is key to locating it. Would you send me one?
+\n已经上传，不用再发给我了。	\nAlready uploaded, no need to send it again.
+\n按原图很可能被系统回收（应用直接消失，不报错）。	\nAt original size the system will likely reclaim the app (it vanishes, with no error).
+\n网络没通，请把这段复制发给我。	\nNo network — copy this block and send it to me.
+%+.1f 档	%+.1f stops
+%+.4g 档	%+.4g stops
+%.1f MP （内存上限）	%.1f MP (memory limit)
+(这次还没有记录)	(no record this time)
+0 = 只把相纸的肩部还回去，暗部一点不动（物理上最准确）；	0 = only give back the paper's shoulder, leaving the shadows untouched (the most physically accurate);
+0 = 引擎按这张纸实测的黑白边界自动解三个数；1 = 下面三个数你说了算（暗部仍自动）	0 = the engine solves all three numbers from this paper's measured limits; 1 = the three numbers below are yours (shadows stay automatic)
+0 关掉相纸表面的那层光晕，1 保留	0 turns off the glow on the paper surface, 1 keeps it
+1 是三层各自独立（真胶片的彩色噪点），0 是三层同一团颗粒	1 = the three layers are independent (real film's colour noise), 0 = all three share one grain
+1 是原样	1 is unchanged
+135 全画幅	135 full frame
+135 半格	135 half frame
+1440 是半价档。	1440 is the half-price option.
+16 位 TIFF	16-bit TIFF
+16 位 TIFF 线性	16-bit TIFF linear
+16mm 电影	16 mm movie
+4 个区域	4 zones
+47 支胶片的 profile 与光谱样本以 CC BY-SA 4.0 分发，保留其版权、注明改动。	the 47 film profiles and spectral samples under CC BY-SA 4.0, with copyright kept and changes noted.
+4×5 页片	4×5 sheet
+Android / Vulkan 移植	Android / Vulkan port
+COMPOSITION / 构图	COMPOSITION / Compose
+Cineon Log · 调色	Cineon Log · graded
+Cineon 码值	Cineon code values
+DI 蓝补偿	DI blue compensation
+DNG · 全尺寸（电脑用 · 手机版打不开）	DNG · full size (desktop only · the phone can't open it)
+DNG 用手机版 Lightroom 打开会报错，那是 Adobe 的已知问题，不必反馈。\\n	and Lightroom mobile errors out on these DNGs — a known Adobe issue, no need to report it.\\n
+Digital Reference 怎么把负片变成画面：自动定标、分级打印，还是固定的校准曝光	How Digital Reference turns the negative into a picture: auto levels, graded print, or a fixed calibrated exposure
+EDR 关 · 高光保护 0 · 色相校正 关	EDR off · highlight protection 0 · hue correction off
+ERROR / 错误详情	ERROR / Error details
+FEEDBACK / 反馈与交流	FEEDBACK / Feedback
+FILM & PAPER / 胶片与相纸	FILM & PAPER / Film and paper
+FOTUFILM / 冲印	FOTUFILM / Print
+FRAME & IMPRINT / 边框	FRAME & IMPRINT / Frame
+FRAME & SCALE / 构图尺度	FRAME & SCALE / Scale
+Fotufilm — MUAStudio Inc.（fotufilm.com）。引擎代码以 Apache-2.0 分发；	Fotufilm — MUAStudio Inc. (fotufilm.com). The engine is distributed under Apache-2.0;
+Fotufilm — MUAStudio Inc.（fotufilm.com）。引擎代码以 Apache-2.0 分发；47 支胶片的 profile 与光谱样本以 CC BY-SA 4.0 分发，保留其版权、注明改动。本应用通过自己的 C++ 宿主调用它。	Fotufilm — MUAStudio Inc. (fotufilm.com). The engine code is distributed under Apache-2.0; the profiles and spectral samples of its 47 films under CC BY-SA 4.0, with copyright retained and changes noted. This app calls it through its own C++ host.
+GPL-3.0-or-later、CC BY-SA 4.0、Apache-2.0	GPL-3.0-or-later, CC BY-SA 4.0, Apache-2.0
+GPU 驱动被重置（过热或单次运算过久），请等机器凉下来再试	The GPU driver was reset (overheating, or one dispatch ran too long). Let the device cool down and try again
+HDR 屏幕预览	HDR screen preview
+HDR 屏幕预览：关	HDR screen preview: off
+HDR 屏幕预览：开（屏幕 %.1f 档 · 提亮 +%.1f）	HDR screen preview: on (display %.1f stops · lifted +%.1f)
+HDR 屏幕预览：点一下看档位	HDR screen preview: tap to change the level
+HDR 屏幕预览：系统版本不支持	HDR screen preview: Android version too old
+HDR 屏幕预览：这台屏幕不支持	HDR screen preview: not supported by this display
+HDR 预览强度	HDR preview strength
+Inter（SIL Open Font License 1.1）；中文为 OPPO Sans，随应用一并分发。	Inter (SIL Open Font License 1.1); the Chinese face is OPPO Sans, shipped with the app.
+JPEG 写出失败	JPEG write failed
+JPEG 是 8 位显示值，够看、够分享。要 16 位线性母版进「更多格式」。	JPEG is 8-bit display values — fine for viewing and sharing. For a 16-bit linear master, open "More formats".
+JPEG 是 8 位显示值，够看、够分享。要 16 位线性母版进「更多格式」。\n	JPEG is an 8-bit display value: enough to look at and to share. For a 16-bit linear master, open "More formats".\n
+JPEG 的白平衡已经写在文件里，用下面的「色温」调整	A JPEG's white balance is baked into the file; use "Temperature" below to adjust it
+JPEG 的白平衡已经烧进文件里，不能重解。要改色温请用下面的「色温」	A JPEG's white balance is baked into the file and can't be re-decoded. To shift the colour, use "Temperature" below
+JPEG 的白平衡已经烧进文件里，不能重解。要改色温请用下面的「色温」「色调」——那是冲印后的偏色，立刻生效。	A JPEG's white balance is already baked into the file and cannot be re-decoded. To change it use "Temperature" and "Tint" below — those shift the colour after printing and take effect immediately.
+LCD 七段	LCD seven-segment
+LOW_MEMORY 系统内存不足回收	LOW_MEMORY — reclaimed for low memory
+Lightroom 没有这一项：它抬的是中间调，两端几乎不动	Lightroom has no such control: it lifts the midtones and barely moves the ends
+M 元素	 M elements
+MP）和硬上限 42 MP 仍然有效。模拟驱动绑定让引擎按小绑定分带渲染，改完要重启应用才生效。两者一起开 = 假装自己是 128 MiB 的机型，但允许导入更大的帧。	 MP) and the 42 MP hard cap still apply. Simulating a driver binding makes the engine render in bands for that smaller binding; restart the app for it to take effect. Both together = pretend to be a 128 MiB device while still allowing larger frames.
+Negative · 负片	Negative · the negative itself
+OPTICS / 光学调整	OPTICS
+ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）	ORIGINAL · RAW data (unprocessed; pick a film to develop it)
+PRINT / 胶片冲印参数	PRINT / Film printing
+QQ 一群（已满）· 优先扫上面的二群	QQ group 1 (full) · prefer group 2 above
+RAW / JPEG / HEIC · 任意文件（保留 EXIF）	RAW / JPEG / HEIC · any file (keeps EXIF)
+RAW 加载失败	RAW load failed
+RAW 已载入，原图预览未生成	RAW loaded, no original preview generated
+RAW 打开失败：格式或压缩方式不受支持	RAW open failed: unsupported format or compression
+RAW 显影失败	RAW development failed
+RAW 解包失败：文件确实损坏或没有下载完整（换一份重传试试）	RAW unpack failed: the file is genuinely damaged or incomplete (try transferring it again)
+RAW 解码失败	RAW decode failed
+RAW 输出异常	RAW output malformed
+RAW 高光扩展失败	RAW highlight recovery failed
+SIGNALED 被信号杀死	SIGNALED — killed by a signal
+SpektraLab — Hanze Qiu。把上面的引擎重写成 C++ / Metal 并做出 macOS 应用，以 GPL-3.0-or-later 分发；本仓库的上游即其 vulkan-engine-1.3.4。	SpektraLab — Hanze Qiu. Rewrote the engine above in C++ / Metal and built the macOS app, distributed under GPL-3.0-or-later; this repository is forked from its vulkan-engine-1.3.4.
+SpektraLab 仓库	SpektraLab repository
+SpektraLab 参数	SpektraLab settings
+SpektraLab 参数（复制整段，在应用里「从剪贴板导入」）\n	SpektraLab settings (copy the whole block, then "Import from clipboard" in the app)\n
+SpektraLab 参数（复制整段，在应用里「从剪贴板导入」）\\n	SpektraLab settings (copy the whole block, then "Import from clipboard" in the app)\\n
+SpektraLab 反馈群	SpektraLab feedback group
+SpektraLab 崩溃报告	SpektraLab crash report
+SpektraLab 崩溃报告\n	SpektraLab crash report\n
+SpektraLab 崩溃报告\\n	SpektraLab crash report\\n
+SpektraLab 引擎	SpektraLab engine
+SpektraLab 记录号	SpektraLab reference
+Super 35 / 16mm / Super 8 / 4×5 / Instax 只在 fotufilm 的帧上可用	Super 35 / 16mm / Super 8 / 4×5 / Instax are only available on fotufilm frames
+TIFF 16 位 · 全尺寸（原图）	16-bit TIFF · full size (original)
+TIFF 16 位 · 线性	16-bit TIFF · linear
+TIFF 16 位 · 线性 · 全尺寸（给 LR 拉高光）	16-bit TIFF · linear · full size (pull highlights in LR)
+TIFF 16 位 · 线性 · 全尺寸（给 LR 调色）	16-bit TIFF · linear · full size (grading in LR)
+TIFF 16 位 · 预览画质 3400	16-bit TIFF · preview quality 3400
+W11 黄绿	W11 yellow-green
+W12 深黄	W12 deep yellow
+W15 深黄	W15 deep yellow
+W21 橙	W21 orange
+W25 红	W25 red
+W47 蓝	W47 blue
+W58 绿	W58 green
+W8 黄	W8 yellow
+[E-0000] 未知错误	[E-0000] Unknown error
+[E-1003] 这张图解码时内存不够了。先关掉其它应用再试一次；	[E-1003] This image ran out of memory while decoding. Close other apps and try again;
+[E-1003] 这张图解码时内存不够了。先关掉其它应用再试一次；如果反复出现，把这张图的原始文件发给我，我看能不能在解码这一步省下内存	[E-1003] Ran out of memory while decoding this picture. Close other apps and try again; if it keeps happening, send me the original file and I will see whether the decode step can use less memory
+[E-1010] 画布超过单帧上限（约 42 MP）	[E-1010] Canvas past the single-frame cap (about 42 MP)
+[E-1107] 这张图本机解不开	[E-1107] This device can't decode that image
+[E-1108] 解码未授权：请把相机改成「无损压缩」	[E-1108] Decode not licensed: set the camera to lossless compression
+[E-1109] 缺少解码器：请先转成普通 DNG	[E-1109] Decoder missing: convert to a normal DNG first
+[E-1110] 机型未收录：请把原始文件发我	[E-1110] Camera model not listed: send me the original file
+[E-1304] 照片权限已失效，请重新导入	[E-1304] Photo permission expired, please import again
+[E-2001] 检查更新失败（网络不可用或公告地址被拦截）\n	[E-2001] Update check failed (no network, or the announcement host is blocked)\n
+[E-2001] 检查更新失败（网络不可用或公告地址被拦截）\\n	[E-2001] Update check failed (no network, or the announcement URL is blocked)\\n
+[E-2002] 更新公告格式错误：	[E-2002] The update announcement is malformed: 
+[E-9000] 引擎库没有加载成功	[E-9000] The engine library didn't load
+\\n\\n中性滤镜（引擎按胶片与光源查表）\\n	\\n\\nNeutral filters (the engine looks them up from film and light)\\n
+\\n\\n会从相册里真正删掉，无法恢复。	\\n\\nIt will be deleted from your gallery for real, with no undo.
+\\n\\n把这份记录发我可以确认尺寸；也可以直接重开，导入时选「缩到建议尺寸」。	\\n\\nSend me this record and I can confirm the size; or just reopen and pick "scale to the suggested size" on import.
+\\n\\n点「导入」再选一次，这次选「缩到建议尺寸」。	\\n\\nTap "Import" and pick again, this time choosing "scale to the suggested size".
+\\n\\n系统当时内存不够，把应用回收了——多半是这张图太大，不是程序出错。	\\n\\nThe system ran out of memory and reclaimed the app — most likely this image was too big, not a bug.
+\\n\\n这台机器的崩溃日志对定位很关键。要不要发我一份？	\\n\\nThe crash log from this device would really help. Send it over?
+\\n已经上传，不用再发给我了。	\\nAlready uploaded, no need to send it again.
+\\n按原图很可能被系统回收（应用直接消失，不报错）。	\\nAt original size it will very likely be reclaimed by the system (the app just disappears, no error).
+\\n网络没通，请把这段复制发给我。	\\nNo network — please copy this and send it to me.
+\\n要 16 位 TIFF（给 Lightroom 拉高光）或 DNG，进「更多格式」。	\\nFor 16-bit TIFF (to pull highlights in Lightroom) or DNG, open "More formats".
+fotufilm · 相纸 / 输出介质	fotufilm · Paper / output medium
+fotufilm 介质	fotufilm medium
+fotufilm 就绪	fotufilm ready
+fotufilm 引擎	fotufilm engine
+fotufilm 引擎：CPU 渲染。拖动时先出小图，松手后出全尺寸。	fotufilm engine: CPU rendering. Dragging gives a small preview first, the full size on release.
+fotufilm 引擎：CPU 渲染。拖动时先出小图，松手后出全尺寸。片边与日期是 SpektraLab 引擎专属；构图两个引擎都有。	fotufilm engine: CPU rendering. A small frame appears while you drag, the full size when you let go. Rebate and date back are SpektraLab-engine only; composing exists in both.
+fotufilm 没有 DNG 写出路径	fotufilm has no DNG writer
+fotufilm 没有这一项 —— 它的胶片曝光在「冲印 → 影调」页的「曝光」	fotufilm has no such control — its film exposure is "Exposure" on Print → Tone
+fotufilm 渲染中…（CPU，约 2 秒）	fotufilm rendering… (CPU, about 2 s)
+fotufilm 渲染失败	fotufilm render failed
+fotufilm 的曝光在这里：改的是底片的受光量，密度和色彩都跟着变。	fotufilm's exposure is here: it changes how much light the negative got, and density and colour follow.
+fotufilm 的曝光在这里：改的是底片的受光量，密度和色彩都跟着变。光学页的「曝光」是冲印之后的推拉，拉不回已经到白的高光	This is where fotufilm's exposure lives: it changes how much light the negative receives, so density and colour move with it. The "Exposure" on the Optics page pushes and pulls after printing and cannot bring back highlights that are already white
+fotufilm 资源解包失败	Unpacking the fotufilm assets failed
+fotufilm 超时 · 请再点一次，或换一张胶片	fotufilm timed out · tap again, or switch to another film
+fotufilm：片边和画面一起冲出来 —— 片门阴影、齿孔、厂标、张数、日期都是曝光，过颗粒和相纸	fotufilm: the rebate is developed together with the picture — gate shadow, sprockets, edge print, frame number and date are all exposure, and go through grain and paper
+fotufilm：这张照片的原始文件已不在	fotufilm: this photo's original file is gone
+p · 原生）	p · native)
+p · 快一半）	p · half the time)
+spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与放大 LUT，原实现为 Python + Metal，以 CC BY-SA 4.0 分发。	spektrafilm — Andrea Volpato. The film process model, measured colour profiles and enlarger LUTs; originally Python + Metal, distributed under CC BY-SA 4.0.
+‹ 返回	‹ Back
+「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。	and "emulsion edge" is the unexposed ring just outside the gate. None of these is the "rebate" above.
+「从照片栏移除」只去掉这一条，文件本身不动。	"Remove from strip" only drops this entry, the file itself stays.
+「从观片台移除」只是不再显示这一张，文件还在相册里；「删除文件」会真的删掉。	"Remove from light table" only hides this print — the file stays in your gallery. "Delete file" really deletes it.
+「色调」——那是冲印后的偏色，立刻生效。	and "Tint" — those tint the finished print and apply instantly.
+「重新选择这个文件」会把它复制到应用自己的目录——胶片、构图、片边和日期都会保留；	"Reselect this file" copies it into the app's own folder — film, compose, rebate and date are all kept;
+「锁定」只影响这个 app，不动系统自己的自动旋转开关。	"Lock" only affects this app; the system auto-rotate switch is untouched.
+」	"
+」的骨架（cfg/	" skeleton (cfg/
+一套参数（胶片、曝光、光学、构图、片边、日期）。分享出去是一段文本，对方粘贴导入即可。	One set of settings (film, exposure, optics, compose, rebate, date). Sharing gives you a block of text the other side pastes in.
+一层自己的抑制剂回敬自己多少；1 是实测，往上边缘更硬、细节更冲	How much a layer's own inhibitor feeds back on itself; 1 is as measured, higher gives harder edges and punchier detail
+一次成像	Instant
+一群已满 · 扫码加入二群	Group 1 is full · scan to join group 2
+上下内边距	Inset U/D
+上传失败	Upload failed
+上次启动异常退出	Last run exited abnormally
+上次导入没有完成：\\n\\n	The last import didn't finish:\\n\\n
+上次被系统回收了	Last run was reclaimed by the system
+上面两个 = 解码时改（等于换一种光拍，会重新解码）；下面两个 = 冲印后再偏色（立刻生效，亮部会跟着平移）。	The top two change the decode (as if shot under a different light, so it decodes again); the bottom two tint after printing (immediate, with the highlights shifting too).
+上面两个旋钮的 CC 刻度。太小了看不出效果	The CC scale for the two knobs above. Too small and you can't see it
+下载地址	Download address
+下载地址  spektralab.workshop.skin/download	Download address  spektralab.workshop.skin/download
+不再自动弹出	Don't show this automatically
+不印边框	No frame
+不推拉	No push/pull
+不是你操作的问题——重装没用；请点「复制」把下面这段完整发给我，我按名字就能定位	it's not something you did — reinstalling won't help; tap "Copy" and send me the block below, I can identify it by name
+不是你的图的问题。\\n\\n	It isn't your photo.\\n\\n
+不测光，用文件自己的曝光	No metering — use the file's own exposure
+不经过相纸 · 纯数字参考	Skips the paper · pure digital reference
+不裁就只套颜色和参数，片边关闭。	Crop nothing and only the colour and settings are applied; the rebate stays off.
+中位数	Median
+中心	Center
+中心加权	Center-weighted
+中心高斯加权后取平均——旧版默认，最容易被高光带跑	Gaussian-weighted average around the centre — the old default, easiest to fool with highlights
+中性 · 对比适中	Neutral · moderate contrast
+中性 · 黑位偏亮 · 人像常用	Neutral · lifted blacks · the portrait standard
+中性偏冷 · 对比适中	Neutral-cool · moderate contrast
+中文	Chinese
+中等 · +0.8 档	Medium · +0.8 stop
+中等尺度的明暗对比：皮肤、布料、树叶的「肉感」，边缘不动	Mid-scale tonal contrast: the body of skin, cloth and leaves, leaving edges alone
+中间调	Midtones
+主题	Theme
+之后切到别的软件回来也不会丢。	so it survives switching to another app and back.
+乳剂散射	Emulsion scatter
+乳剂散射铺开多远：1 是胶片本来的半径（亚像素，几乎看不见），64 是一层明显的雾	How far the emulsion scatter spreads: 1 is the film's own radius (sub-pixel, invisible), 64 is a visible haze
+乳剂边 · 片门外	Emulsion edge · outside the gate
+二向色滤镜的 M 档，0.40 是默认；加洋红让画面偏绿	M step of the dichroic filter, 0.40 is the default; more magenta makes the picture greener
+二向色滤镜的 Y 档，0.50 是默认；加黄让画面偏蓝	Y step of the dichroic filter, 0.50 is the default; more yellow makes the picture bluer
+二次开发与 AI 声明	Derivative work & AI notice
+二维码会过期，失效就用下面的 QQ 群	QR codes expire; if it's dead use the QQ group below
+亮度	Brightness
+亮度 y	Brightness y
+亮部会跟着平移）。	and the highlights shift with them).
+亮部重点	Highlight-weighted
+从上下	from the top and bottom
+从下面的照片栏拖一张上来	Drag one up from the strip below
+从剪贴板导入	Import from clipboard
+从左右	from the sides
+从文件选择	Choose from file
+从照片栏拖入 · 双击放大 · 长按移出	Drag in from the strip · double-tap to enlarge · long-press to remove
+从照片栏移除	Remove from strip
+从相册选择（快 · 可能丢拍摄参数）	From gallery (fast · may lose shooting data)
+从观片台移除	Remove from light table
+从这一档开始压。越大，只有更亮的地方被收回；0 = 从中灰就开始	Start compressing here. Higher = only the brighter parts are pulled back; 0 = from mid grey
+从这一档开始压后半格的高光。越大，只有更亮的地方被收回	Start compressing the back half's highlights here. Higher = only the brighter parts get pulled back
+以 2048 像素的画面为准，导出时按原尺寸等比放大	Shown at 2048 px; exports scale up proportionally at original size
+以 GPL-3.0-or-later 分发；本仓库的上游即其 vulkan-engine-1.3.4。	distributed under GPL-3.0-or-later; this repo's upstream is its vulkan-engine-1.3.4.
+会话状态异常，请重新导入照片	Session state is broken; please import the photo again
+低对比 · 青绿 · 柔和	Low contrast · teal · soft
+低饱和 · 柔和	Low saturation · soft
+低饱和 · 柔和 · 黑位偏亮	Low saturation · soft · lifted blacks
+保存	Save
+保存当前参数	Save current settings
+保存当前进度，然后重建界面	Save the current progress, then rebuild the interface
+保护基准	Protection basis
+保护高光	Protect highlights
+保留	Keep
+保留 %.0f%% × %.0f%%（按对角缩放）	Keeping %.0f%% × %.0f%% (scaled from the diagonal)
+保留暗部	Protect shadows
+偏暖 · 中等饱和 · 欧陆色	Warm · medium saturation · European colour
+偏暖 · 深黑 · 电影感	Warm · deep blacks · cinematic
+偏青 · 富士色调	Cyan-leaning · Fuji colour
+偏青 · 富士色调 · 高光柔	Cyan-leaning · Fuji colour · soft highlights
+停止	Stop
+停止批量导出	Stop batch export
+像素上限按设备	Pixel cap per device
+像素上限：按设备自动	Pixel cap: automatic per device
+像素级的清晰度。0 就是关	Pixel-level sharpening. 0 is off
+先勾选要应用的照片	Tick the photos to apply to
+先在下方选一张胶片	Pick a film below first
+先在下方选一张胶片，再看动图	Pick a film below before playing the clip
+先导入一张照片	Import a photo first
+先导入一张照片、选一支胶片	Import a photo and pick a film first
+先导入一张照片。点画布中央的「选择照片」，或点下方「换图」；RAW / HEIC 请选「从文件管理器选择」。	Import a photo first. Tap "Choose a photo" in the middle of the canvas, or "Change photo" below; for RAW / HEIC pick "Choose from file manager".
+先导入一张照片并选一支胶片。	Import a photo and pick a film first.
+先选一个片门（会自动把画面裁成它的比例）	Pick a gate first (the picture is cropped to its ratio automatically)
+先选一张胶片，再导出	Pick a film before exporting
+光华 Bloom ·已对齐	Bloom · calibrated
+光圈值	Aperture
+光圈值 / APERTURE	APERTURE / Aperture
+光圈值（f 值，0 = 未知；例如 1.4）	Aperture (f-number, 0 = unknown; e.g. 1.4)
+光在乳剂内部散射形成的雾。实测几乎无变化（<0.1%）	Fog from light scattering inside the emulsion. Measured change is under 0.1%
+光学	Optics
+光学印片机	Optical printer
+光学页的「曝光」是冲印之后的推拉，拉不回已经到白的高光	The Optics "Exposure" is a push after printing; it can't bring back highlights that are already white
+光往哪边扫。0 = 向右，+100 = 向下，−100 = 向上（和 LR 同一套滑杆与方向）	Which way the light is dragged. 0 = right, +100 = down, −100 = up (same slider and directions as Lightroom)
+光晕	Halation
+光晕 Halation ·近似	Halation · approximate
+光晕余量	Halation headroom
+光晕增强	Halation boost
+光晕开关	Halation on
+光晕混进来的强度。0 = 关闭；100 是 LR 的 100。光华最克制（真机上约 3 级/255），要先看见就用 动感 / 拖影	How much halation bleeds in. 0 = off; 100 is Lightroom's 100. Bloom is the most restrained (about 3 levels/255 on a real photo); to see it at once use Motion / Streak
+光晕颜色	Halation colour
+光源的色温。3200K 钨丝、5500K 日光；数值越低画面越暖	Colour temperature of the light. 3200K tungsten, 5500K daylight; lower numbers are warmer
+光的边缘有多柔。0 = 紧实，100 = 更柔更长（对光华 / 光晕无影响）	How soft the edge of the light is. 0 = tight, 100 = softer and longer (no effect on Bloom / Halation)
+光能铺多远。0 = 紧贴高光，50 = 基准，100 = 漫到远处	How far the light reaches. 0 = hugging the highlights, 50 = default, 100 = spreads far
+光谱实测 · 12 种输出介质	Measured spectra · 12 output media
+入场动画	Arrival animation
+全不选	Select none
+全尺寸	Full size
+全尺寸 · 原图（JPEG）	Full size · original (JPEG)
+全尺寸 · 原图（Ultra HDR）	Full size · original (Ultra HDR)
+全尺寸按原图自己的像素渲染，26 MP 大约半分钟。	Full size renders at the photo's own pixels; 26 MP takes about half a minute.
+全幅中位数对准中灰；暗场景会被提亮好几挡	Median of the whole frame to mid grey; dark scenes get lifted by several stops
+全文 · LICENCE	Full text · LICENCE
+全览	All
+全选	Select all
+全部	All
+关	Off
+关 · 画布走 SDR	Off · canvas stays SDR
+关于 · ABOUT	ABOUT / About
+关于与诊断	About & diagnostics
+关掉其它应用再试一次；如果每次都这样，把这条连同记录号发给我	Close other apps and try again; if it happens every time, send me this line with the reference
+关掉其它应用或重启手机再试；如果还不够，就是这张图的尺寸超过了	Close other apps or restart and try again; if it still doesn't fit, this image is bigger than
+关掉就是一支完全没有光晕的胶片	Off gives a film with no halation at all
+关掉就是完全没有颗粒的画面	Off gives an image with no grain at all
+关闭	Close
+关（画布走 SDR）	Off (canvas stays SDR)
+其他	Others
+内存不足：这一步要一次装下整幅画面的浮点数据，本机给不出这么大的连续内存。	Out of memory: this step needs the whole frame's float data at once, and this device can't give that much contiguous memory.
+内存不足：这一步要一次装下整幅画面的浮点数据，本机给不出这么大的连续内存。关掉其它应用再试一次；如果每次都这样，把这条连同记录号发给我	Out of memory: this step has to hold the whole frame as floating point at once, and this device cannot give that much contiguous memory. Close other apps and try again; if it happens every time, send me this line together with the reference
+内存不足：这张图对 fotufilm 链来说太大	Out of memory: this image is too big for the fotufilm chain
+内存不足：这张图对 fotufilm 链来说太大（整幅浮点解码要一次装下）。关掉其它应用再试，或换 SpektraLab 引擎的胶片导出	Out of memory: this picture is too large for the fotufilm chain (the whole frame is decoded as floating point at once). Close other apps and try again, or export with a SpektraLab-engine film
+再试一次	Try again
+写出来的文件不是 JPEG	What was written isn't a JPEG
+写出来的画面是坏的：整幅几乎同一个颜色，或整幅逐行噪声。	What was written is broken: the whole frame is nearly one colour, or full of row noise.
+写出来的画面是坏的：整幅几乎同一个颜色，或整幅逐行噪声。不是你的图的问题。\n\n已经换了一条渲染路径重试，还是这样，所以这次没有把文件留在相册里。换一张、或者换一支胶片再回来，通常就正常了；如果每次都是同一张出问题，把记录号	The picture written out was broken: almost one flat colour, or row-by-row noise. This is not your photo.\n\nA different render path was tried and came out the same, so the file was not left in the album this time. Another picture, or another film, usually behaves; if the same picture fails every time, send me the reference 
+写出的 JPEG 打不开	The written JPEG won't open
+冲印	Print
+冲印之后的亮度推拉：亮部到白的地方拉不回来。要改受光量，用上面的「相机曝光」	Brightness push after printing: anything already at white won't come back. To change the exposure, use "Camera exposure" above
+冲印之后的亮度推拉：亮部到白的地方拉不回来。要改底片的受光量，用「冲印 → 影调」的「曝光」	Brightness push after printing: anything already at white won't come back. To change how much light the negative got, use "Exposure" on Print → Tone
+冲印前	Before
+冲印后	After
+冲印完成后的整体偏暖偏冷。不动解码，改的是这张照片	Overall warm/cool after printing. It does not touch the decode; it changes this picture
+冲印完成后的绿-品红，同上，只影响已经出好的图	Green–magenta after printing, as above; only affects the finished picture
+冷调 · 对比高 · 干净	Cool · high contrast · clean
+准备 fotufilm 资源（首次约 32 MB）…	Preparing the fotufilm assets (about 32 MB the first time)…
+分享	Share
+分享参数	Share settings
+分享当前	Share current
+分带上限：关闭（一条带 = 整幅）	Band limit: off (one band = the whole frame)
+分带上限：引擎默认（2M 元素）	Band limit: engine default (2 M elements)
+分级	Color grading
+分级 · 增益	Grading · gain
+分级 · 提升	Grading · lift
+分级作用域	Grading space
+分级打印	Graded print
+列	 cols
+删不掉	Can't delete
+删掉哪些照片	Which photos to remove
+删除	Delete
+删除文件	Delete file
+删除这个文件？	Delete this file?
+删除这张	Delete this photo
+刷新	Refresh
+剪贴板里没有参数 JSON	No settings JSON in the clipboard
+剪贴板里没有文本	No text in the clipboard
+动图预览失败	Clip preview failed
+动态范围	Dynamic range
+动感 Motion ·近似	Motion · approximate
+半径	Radius
+半格对只在第一引擎的帧上有效	The half-frame pair only works on first-engine frames
+半格对的第二帧日期（用不到就留空）	The half-frame pair's second date (leave empty if unused)
+半格对（135 半格 ×2）	Half-frame pair (135 half ×2)
+印刷边框	Print frame
+印刷边框 / PRINT FRAME	PRINT FRAME / Print frame
+印在画面上的日期（可以自己写）	The date printed on the picture (you can write your own)
+印片密度写 10-bit · 灰落在 445	Print density in 10-bit · grey lands on 445
+印片曝光	Print exposure
+印片机灯泡的色温；3200 K 是默认，低一点更黄	Colour temperature of the printer's bulb; 3200 K is the default, lower is yellower
+印片灯温	Printer lamp temperature
+印片预闪	Printer pre-flash
+印相前先给相纸一次均匀曝光，压一点暗部对比。满值是引擎上限的 20%（电脑版同样），通常只要几个百分点	One even exposure of the paper before printing, to soften shadow contrast. Full scale is 20% of the engine's limit (same as the desktop app); a few percent is usually enough
+印相时的整体预闪：暗部抬起来，高光几乎不动	Overall pre-flash while printing: shadows lift, highlights barely move
+印相校正	Print correction
+卷轴漏进来的光，从片边渗向画面	Light creeping in from the spool, bleeding from the rebate into the picture
+原图	Original
+原图只能导出 JPEG	The original can only be exported as JPEG
+原图提亮	Brighten the original
+原图文件不见了	The original file is gone
+原图是已经解码好的 8 位画面：写 16 位 TIFF 只是把 8 位填成 16 位，DNG 更不是传感器数据。\n\n要 TIFF / DNG，请先选一支胶片 —— 那是引擎渲染出来的成片。	The original is an already-decoded 8-bit picture: writing 16-bit TIFF would merely pad 8 bits into 16, and a DNG would not be sensor data at all.\n\nFor TIFF / DNG, pick a film first — that is a frame rendered by the engine.
+原图是已经解码好的 8 位画面：写 16 位 TIFF 只是把 8 位填成 16 位，DNG 更不是传感器数据。\\n\\n	The original is already-decoded 8-bit data: writing 16-bit TIFF just pads 8 bits into 16, and DNG isn't sensor data at all.\\n\\n
+原图读不回来（解码失败或内存不足）	Can't read the original back (decode failed or out of memory)
+原始	Original
+原实现为 Python + Metal，以 CC BY-SA 4.0 分发。	originally Python + Metal, distributed under CC BY-SA 4.0.
+原照	As shot
+原生移植	Native port
+去冲印 →	Go to Print →
+去抗光晕	Anti-halation removed
+去更新	Update
+参数序列化失败	Failed to serialise the settings
+参数是每张照片各自的：复制过去只改这条栏里的设置，文件不动。	Settings are per photo: applying copies them into the strip entries only, files are untouched.
+参数超出允许范围	A parameter is outside the allowed range
+参数面板已展开	Parameter panel expanded
+参数面板已收起，再点当前页签展开	Parameter panel collapsed — tap the current tab to expand
+参考线 · 关	Guides · off
+参考线 · 开	Guides · on
+参考（相纸 D50）	Reference (paper D50)
+双引擎	Dual engine
+双指放大 · 进入三维	Pinch to zoom · enter 3D
+双指放大 · 进入三维\n	Pinch to fly in\n
+双指放大 · 进入三维\\n	Pinch to zoom · enter 3D\\n
+反转	Reversal
+反转片直接扫描，没有相纸这一步	Reversal film is scanned directly — there's no paper step
+反转片直接看片	Reversal film, viewed directly
+反馈群	Feedback group
+发光	Glow
+发光全部归零	Glow back to zero
+发光样式	Glow style
+发现新版本 	New version available: 
+发送到	Send to
+发送崩溃报告	Send crash report
+发送日志	Send log
+发送最近的步骤	Send recent steps
+取景 上下	Framing U/D
+取景 左右	Framing L/R
+取消	Cancel
+叠在画面左上角的分布	The distribution overlaid on the top left of the picture
+只从这条栏里移除，文件本身不动；这些照片的调色记录会一起删掉。	Removed from this strip only; the files stay. These photos' edit history goes too.
+只动低饱和的地方	Only moves the low-saturation colours
+只动红层到绿层那一道：往右红绿互相吃，红更暗、绿更沉	Only the red→green path: right makes red and green eat each other, red darker, green deeper
+只动绿层到蓝层那一道：往右蓝更沉，天空和阴影会分开	Only the green→blue path: right makes blue deeper, sky and shadows separate
+只套参数（片边关闭）	Apply settings only (rebate off)
+只按画面中心测，忽略四周	Meters the centre only, ignores the edges
+只提暗中带色的部分，已经很艳的不动	Lifts only the coloured parts of the shadows; anything already vivid stays
+只改这一段色相的明暗	Change only this band's brightness
+只改这一段色相的浓度；-100 就是把这一段变成灰	Saturation of just this hue band; -100 turns the band grey
+只改这条栏里的设置，文件不动；点开时才按新参数渲染。	Only the strip entries change, files stay; each is rendered when you open it.
+只是按原图自己的像素渲染。	just rendered at the photo's own pixels.
+只有一张照片，不需要批量	Only one photo — no batch needed
+只有这一张照片	This is the only photo
+只有这一张照片，没有可应用的对象	This is the only photo — nothing to apply to
+只还原高光 · 0 档	Highlights only · 0 stops
+可变反差 · 高光留细节	Variable contrast · keeps highlight detail
+可导入	Import up to
+右上	Top right
+右下	Bottom right
+同上，绿光束；25 是瞄准值	Same, green beam; 25 is the aim
+同上，蓝光束；25 是瞄准值	Same, blue beam; 25 is the aim
+同样以 GPL-3.0-or-later 分发。	also distributed under GPL-3.0-or-later.
+后半格暗部提多少档。0 = 后半格的暗部不动	How many stops to lift the back half's shadows. 0 = leave them alone
+后半格的趾部从这里开始提	The back half's toe starts lifting here
+后半格膝盖以上还能装几档。0 = 后半格的高光不压	How many stops fit above the back half's knee. 0 = don't compress the back half at all
+向右 90°	90° right
+向左 90°	90° left
+品红	Magenta
+品红滤镜	Magenta filter
+四角压暗或提亮；0 是均匀的	Darken or lift the corners; 0 is even
+固定校准曝光	Fixed calibrated exposure
+图形后端调用失败，大图时多为显存不足。关掉其它应用或重启手机再试一次；	The graphics backend call failed; on large images this is usually video memory. Close other apps or restart and try again;
+图形后端调用失败，大图时多为显存不足。关掉其它应用或重启手机再试一次；把这条发给我可以定位是哪一次分配失败	A graphics backend call failed; on large pictures this is usually out of GPU memory. Close other apps or restart the phone and try again; sending me this line tells me which allocation failed
+图形资源创建失败	Failed to create graphics resources
+圆角	Rounded
+在仓库里读 LICENSE	Read LICENSE in the repo
+在系统相册里删完照片后，重新读一遍	Re-read the gallery after you delete photos in the system app
+均值	Mean
+垂直翻转	Flip vertical
+复位	Reset
+复制	Copy
+复制失败 · 请长按	Copy failed · long-press to select
+复制失败 · 请长按详情	Copy failed · long-press the details
+复制群号	Copy group number
+复制链接	Copy link
+复制错误信息	Copy error details
+复古 · 暖调 · 反差大	Vintage · warm · punchy
+外观 · APPEARANCE	APPEARANCE / Appearance
+外观与主题	Appearance
+多亮的像素才发光。0 = 只剩极亮点（几乎看不出效果），30 = 高光，100 = 整幅	How bright a pixel must be to glow. 0 = only the very brightest points (barely visible), 30 = highlights, 100 = the whole frame
+多半是 HEIC/HEIF 或 10-bit 的图（三星、iPhone 默认存这种）。\n换「从文件选择」再试一次，读不到的话请先另存为 JPEG。	Most likely a HEIC/HEIF or 10-bit image (Samsung and iPhone save this by default).\nTry "Pick from files" instead; if it still cannot be read, save it as JPEG first.
+多半是 HEIC/HEIF 或 10-bit 的图（三星、iPhone 默认存这种）。\\n	It's most likely HEIC/HEIF or a 10-bit image (what Samsung and iPhone save by default).\\n
+多半是驱动不完整或显存被别的应用占着。	most likely an incomplete driver or video memory held by another app.
+如果你的机型确实支持 Vulkan，请把这条截图发给我	if your model really does support Vulkan, send me a screenshot of this
+如果反复出现，把这张图的原始文件发给我，我看能不能在解码这一步省下内存	if it happens every time, send me the original file and I'll see where the decode can save memory
+如果每次都是这样，把这条发给我	if it happens every time, send me this line
+字体	Fonts
+字到片门上下边的距离，毫米（可直接在画布上拖）	Distance from the text to the top/bottom of the gate, in mm (draggable on the canvas)
+字到片门左右边的距离，毫米（可直接在画布上拖）	Distance from the text to the left/right of the gate, in mm (draggable on the canvas)
+它的光谱反演标定还不准：实测绿色偏差 20 到 30 度，强行校正会比保留原色偏得更多。所以这支胶片的色相校正是固定的。换一支胶片就能改。	Its spectral inversion is not calibrated yet: greens measured 20–30 degrees off, and forcing a correction would shift them further than leaving them alone. So this film's hue correction is fixed. Pick another film to change it.
+完成	Done
+完整流程 · 片边 / 日期 / 裁切 / TIF	Full pipeline · rebate / date / crop / TIF
+实况	LIVE
+实况照片：点一下看动图	Live photo: tap to play the clip
+实时画质	Live quality
+实时画质（JPEG）	Live quality (JPEG)
+宽容 · 冷调 · 印得更沉	Forgiving · cool · deeper print
+宽幅	Wide
+对比度	Contrast
+导入	Import
+导入失败	Import failed
+导入时内存不够：这张图按原尺寸解码（12 字节/像素）再加渲染要用的显存	Out of memory on import: decoding at full size (12 bytes/pixel) plus the video memory the render needs
+导入时内存不够：这张图按原尺寸解码（12 字节/像素）再加渲染要用的显存（约 76 字节/像素），超过了本机当前可用的内存。关掉其它应用或重启手机再试；如果还不够，就是这张图的尺寸超过了这台机器的物理内存，不是程序设了上限	Out of memory at import: this picture at native size (12 bytes/pixel) plus the GPU planes the render needs (about 76 bytes/pixel) exceed what this device has free right now. Close other apps or restart and try again; if it still does not fit, the picture is larger than this machine's physical memory — the program has not set a cap
+导入照片	Import photos
+导出	Export
+导出中：准备全尺寸渲染（分条）...	Exporting: preparing the full-size render (in bands)...
+导出中：动图逐帧冲洗...	Exporting: developing the clip frame by frame...
+导出中：动图逐帧冲洗（fotufilm）...	Exporting: developing the clip frame by frame (fotufilm)...
+导出原图失败	Exporting the original failed
+导出失败	Export failed
+导出文件不完整	The exported file is incomplete
+导出照片	Export photo
+导出的 Ultra HDR 文件在支持 HDR 的屏幕或软件里仍然有效。	Exported Ultra HDR files still work on HDR displays and in software that supports them.
+导出的成片会落在这里 · 先去冲印一张	Exported prints land here · go develop one first
+尺度	Scale
+局部	Local
+局部 · 位置 X	Local · X
+局部 · 位置 Y	Local · Y
+局部 · 大小	Local · Size
+局部 · 曝光	Local · Exposure
+层间扩散	Interlayer diffusion
+层间抑制	Interlayer inhibition
+屏幕余量 %.1f 档。\n0 = 只把相纸的肩部还回去，暗部一点不动（物理上最准确）；档位越大整幅越亮，纸白落在 SDR 白的 2^(%.1f+档位) 倍。	Screen headroom %.1f stops.\n0 = give back only the paper's shoulder, leaving the shadows untouched (physically the most accurate); higher values brighten the whole frame, with paper white at 2^(%.1f + value) times SDR white.
+屏幕余量 %.1f 档。\\n	Display headroom %.1f stops.\\n
+屏幕方向	Screen orientation
+峰值 max	Peak max
+工作区 · WORKSPACE	WORKSPACE / Workspace
+左上	Top left
+左下	Bottom left
+左侧宽带 peak=	Left band peak=
+左侧短杠 peak=	Left bars peak=
+左右内边距	Inset L/R
+已上传最近的步骤	Recent steps uploaded
+已上报	Reported
+已从观片台移除（文件还在相册里）	Removed from the light table (the file stays in your gallery)
+已保存到相册：	Saved to your gallery: 
+已保存预设「	Saved preset "
+已关闭，仍可在「关于」里找到反馈群	Closed. You can still find the groups under About.
+已删除	Deleted
+已取消	Cancelled
+已复制	Copied
+已复制仓库地址	Repository URL copied
+已导入并应用	Imported and applied
+已导出 	Exported 
+已导出原图 	Exported the original 
+已应用预设「	Applied preset "
+已是最新版本 	Up to date: 
+已移出画布	Removed from the canvas
+已经回到最初的编辑	Back at the first edit
+已经拍好的这张，请用 NX Studio 或 Adobe DNG Converter 转成 DNG 再导入	for shots already taken, convert to DNG with NX Studio or Adobe DNG Converter, then import
+已经换了一条渲染路径重试，还是这样，所以这次没有把文件留在相册里。	A different render path was already tried and came out the same, so the file was not left in your gallery.
+已转 90° · 片边方向跟着画面	Rotated 90° · the rebate follows the picture
+已选好。重新打开应用后生效 —— 当前照片、参数和摆位都会保留。	Chosen. Reopen the app for it to take effect — the current photos, settings and layout are all kept.
+带耳	Eared
+带肩	Shouldered
+帧种子	Frame seed
+帧随机种子（0 – 2147483647）	Random seed for the frame (0 – 2147483647)
+常规	Standard
+幂律 power	Power law
+平均	Average
+平衡	Balanced
+平衡再压住高光两挡；有灯的画面不会糊成一片白	Balanced, then highlights two stops down; scenes with lamps won't wash out to white
+平衡再抬起暗部；阴影留住，亮部跟着走	Balanced, then shadows lifted; shadow detail stays and the highlights follow
+幻灯卡纸 2×2	Slide mount 2×2
+应用	Apply
+应用裁切	Apply crop
+开	On
+开 · 屏幕 %.1f 档 · 提亮 +%.1f 档	On · display %.1f stops · lifted +%.1f stops
+开了片边之后，画布超过了安卓端冲洗引擎的单帧上限（约 42 MP）。	With the rebate on, the canvas exceeds the Android print engine's single-frame cap (about 42 MP).
+开了片边之后，画布超过了安卓端冲洗引擎的单帧上限（约 42 MP）。这是画布分配的上限，不是引擎的渲染上限——请把尺寸发给我	With the rebate on, the canvas exceeds the Android print engine's single-frame limit (about 42 MP). That is the canvas allocation limit, not the engine's render limit — please send me the size
+开启发光	Glow on
+开启日期水印	Date back on
+开启片边	Rebate on
+开放	Open
+开源许可	Licences
+引擎	Engine
+引擎、移植与字体	Engines, port and fonts
+引擎写出来的不是	What the engine wrote isn't 
+引擎库没有加载成功	The engine library didn't load
+引擎库没有加载成功（libspektrafilm_engine.so）。	The engine library didn't load (libspektrafilm_engine.so).
+引擎库没有加载成功（libspektrafilm_engine.so）。这是安装包里的原生库没有就位，不是你操作的问题——重装没用；请点「复制」把下面这段完整发给我，我按名字就能定位	The engine library did not load (libspektrafilm_engine.so). The native library inside the package is not in place; this is not something you did, and reinstalling will not help. Tap "Copy" and send me the whole block below; the names alone locate it
+引擎没有写出文件	The engine wrote no file
+引擎没有输出图像	The engine produced no image
+引擎自动	Engine auto
+引擎还没准备好	The engine isn't ready yet
+张数	Frame no.
+强	Strong
+强光穿过片基、在背面反射回来形成的红晕。1 是胶片本来的量	The red glow of strong light crossing the base and reflecting back. 1 is the film's own amount
+强行校正会比保留原色偏得更多。所以这支胶片的色相校正是固定的。	and forcing a correction drifts further than leaving it alone. So the hue correction for this film is fixed.
+彩扩机	Minilab
+彩扩机的漫射光，还是黑白放大机的聚光：聚光对比更硬、颗粒更露	A minilab's diffused light, or a B&W enlarger's condenser: the condenser is harder and shows more grain
+彩色负片相纸	Colour negative paper
+彩色颗粒	Colour grain
+彩色颗粒 · 扫描柔度 · 三层分量要开了上面这一项才有效 —— 已置灰	Colour grain · scan softness · layer amounts need the item above switched on — greyed out
+影调	Tone
+往右保留胶片本来的偏色，往左把色相校回原图（绿色更准）	Right keeps the film's own cast, left pulls the hue back to the original (more accurate greens)
+往右只锐真正的边缘；天空、皮肤不会被锐出颗粒	Turn right to sharpen only real edges; skies and skin gain no grain
+往右品红，往左绿	Right is magenta, left is green
+往右提阴影	Lift shadows
+往右收高光	Hold highlights
+往右暖，往左冷	Right is warmer, left is cooler
+待生效	pending
+很亮 · +1.6 档	Very bright · +1.6 stops
+微信扫码加入	Scan with WeChat to join
+微信群	WeChat group
+微信群 / QQ 群	WeChat / QQ
+恢复放大机	Restore enlarger
+成片	Print
+或 GoPro GPR 的 VC-5）。请先用 Adobe DNG Converter 转成普通 DNG	or VC-5 in GoPro GPR). Convert it to a normal DNG with Adobe DNG Converter
+或到「构图」页裁成片门的比例	or crop to the gate's ratio on the Compose page
+所以每次都按当前尺寸重新解码一次。	so the frame is re-decoded at the current size every time.
+所有更新地址都不可用	Every update address is unreachable
+打开	On
+打开 QQ	Open QQ
+扩展动态范围，把高光往回拉一点	Extended dynamic range — pulls the highlights back a little
+扩散	Spread
+扫描仪模糊	Scanner blur
+扫描仪镜头自己的模糊，单位微米。在整条管线最后	The scanner lens's own blur, in micrometres. The very last stage of the pipeline
+扫描时按片基的白点做校正	Corrects against the base's white point when scanning
+扫描时按片基的黑点做校正	Corrects against the base's black point when scanning
+扫描柔度	Scan softness
+扫描白	Scanner white
+扫描黑	Scanner black
+批量导出中	Batch export running
+批量导出中，等它跑完再导入	Batch export running — wait for it before importing
+批量导出中，等它跑完再换图	Batch export running — wait for it before changing photos
+批量导出中，等它跑完再改动照片栏	Batch export running — wait for it before touching the strip
+批量导出已经在跑	Batch export already running
+把三层的光晕往回光最亮的那层拉平；0 是胶片自己的颜色，1 是单色光晕	Flattens the three layers' halation towards the brightest one; 0 is the film's own colour, 1 is monochrome halation
+把暗部从趾部提起来。拉得越高，暗部越亮	Lifts the shadows out of the toe. Higher is brighter
+把白压暗：整体变暗并留出高光余量；1 是白到底	Pulls white down: the whole image darkens and keeps highlight headroom; 1 is white to the top
+把相纸肩部的黑提起来：暗部打开，黑仍是黑（改的是印相的光，不是加灰）	Lifts the paper's shoulder black: shadows open up while black stays black (it changes the printing light, not a grey wash)
+把胶片当成撕掉抗光晕层。实测画面变化 <0.2%	Treats the film as if its anti-halation layer were peeled off. Measured change under 0.2%
+把趾部之外的曝光往白里卷：高光保住层次，不会剪成一片白	Rolls the exposure above the toe into the white: highlights keep detail instead of clipping to flat white
+把这一段色相往旁边拧，最多 40 度	Rotate this hue band, by up to 40 degrees
+把这张的参数应用到	Apply this photo's settings to
+把这条发给我可以定位是哪一次分配失败	sending me this line tells me which allocation failed
+把这次的操作记录交给开发者	Hands this session's step log to the developer
+把颗粒的变化分一部分给更大的团块：0 全是细颗粒，0.9 几乎全是粗团块（总颗粒量不变）	Gives part of the grain's variation to larger clumps: 0 is all fine grain, 0.9 is almost all coarse clumps (total grain unchanged)
+把黑抬成灰：相纸的暗部整体提亮，不裁切；0 是黑到底	Turns black into grey: the paper's shadows lift as a whole without clipping; 0 is black to the bottom
+抑制剂能跨过多远的层间；1 是按片基实测，0 封住层间（颜色变平），3 跨得更远	How far an inhibitor can cross into the next layer; 1 is as measured on the base, 0 seals the layers (flatter colour), 3 reaches further
+拉高光才有东西可拉。	so there's actually something to pull back.
+拍摄数据	Shooting data
+拍摄数据 data	Shooting data
+拍摄数据（和日期一起印在片边）	Shooting data (printed on the rebate together with the date)
+拍摄时的预闪，抬暗部	Pre-flash at shooting time, lifts the shadows
+拐点有多圆滑：1 硬拐点、4 很长很缓。这条是全局的，暗部也跟着变	How round the knee is: 1 is a hard corner, 4 is very long and gentle. This one is global — shadows move too
+拖到这里移出画布	Drag here to remove from the canvas
+拖动控制点；空白处点一下加点，最多 8 个	Drag a point; tap empty space to add one, up to 8
+拖弧尺或画面转动 · 双击画面归零 · 松手吸附水平	Drag the arc or the picture · double-tap the picture to zero · release to snap level
+拖影 Streak ·近似	Streak · approximate
+按亮度平方加权取中灰：亮的地方说话最重——人像脸上的补光会被压下来，不靠钳位	Mid grey from a luminance-squared weighted mean: bright areas dominate, so a lit face gets pulled down without clipping
+按多大的尺寸导入	Import at which size
+按年：速度损失加灰雾	Per year: speed loss plus fog
+按设备自动	Automatic per device
+换「从文件选择」再试一次，读不到的话请先另存为 JPEG。	Try "Choose from file"; if that fails, save it as JPEG first.
+换一张、或者换一支胶片再回来，通常就正常了；	Switching to another photo or another film and coming back usually clears it;
+换一支胶片就能改。	Switch to another film to change it.
+换个系统版本更新的机器试试；同一台机器升级系统也可能解决	Try a device with a newer OS; updating this one may also fix it
+换图	Change photo
+推拉显影	Push/pull development
+提升上限	Lift limit
+提暗部	Lift shadows
+撤销	Undo
+收高光	Hold highlights
+改了就发：AI-NOTICE.md	Change it, ship it: AI-NOTICE.md
+改完要重启应用才生效。两者一起开 = 假装自己是 128 MiB 的机型，但允许导入更大的帧。	and takes effect after a restart. Both together = pretend to be a 128 MiB device but still allow bigger frames.
+放大	Larger
+放大曝光 越右越暗	Enlarger exposure — further right is darker
+放大机	Enlarger
+放大机的品红旋钮。往负走偏绿，往正走偏品红	The enlarger's magenta knob. Negative goes green, positive goes magenta
+放大机的曝光量。数值越小，印出来越亮	Exposure at the enlarger. Lower is brighter
+放大机的黄旋钮。往负走偏黄，往正走偏蓝（冷）	The enlarger's yellow knob. Negative goes yellow, positive goes blue (cool)
+放大镜	Loupe
+故事 9:16	Story 9:16
+效果	Effects
+散射半径	Scatter radius
+数字中间片	Digital intermediate
+数字参考	Digital reference
+数字参考 · 无相纸	Digital reference · no paper
+数字参考风格	Digital Reference style
+数码中间片那条路上，把蓝层的偏移补回来。只在「数字中间片」开时有用	On the digital intermediate route, compensates the blue layer's offset. Only matters when Digital intermediate is on
+数量	Amount
+整幅	Whole frame
+整幅 · 未裁切	Whole frame · uncropped
+整幅中位亮度，最不容易被单个亮斑左右	Median luminance of the whole frame — hardest to sway with a single bright spot
+整幅几乎同一个颜色（Δx %.2f / Δy %.2f）at %dx%d	The whole frame is almost one colour (Δx %.2f / Δy %.2f) at %dx%d
+整幅算术平均，完全不加权	Plain arithmetic mean of the whole frame, no weighting
+整张相纸的整体曝光，单位档；0 是默认	Overall exposure of the paper, in stops; 0 is the default
+整条 strip	Full strip
+文件只有 %.1f MB，%d×%d 的 16 位像素要 %.1f MB	File is only %.1f MB; %d×%d at 16 bits needs %.1f MB
+文件头不是 TIFF（%02X %02X %02X %02X）	Header is not TIFF (%02X %02X %02X %02X)
+文件自身尺寸	File's own size
+文字逐字、边框、滑竿刻度、相纸条；关掉更快	Typed text, frames, dial ticks, paper strips; off is faster
+方向	Direction
+方形画布 1:1	Square canvas 1:1
+方角	Square
+旋转	Rotate
+旋转 90°	Rotate 90°
+无	None
+无可用片门	No usable gate
+无法发送	Can't send
+无法获取RAW文件路径	Can't get the RAW file path
+无法预览	No preview
+无相纸	No paper
+无相纸 · 直接扫描	No paper · direct scan
+无相纸 · 直接看胶片	No paper · view the film itself
+无相纸 · 直接输出	No paper · direct output
+日光	Daylight
+日光 D65	Daylight D65
+日期亮度	Date brightness
+日期位置	Date placement
+日期位置：画面内时可选中角位，也可以直接在画布上拖；片边模式的位置由片边条决定，用上面两个内边距微调	Date placement: in-frame lets you pick a corner or drag it on the canvas; in rebate the position comes from the rebate strip, fine-tune with the two insets above
+日期大小	Date size
+日期打在哪里	Where the date is printed
+日期文字	Date text
+日期样式	Date style
+日期水印	Date back
+日期水印 / DATE BACK	DATE BACK / Date back
+日期用哪种字	Which typeface the date uses
+日期角位	Date corner
+日期都是曝光，过颗粒和相纸	date are all exposure, and they go through grain and paper
+明亮 · +1.2 档	Bright · +1.2 stops
+明亮度	Lightness
+明度	Luminance
+是系统相册没有接受这个文件——重启手机再导一次；	the system gallery refused the file — restart the phone and export again;
+晕影	Vignette
+暖色	Warmth
+暗部保护	Shadow protection
+暗部最多能被提亮多少挡。实测 4→12 几乎无差别	How many stops the shadows can be lifted at most. Measured 4→12 makes almost no difference
+暗黑 · 黑橙	Dark · black & orange
+暴力	Brutal
+曝光	Exposure
+曝光度	Exposure
+曲线	Curves
+曲线柔度	Curve softness
+更亮 · 深黑 · 对比高	Brighter · deep blacks · high contrast
+更多导出格式	More export formats
+更新公告格式错误	Update announcement is malformed
+最亮 · +2.0 档（灯泡）	Brightest · +2.0 stops (light bulb)
+最深黑 · 高饱和	Deepest blacks · high saturation
+未上报	Not reported
+未命名预设	Untitled preset
+未开启 · 点进去设置	Off · tap to set up
+未归类的错误，请把这条截图发给开发者	Unclassified error — please screenshot this and send it to the developer
+未渲染 · 选择胶片开始	Not rendered · pick a film to start
+未知	Unknown
+未选择照片	No photo selected
+本仓库。Vulkan 后端、JNI、界面、分带渲染与显存管理、色相校正标定，同样以 GPL-3.0-or-later 分发。	This repository. The Vulkan backend, JNI, interface, banded rendering and memory management, and the hue-correction calibration, likewise under GPL-3.0-or-later.
+本应用通过自己的 C++ 宿主调用它。	This app calls it through its own C++ host.
+本机 · DEVICE	DEVICE / Device
+本机没有可用的 Vulkan 驱动，或驱动版本低于引擎要求	No usable Vulkan driver on this device, or it's older than the engine needs
+本机没有可用的 Vulkan 驱动，或驱动版本低于引擎要求（需要 Vulkan 1.1 以上的计算管线）。换个系统版本更新的机器试试；同一台机器升级系统也可能解决	No usable Vulkan driver on this device, or a driver older than the engine requires (Vulkan 1.1+ compute pipelines). Try a device on a newer system version; on this one a system update may also fix it
+本机没有可用的文件选择器	This device has no usable file picker
+本机没有相册选择器；请改用「RAW / JPEG / HEIC」那一项	This device has no gallery picker; use the "RAW / JPEG / HEIC" entry instead
+本机驱动能力低于本程序的最低要求	This driver is below the program's minimum requirements
+松手移出画布	Release to remove from the canvas
+极限	Extreme
+极高饱和 · 深黑 · 幻灯片味	Very high saturation · deep blacks · slide film
+构图	Compose
+染料层之间的相互抑制，1 是原样；往上颜色变浓、暗部更紧	Inhibition between dye layers; 1 is unchanged, higher is denser colour and tighter shadows
+染料层之间的相互抑制，也就是浓度。1 是胶片本来的量，往左变淡，往右变浓。2 已经很浓了	Inhibition between dye layers, i.e. density. 1 is the film's own amount, left is thinner, right is denser. 2 is already heavy
+标准	100%
+样式	Style
+格式不对	Wrong format
+档位越大整幅越亮，纸白落在 SDR 白的 2^(%.1f+档位) 倍。	higher steps brighten the whole image; paper white sits at 2^(%.1f + step) times SDR white.
+检查更新	Check for updates
+检查更新失败：网络不可用，或公告地址被当前网络拦截	Update check failed: no network, or the announcement URL is blocked on this connection
+模拟驱动绑定：关闭	Simulate driver binding: off
+横屏时画布在左、参数在右	In landscape the canvas sits left, settings right
+横屏：照片在左，参数在右一栏，页签在栏顶。\n「锁定」只影响这个 app，不动系统自己的自动旋转开关。	Landscape: the picture on the left, the parameters in a column on the right, the tabs at the top of that column.\n"Lock" affects only this app; it does not touch the system's own auto-rotate switch.
+横屏：照片在左，参数在右一栏，页签在栏顶。\\n	Landscape: photo on the left, settings in a column on the right, tabs at the top of the column.\\n
+橙	Orange
+橙片基 · 反相不还原	Orange base · not inverted
+正在一张张导出。停止会保留已经写好的那些。	Exporting one by one. Stopping keeps the files already written.
+正在停止…（当前这张写完就停）	Stopping… (finishes the current frame, then stops)
+正在冲洗动图，稍等一下	Developing the clip, one moment
+正在导出，等这一张写完	Exporting — wait for this one to finish
+正在渲染，完成后即可导出	Rendering — you can export when it's done
+正在重新扫描相册	Rescanning the album
+正片相纸 · 反转直印	Positive paper · reversal printed directly
+每个像素平均多大一块胶片；1 是按扫描的清晰度	How big a patch of film each pixel averages; 1 is a sharp scan
+每周一次，只报机型和 GPU	Once a week, model and GPU only
+水平翻转	Flip horizontal
+没有出图	Nothing came out
+没有可发送的内容	Nothing to send
+没有可用的浏览器：	No browser available: 
+没有套用	Not applied
+没有拿到图片（选择器返回空）。请点「导入」→「从文件管理器选择」再试一次	No image came back (the picker returned empty). Tap "Import" → "Choose from file manager" and try again
+洋红滤镜	Magenta filter
+测光	Metering
+测光方式（决定整幅的曝光）	Metering mode (sets the overall exposure)
+浓度曲线	Density curve
+混色 / HSL	MIXER / HSL
+渲染中…（这是胶片层参数，约 1–2 秒）	Rendering… (this is a film-layer setting, about 1–2 s)
+渲染器有一个阶段仍按整块绑定这张图，超过了本机 GPU 的单缓冲上限。	One stage of the renderer still binds the whole image as one block, past this GPU's single-buffer limit.
+渲染器有一个阶段仍按整块绑定这张图，超过了本机 GPU 的单缓冲上限。这是引擎里还没分带的路径，不是你图片的问题——请把这条和图片尺寸发给我	One stage of the renderer still binds this picture whole, beyond this GPU's single-buffer limit. That is a path in the engine that has not been banded yet, not a problem with your picture — please send me this line and the picture size
+渲染失败	Render failed
+渲染完成，但系统相册没有接受这个文件：\\n\\n	Rendered fine, but the system gallery refused the file:\\n\\n
+渲染引擎没能在这台设备上启动：Vulkan 设备建立失败，多半是驱动不完整或显存被别的应用占着。重启手机再试一次；仍然不行就是这台机器的驱动跑不了这个引擎	The render engine could not start on this device: creating the Vulkan device failed, usually an incomplete driver or GPU memory held by another app. Restart the phone and try again; if it still fails, this machine's driver cannot run the engine
+渲染报错、导出异常、想要某支胶片，直接发在群里。	Render errors, export glitches, a film you wish existed — post it in the group.
+渲染报错、导出异常、想要某支胶片，直接发在群里。问题能复现的话，把「复制错误信息」的内容一起贴上。	Render errors, export oddities, films you would like — post them in the group. If the problem reproduces, paste in whatever "Copy error information" gives you.
+渲染没有输出像素	The render produced no pixels
+渲染调度超出本机上限（图像太大）	Render dispatch past this device's limit (image too big)
+滤镜强度	Filter strength
+漂白	Bleached
+漏光	Light leak
+漫射 Diffusion ·近似	Diffusion · approximate
+漫射（彩扩机）	Diffused (minilab)
+点「去更新」打开下载页（开源免费）	Tap "Update" to open the download page (open source, free)
+点一下重试	Tap to retry
+点阵 dots	Dot matrix
+照片	Photo
+照片墙	Photo wall
+照片已不可访问	Photo is no longer accessible
+照片已经渲染完成，是系统相册拒绝接收这个文件（不是渲染失败）。	The photo rendered fine; the system gallery refused the file (this is not a render failure).
+照片已经渲染完成，是系统相册拒绝接收这个文件（不是渲染失败）。重启手机再导出一次；如果每次都这样，把这条发给我	The picture finished rendering; the system album refused the file (this is not a render failure). Restart the phone and export again; if it happens every time, send me this line
+照片拍摄菜单 → RAW 记录 → 无损压缩；	Photo Shooting menu → RAW recording → Lossless compression;
+照片的读取权限已失效（系统收回了文件选择器给的临时授权）。请点「导入」重新选择这张照片	Read permission for the photo has expired (the system revoked the picker's temporary grant). Tap "Import" and pick this photo again
+片基本身的灰雾。0 是完全透明，越大越脏	The grey fog of the base itself. 0 is fully clear, higher is dirtier
+片基雾	Base fog
+片夹	Carrier
+片夹边 · 暗房	Carrier edge · darkroom
+片边	Rebate
+片边 / REBATE	REBATE / Rebate
+片边上印的张数，整格走动。0 = 按 seed 随机	The number printed on the rebate, stepping per frame. 0 = random from the seed
+片边与日期是 SpektraLab 引擎专属；构图两个引擎都有。	Rebate and date are SpektraLab-engine only; Compose exists in both engines.
+片边太大，已关闭，重试导出…	The rebate was too large; switched off, retrying the export…
+片边张数	Frame number
+片边文字（厂标 / 张数）	Rebate text (edge print / frame no.)
+片边方向	Rebate direction
+片边模式	Rebate mode
+片边种子	Rebate seed
+片边超过单帧上限，已自动关闭	The rebate exceeded the single-frame limit and was switched off
+片边随机种子（0 – 2147483647）	Random seed for the rebate (0 – 2147483647)
+片门	Gate
+片门与照片比例不符：到「边框」页换一个同比例的片门，或到「构图」页裁成片门的比例	The frame is not the gate's shape: pick a gate with the same ratio on the Frame page, or crop to the gate's ratio on the Compose page
+片门形状	Gate shape
+片门格式	Gate format
+版本	Version
+物理尺幅 · 由片门决定，点数字换片门	Physical size · set by the film gate; tap the number to change gate
+物理尺幅 · 裁切与旋转在「构图」页	Physical size · crop and rotate live in Compose
+物理模型与数据	Physical model and data
+现在用的是这一套。换另一套要重新打开应用；照片和参数会保留。	This is the one in use. Switching takes a restart; photos and settings are kept.
+现在用的是这一套。换语言要重新打开应用；照片和参数会保留。	This is the one in use. Changing the language needs a reopen; photos and settings are kept.
+生效 · APPLY	APPLY
+电影拷贝片	Release print film
+电影正片专用的三色光合，单位 printer point；25 是本片基的瞄准值，多一点偏青	Three-light trim for release print film, in printer points; 25 is this stock's aim, more goes cyan
+电脑版基准	Desktop baseline
+电脑版基准：EDR 关 · 高光保护 0 · 色相校正 关	Desktop baseline: EDR off · highlight protection 0 · hue correction off
+画布 	Canvas 
+画面上的光晕 · 与胶片参数互不影响 · 每次改动重新渲染一次	Halation on the picture · independent of the film settings · re-renders on every change
+画面内	In frame
+画面内的哪个角	Which corner of the picture
+画面冲出来之后再放到材料上 —— 不重采样、不改色彩。	The picture goes onto the material after it's developed — no resampling, no colour change.
+画面冲出来之后再放到材料上 —— 不重采样、不改色彩。「相纸」是印出来那张纸的白边，「片夹边」是暗房把片夹锉宽留下的黑线，「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。页片没有齿孔，只有右上角的缺口码；Instax 是一体式相纸，四周是白边 —— 这两类本来就没有齿孔。	The frame is finished first and then placed on the material — no resampling, no colour change. "Paper" is the white border of the paper it was printed on, "carrier edge" is the black line a darkroom leaves when it files the carrier wider, and "emulsion edge" is the unexposed band outside the gate itself. None of these is the rebate above. Sheet film has no sprocket holes, only a notch code in the top right corner; Instax is an integral paper with a white border all round — those two never had holes.
+画面在片门里向上 / 下挪	Slides the picture up / down inside the gate
+画面在片门里向左 / 右挪；只有需要裁切时才有行程	Slides the picture left / right inside the gate; only travels when a crop is needed
+画面最亮的一端落在相纸实测边界内几档。引擎按这张纸自己的黑白边界解曲线，不是硬压	How many stops inside the paper's measured limit the brightest part of the frame lands. The engine solves the curve against this paper's own black and white points, it doesn't just clamp
+界面文字；英文由 GitHub 上的反馈而来	Interface language; English came from feedback on GitHub
+留银：反差更高，颜色更淡	Retained silver: more contrast, thinner colour
+白平衡重解失败	White balance re-decode failed
+白平衡（解码）/ WHITE BALANCE	WHITE BALANCE
+白点	White point
+白点往哪收；和 Lightroom 的白色色阶同一个意思	Where the white point sits; the same idea as Lightroom's Whites
+白色留白	White margin
+白色色阶	Whites
+白齿孔（扫描）	White sprockets (scan)
+目标色调（区域定标 · 管高光/阴影）	Target tone (zone-scaled · drives highlight/shadow)
+直接看胶片	See the film itself
+直方图	Histogram
+相册写入失败	Gallery write failed
+相对该样式的字高（1.0 是标准，可放大到 8 倍）	Relative to that style's cap height (1.0 is standard, up to 8×)
+相机曝光	Camera exposure
+相机记录的 f 值。决定片门边缘的虚化。0 = 未知（按 f/5.6）	The f-number the camera recorded. Sets the softness at the gate edge. 0 = unknown (assumes f/5.6)
+相机记录的 f 值：决定片门边缘的虚化。0 = 未知（按 f/5.6），也可以直接键入。	The f-number the camera recorded: sets the softness at the gate edge. 0 = unknown (assumes f/5.6); you can also type it.
+相机预闪	Camera pre-flash
+相纸	Paper
+相纸 / 拷贝片	Paper / Print film
+相纸 / 片夹的留白，毫米；按这张纸的实际尺寸	White border of the paper / carrier, in mm; follows the material's real size
+相纸 4×6	Paper 4×6
+相纸 5×5	Paper 5×5
+相纸 5×7	Paper 5×7
+相纸 8×10	Paper 8×10
+相纸宽容度 · 突破 7 档	Paper latitude · past the 7-stop wall
+相纸宽容度（对比蒙版印片）	Paper latitude (contrast-mask printing)
+相纸的染层平衡：往右把偏色收到中性，0 是相纸标定的原样	The paper's dye-layer balance: right pulls a cast back to neutral, 0 is the paper's calibrated state
+相纸表面的那层光晕。抬高黑位、降低对比	The glow on the paper surface. Lifts the black point, lowers contrast
+看原图时抬亮暗部；关掉更接近解码本身	Lifts the shadows when viewing the original; off is closer to the decode itself
+看照片用哪种灯：判色台、日光还是家里的钨丝灯（只改看片的光）	Which lamp you judge the print under: a colour booth, daylight, or the tungsten at home (changes the viewing light only)
+真胶片颗粒：下面五项（彩色颗粒 / 扫描柔度 / 三层分量）现在有效	Real film grain: the five items below (colour grain / scan softness / layer amounts) are now active
+眩光	Glare
+眩光开关	Glare on
+知道了	Got it
+确定	OK
+移除	Remove
+稍后	Later
+窄边 filed	Narrow filed edge
+立即重新打开	Reopen now
+竖幅	Portrait
+竖版 4:5	Portrait 4:5
+竖线 x=	vertical line x=
+第二帧日期	Second frame date
+第二引擎	Second engine
+第二引擎 — Fotufilm	Second engine — Fotufilm
+第二段·位置	Second · position
+第二段·暗部强度	Second · shadow room
+第二段·暗部阈值	Second · shadow knee
+第二段·高光强度	Second · highlight room
+第二段·高光阈值	Second · highlight knee
+第二段从片长的这一段开始。0.514 = 18 mm 画面 + 1 mm 间隙，共 37 mm	Where the second segment starts along the strip. 0.514 = an 18 mm frame plus a 1 mm gap, 37 mm total
+第二段曲线（后半格）	Second curve (back half)
+等待导入	Waiting to import
+系统报告这块屏幕没有 HDR 模式，画面里的亮部无法超过 SDR 白。	Android reports no HDR mode for this panel, so highlights cannot go past SDR white.
+系统报告这块屏幕没有 HDR 模式，画面里的亮部无法超过 SDR 白。导出的 Ultra HDR 文件在支持 HDR 的屏幕或软件里仍然有效。	The system reports no HDR mode on this screen, so highlights cannot go beyond SDR white here. The exported Ultra HDR file is still valid on HDR screens and in software that supports it.
+系统收回了文件选择器给的临时授权，这张照片现在读不到了。\n\n「重新选择这个文件」会把它复制到应用自己的目录——胶片、构图、片边和日期都会保留；「从照片栏移除」只去掉这一条，文件本身不动。	The system took back the temporary grant the file picker gave, and this photo can no longer be read.\n\n"Pick this file again" copies it into the app's own folder — film, composition, rebate and date are all kept; "Remove from the strip" only drops the entry and leaves the file alone.
+系统收回了文件选择器给的临时授权，这张照片现在读不到了。\\n\\n	The system revoked the temporary grant the file picker gave us, so this photo can't be read now.\\n\\n
+系统是中文就用中文，其它语言用英文	Chinese stays Chinese; every other language gets English
+系统版本不支持	Android version too old
+系统相册选择器会先复制一份，部分机型的副本会丢掉这些信息。	The system gallery picker copies first, and on some devices the copy loses this information.
+紫	Purple
+红	Red
+红–绿扩散	Red–green diffusion
+红光合	Red light
+红光在 18% 灰之上的曝光，单位挡	Red-light exposure above 18% grey, in stops
+红光敏感那一层的晶体量，1 是实测	Crystal amount in the red-sensitive layer, 1 is as measured
+红层颗粒	Red layer grain
+纸白面板 · 克莱因蓝	Paper-white panels · Klein blue
+纸边宽	Paper margin
+纹理	Texture
+线性光	Linear light
+线性光里分级，还是像调色台那样在编码信号上分级；只在动了分级·提升/增益时才看得出来	Grade in linear light, or on the encoded signal like a grading desk; only visible once lift/gain are moved
+细节	Detail
+给光晕留的高光余量，单位挡。越大越不容易糊成一片	Headroom kept for halation, in stops. Higher is harder to wash out
+给被裁掉的高光补能量。只让光晕更亮，不改变它的范围	Adds energy to the highlights that got clipped. Brightens the halation only, doesn't widen it
+继续	Continue
+维修二群	Repair group 2
+维护 · SUPPORT	SUPPORT / Support
+绿	Green
+绿-品红轴。日光灯发绿就往正值拖	Green–magenta axis. Fluorescent light goes green: drag towards positive
+绿–蓝扩散	Green–blue diffusion
+绿光合	Green light
+绿光敏感那一层的晶体量	Crystal amount in the green-sensitive layer
+绿层颗粒	Green layer grain
+编码信号	Encoded signal
+缩小	Smaller
+缩放	Zoom
+群号已复制，请在 QQ 里搜索加入	Group number copied — search for it in QQ
+聚光（黑白）	Condenser (B&W)
+胶片	Film
+胶片两侧露出什么	What shows on either side of the film
+胶片原色	Film's own colour
+胶片密度曲线的伽马。0.6 发灰发亮，1.35 偏红，默认 1	Gamma of the film's density curve. 0.6 is flat and bright, 1.35 goes red, default 1
+胶片或相纸名称无效	Invalid film or paper name
+胶片本身	The film itself
+胶片本身 · 橙片基 · 反相不还原	The film itself · orange base · not inverted
+胶片背后的光晕半径 × 这个数，1 是原样；0.5 收一半，2 放开	Halation radius behind the film × this number, 1 is unchanged; 0.5 halves it, 2 opens it up
+胶片自己的颗粒 × 这个数，1 是原样（两种颗粒模型都有效）	The film's own grain × this number, 1 is unchanged (works in both grain models)
+胶片色相（保留片基自己的颜色）	Film hue (keeps the base's own colour)
+胶片边 · 底片	Film edge · negative
+胶片边 · 正像	Film edge · positive
+胶片边缘	Film edge
+胶片颗粒模型（真胶片颗粒，首次约 15 秒）	Film grain model (real film grain, about 15 s the first time)
+膝盖以上还能装几档。越大高光越晚顶白，光晕也不会糊成一片白	How many stops fit above the knee. Higher = highlights go white later, and halation won't wash out
+自动	Auto
+自动定标（默认）	Auto levels (default)
+自定义	Custom
+自愈	Self-heal
+自然饱和度	Vibrance
+色彩	Color
+色散铺开的半径，单位微米；100 是常见值，要比层间扩散大才看得见	Radius the dispersion spreads over, in micrometres; 100 is typical, and it has to be wider than the interlayer diffusion to show
+色温	Temp
+色相	Hue
+色相 %d°   饱和度 %.0f%%	Hue %1$d°   saturation %2$.0f%%
+色调	Tint
+色边	Colour fringe
+色边半径	Fringe radius
+范围	Range
+荧光	Fluorescent
+蒙版	Masking
+蓝	Blue
+蓝光合	Blue light
+蓝光敏感那一层的晶体量	Crystal amount in the blue-sensitive layer
+蓝层颗粒	Blue layer grain
+蓝白	Blue & white
+裁切	Crop
+裁成片门能还原他的片边，但要	Cropping to the gate restores their rebate, but it takes
+要 DNG 请换一支 SpektraLab 引擎的胶片。	For DNG, switch to a SpektraLab-engine film.
+要 TIFF / DNG，请先选一支胶片 —— 那是引擎渲染出来的成片。	For TIFF / DNG, pick a film first — that's a render from the engine.
+要保留拍摄参数（EXIF），请选第二项：文件管理器读的是磁盘上的原文件。	To keep shooting data (EXIF), pick the second item: the file manager reads the original file on disk.
+要保留拍摄参数（EXIF），请选第二项：文件管理器读的是磁盘上的原文件。系统相册选择器会先复制一份，部分机型的副本会丢掉这些信息。	To keep the shooting data (EXIF), choose the second option: the file manager reads the original on disk. The system photo picker copies it first, and on some phones that copy loses this information.
+观察光源	Viewing light
+观片台	Light table
+观片台上还没有照片	No photos on the light table yet
+解 JPEG-XS 的授权不在本程序里。请改相机设置——	the JPEG-XS licence isn't in this program. Change the camera setting —
+解码未授权：这是尼康高效率压缩（HE/HE★）RAW，解 JPEG-XS 的授权不在本程序里。请改相机设置——照片拍摄菜单 → RAW 记录 → 无损压缩；已经拍好的这张，请用 NX Studio 或 Adobe DNG Converter 转成 DNG 再导入	Decoding not licensed: this is a Nikon high-efficiency (HE/HE★) RAW, and the JPEG-XS decoder is not licensed to this program. Change the camera setting — Photo Shooting Menu → RAW recording → Lossless compression. For the one already shot, convert it to DNG with NX Studio or Adobe DNG Converter and import that
+解码色温	Decode temp
+解码色调	Decode tint
+让画面回到配光算出的中性。	so the picture returns to the neutral the balance solved for.
+记录号	Reference
+设备信息读取失败	Device information unavailable
+设置	Settings
+诊断：像素上限 / 驱动绑定	Diagnostics: pixel cap / driver binding
+该效果在当前图形后端上尚未实现	This effect isn't implemented on the current graphics backend yet
+语言	Language
+语言 · LANGUAGE	LANGUAGE
+请先导入照片	Import a photo first
+请把这张原始文件（不要压缩、不要截图）发我，我加上机型支持	Send me the original file (uncompressed, not a screenshot) and I'll add support for it
+请输入一个数字	Enter a number
+读不到原图文件	Cannot read the original file
+读不到原图文件；请重新导入这一张	Can't read the original file; please import this one again
+读取或复制这个文件失败了。请换「从相册选择」再试一次。	Reading or copying this file failed. Try "From gallery" instead.
+调色 / TONE	TONE
+调试：像素上限 / 驱动绑定	Debug: pixel cap / driver binding
+负 = 偏蓝，0 = 中性，正 = 偏琥珀	Negative = blue, 0 = neutral, positive = amber
+负片本身	The negative itself
+跟着冲洗	developed with it
+跟随系统	Follow system
+跳过光学印相，走数码中间片那条路。0 关，1 开	Skips optical printing and takes the digital intermediate route. 0 off, 1 on
+踢角	Kicked
+软化度	Softness
+轻微 · +0.5 档	Slight · +0.5 stop
+输出的传递函数。0 是相纸的，1 是显示器编码	Transfer function of the output. 0 is the paper's, 1 is display encoding
+输出编码	Output encoding
+边框	Frame
+边框样式	Frame style
+边缘对比	Edge contrast
+过期	Expired
+近黑面板 · 橙色强调	Near-black panels · orange accent
+返回	Back
+还没有	None yet
+还没有可渲染的图像	Nothing to render yet
+还没有可配光的照片	No photo to balance yet
+还没有导出过文件	Nothing exported yet
+还没有裁切	No crop yet
+还没有预设。调好一张照片，点下面的「保存当前参数」。	No presets yet. Tune a photo, then tap "Save current settings" below.
+这一层只作用在 fotufilm 的帧上。第一引擎的片边在引擎里，相纸边还没有。	This layer only applies to fotufilm frames. The first engine draws its rebate inside the engine, and paper margins aren't there yet.
+这一支胶片由 fotufilm 引擎渲染，它只能写 JPEG 和 16 位 TIFF。\n\n要 DNG 请换一支 SpektraLab 引擎的胶片。	This film is rendered by the fotufilm engine, which can only write JPEG and 16-bit TIFF.\n\nFor DNG, switch to a SpektraLab-engine film.
+这一支胶片由 fotufilm 引擎渲染，它只能写 JPEG 和 16 位 TIFF。\\n\\n	This film is rendered by the fotufilm engine, which can only write JPEG and 16-bit TIFF.\\n\\n
+这一组吃的是成片的像素：预览按预览尺寸算，导出按原尺寸算。	This group works on the finished pixels: the preview uses preview pixels, export uses full size.
+这一组吃的是成片的像素：预览按预览尺寸算，导出按原尺寸算。预览里看到的是「大概」，导出的才是最终。	This group works on the pixels of the finished print: the preview computes at preview size, the export at original size. What you see in the preview is an approximation; the export is final.
+这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，所以每次都按当前尺寸重新解码一次。	This page changes what light the photo was shot under: white balance lives in the demosaic, so every change decodes again at the current size.
+这不是一个光圈值	That's not an aperture
+这个文件正被系统相册占着：\\n	The system gallery is holding this file open:\\n
+这个文件用的是本机没有解码器的压缩（DNG 的 JPEG XL，或 GoPro GPR 的 VC-5）。请先用 Adobe DNG Converter 转成普通 DNG（选无损压缩），GoPro 的文件请先用 GoPro Player 导出 DNG 或 TIFF	This file uses a compression this build has no decoder for (JPEG XL in DNG, or VC-5 in GoPro GPR). Convert it to a plain DNG with Adobe DNG Converter (lossless), or export a DNG or TIFF from GoPro Player first
+这个明暗区间整体提亮或压暗	Brighten or darken this tonal range as a whole
+这个预设是空的	This preset is empty
+这台屏幕不支持，画布走 SDR	Not supported by this display; the canvas stays SDR
+这台屏幕没有 HDR 显示	This display has no HDR
+这台手机没有可用的 Vulkan 驱动，SpektraLab 的渲染全在 GPU 上，没有它跑不起来；	This phone has no usable Vulkan driver. All of SpektraLab's rendering runs on the GPU, so it can't start;
+这台手机没有可用的 Vulkan 驱动，SpektraLab 的渲染全在 GPU 上，没有它跑不起来；如果你的机型确实支持 Vulkan，请把这条截图发给我	This phone has no usable Vulkan driver, and all of SpektraLab's rendering happens on the GPU, so nothing can run without it. If your model really does support Vulkan, send me a screenshot of this
+这台机器的物理内存，不是程序设了上限	the machine's physical memory — it's not a cap the program set
+这台相机还没有收录进解码器的机型表，这一档压缩暂时解不了。	This camera isn't in the decoder's model table yet, so this compression can't be unpacked.
+这台相机还没有收录进解码器的机型表，这一档压缩暂时解不了。请把这张原始文件（不要压缩、不要截图）发我，我加上机型支持	This camera is not in the decoder's model table yet, so this compression cannot be decoded. Send me the original file (do not compress it, do not screenshot it) and I will add the model
+这四个都是给电脑用的：手机相册多半不显示 16 位 TIFF，DNG 用手机版 Lightroom 打开会报错，那是 Adobe 的已知问题，不必反馈。\n16 位 TIFF 是同一个渲染的另一个写法：相纸最亮那一档有三千多个码，拉高光才有东西可拉。	All four are for a computer: phone albums mostly cannot show 16-bit TIFF, and opening the DNG in mobile Lightroom reports an error — that is a known Adobe issue, no need to report it.\n16-bit TIFF is the same render written differently: the paper's brightest step holds over three thousand codes, so there is something to pull when you raise the highlights.
+这套胶片没有「	This film has no "
+这张	This one
+这张图超出本机的单缓冲上限	This image exceeds this device's single-buffer limit
+这张太大，片边画不上 · 片边已关闭	This one is too large for a rebate · rebate off
+这张导出结构异常（可能花屏），请再导一次	This export came out malformed (possibly banding); please export again
+这张照片	This photo
+这张照片的原始文件已不在 · 换一张，或重新导入	This photo's original file is gone · pick another, or import it again
+这张照片的比例与任何片门都不符，片边已关闭	This photo's ratio doesn't match any gate; the rebate is off
+这张照片的源文件已经不在原来的位置了。重新导入一次，再导出。	The source file for this photo isn't where it was. Import it again, then export.
+这张照片的读取权限已经失效——系统收回了文件选择器给的临时授权。\n\n点「导入」重新选择这张照片；新版本会把文件复制到应用自己的目录，之后切到别的软件回来也不会丢。	This photo's read permission has expired — the system took back the temporary grant the file picker gave.\n\nTap "Import" to pick it again; newer builds copy the file into the app's own folder, so switching to another app and back no longer loses it.
+这张照片的读取权限已经失效——系统收回了文件选择器给的临时授权。\\n\\n	Read permission for this photo has expired — the system revoked the picker's temporary grant.\\n\\n
+这张照片还没准备好，跳过	This photo isn't ready, skipping
+这张还没有可复制的参数	This one has no settings to copy yet
+这支胶片不支持色相校正	This film doesn't support hue correction
+这是引擎里还没分带的路径，不是你图片的问题——请把这条和图片尺寸发给我	It's a path in the engine that isn't banded yet — not your picture. Please send me this line with the image size
+这是画布分配的上限，不是引擎的渲染上限——请把尺寸发给我	That's the canvas allocation cap, not the engine's render cap — please send me the size
+这次导出没有成功	This export didn't succeed
+这段 JSON 不是参数	That JSON isn't a settings block
+送进胶片之前的曝光补偿：引擎按这个亮度重新显影，整条链都跟着变	Exposure compensation before the film: the engine re-develops at this brightness, and the whole chain follows
+选一个色相圈，下面三行就作用于它；两段之间是渐变的，灰色不动	Pick a hue dot and the three rows below act on it; bands blend, greys stay put
+选一张胶片后可用 · 只有「效果 → 发光」不需要胶片	Available after choosing a film · only Effects → Glow works without one
+选一张胶片后才会渲染	Pick a film first — then it renders
+选中的照片会换成这张的胶片、曝光、光学、构图、片边和日期。	The selected photos take this one's film, exposure, optics, compose, rebate and date.
+选中的照片会换成这张的胶片、曝光、光学、构图、片边和日期。只改这条栏里的设置，文件不动；点开时才按新参数渲染。	The selected photos take on this one's film, exposure, optics, composition, rebate and date. Only the settings in this strip change; files are untouched and render with the new settings when opened.
+选择一张胶片开始渲染	Pick a film to start rendering
+选择导入尺寸	Choose import size
+选择引擎	Choose an engine
+选择照片	Choose a photo
+选择片门格式	Choose a gate format
+选择相纸 / 拷贝片	Choose paper / print film
+遇到问题，或者想聊冲印？	Ran into a problem, or want to talk printing?
+遮挡/加深	Dodge / burn
+配光	Printing balance
+配光失败	Balancing failed
+配光完成 	Balanced: 
+配光结果	Balance result
+配色 · PALETTE	PALETTE / Palette
+重启手机再导出一次；如果每次都这样，把这条发给我	Restart the phone and export again; if it happens every time, send me this line
+重启手机再试一次；仍然不行就是这台机器的驱动跑不了这个引擎	Restart the phone and try again; if it still fails, this device's driver can't run the engine
+重新扫描相册	Rescan the album
+重新选择这个文件	Reselect this file
+重新配光	Re-balance
+重置	Reset
+重置当前页	Reset this page
+重试	Retry
+钨丝	Tungsten
+钨丝 2856 K	Tungsten 2856 K
+银盐颗粒的强度。黑白片按各胶片自己的实测换算	Silver grain amount. B&W is scaled per film from its own measurements
+链接已复制	Link copied
+锁定横屏	Lock landscape
+锁定竖屏	Lock portrait
+锐化 / SHARPEN	SHARPEN
+错误	Error
+镜头	Lens
+镜头本身的光学模糊，单位微米。在胶片之前	The lens's own optical blur, in micrometres. Applied before the film
+镜头模糊	Lens blur
+镜头滤镜	Lens filter
+镜头滤镜（Wratten）	Lens filter (Wratten)
+镜头里那层雾	The haze inside the lens
+问题能复现的话，把「复制错误信息」的内容一起贴上。	If it reproduces, paste in what "Copy error details" gives you.
+阴天	Cloudy
+阴影	Shadows
+青	Cyan
+预览 · PREVIEW	PREVIEW / Preview
+预览画质 3400	Preview quality 3400
+预览画质 · 长边 3400（JPEG）	Preview quality · long edge 3400 (JPEG)
+预览画质 · 长边 3400（Ultra HDR）	Preview quality · long edge 3400 (Ultra HDR)
+预览画质长边 3400：几秒钟一张，发朋友圈足够。	Preview quality, long edge 3400: a few seconds each, plenty for sharing.
+预览画质长边 3400：几秒钟一张，发朋友圈足够。全尺寸按原图自己的像素渲染，26 MP 大约半分钟。\nUltra HDR 是同一张 JPEG 加一份增益图：HDR 屏上高光更亮，普通屏幕和相册看到的还是普通 JPEG；全尺寸那一档就是同一件事，只是按原图自己的像素渲染。\n实况照片：成片始终是全尺寸，区别在动图 —— 原生按相机录的像素，1440 是半价档。\n要 16 位 TIFF（给 Lightroom 拉高光）或 DNG，进「更多格式」。\n	Preview quality, long edge 3400: a few seconds each, plenty for sharing. Full size renders at the photo's own pixels; 26 MP takes about half a minute.\nUltra HDR is the same JPEG plus a gain map: highlights are brighter on an HDR screen, while ordinary screens and albums still see a normal JPEG; the full-size option is the same thing at the photo's own pixels.\nLive photos: the still is always full size; the difference is the clip — native uses the pixels the camera recorded, 1440 is the half-price option.\nFor 16-bit TIFF (for pulling highlights in Lightroom) or DNG, open "More formats".\n
+预览色域	Preview gamut
+预览色域（只影响屏幕；导出始终是 sRGB）	Preview gamut (screen only; exports are always sRGB)
+预览里看到的是「大概」，导出的才是最终。	The preview is a rough idea; the export is the final result.
+预设	Presets
+预设 / PRESETS	PRESETS / Presets
+预设名字	Preset name
+预设格式不认识	Unrecognised preset format
+预闪	Pre-flash
+颗粒	Grain
+颗粒不匀	Grain mottle
+颗粒大小	Grain size
+颗粒开关	Grain on
+颗粒强度	Grain amount
+颗粒的晶体尺度，1 是按实测；往右更粗更软，往左更细（两种颗粒模型都有效）	Crystal scale of the grain, 1 is as measured; right is coarser and softer, left is finer (works in both grain models)
+颜色	Color
+饱和度	Saturation
+驱动单缓冲 %.0f MiB（分块后不再限制单帧）；本机按可用内存建议 %.1f MP	Driver single buffer %.0f MiB (tiling removes the per-frame limit); this device suggests about %.1f MP
+驱动报告	Driver reports
+驱动未报单缓冲上限	Driver reports no single-buffer limit
+高光	Highlights
+高光/暗部保护按什么算	How highlight/shadow protection is computed
+高光/暗部保护曲线的圆滑程度。越大越缓	How soft the highlight/shadow protection curve is. Higher is gentler
+高光保护	Highlight protection
+高光提升强度	Highlight room
+高光提升范围	Highlight roll-off
+高光提升阈值	Highlight knee
+高光曲线 · 手动	Highlight curve · manual
+高反差边缘的色散强度；0 关掉，1 最强	Dispersion strength on high-contrast edges; 0 off, 1 strongest
+鲜艳度	Vibrance
+黄	Yellow
+黄滤镜	Yellow filter
+黑点	Black point
+黑点往哪收；和 Lightroom 的黑色色阶同一个意思	Where the black point sits; the same idea as Lightroom's Blacks
+黑白	B&W
+黑白相纸	B&W paper
+黑色片夹	Black carrier
+黑色留白	Black margin
+黑色色阶	Blacks
+黑齿孔（暗房）	Black sprockets (darkroom)
+齿孔	Sprockets
+齿孔里看到什么	What you see through the sprocket holes
+（DNG：线性 16 位，给电脑上的 Lightroom / ACR；手机版打不开，已知问题，不必反馈）	(DNG: linear 16-bit for Lightroom / ACR on a computer; Lightroom mobile can't open it — known issue, no need to report)
+（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）	(TIFF: tap "Share" next to Export and send it to Lightroom mobile)
+（原图 · 大尺寸会慢）	(original · big sizes are slow)
+（已按片边预留画布）	(canvas already reserved for the rebate)
+（整幅浮点解码要一次装下）。关掉其它应用再试，或换 SpektraLab 引擎的胶片导出	(a whole-frame float decode has to fit in one go). Close other apps and try again, or export with a SpektraLab-engine film
+（空）	(empty)
+（约 76 字节/像素），超过了本机当前可用的内存。	(about 76 bytes/pixel) exceeds what this device has free.
+（选无损压缩），GoPro 的文件请先用 GoPro Player 导出 DNG 或 TIFF	(choose lossless), and for GoPro files export DNG or TIFF with GoPro Player first
+（需要 Vulkan 1.1 以上的计算管线）。	(Vulkan 1.1 compute pipelines or newer).
+）。照片已经渲染好，是系统相册没有接受这个文件——重启手机再导一次；如果每次都是这样，把这条发给我	). The picture rendered fine; the system album did not accept the file — restart the phone and export again; if it happens every time, send me this line
+＋	+

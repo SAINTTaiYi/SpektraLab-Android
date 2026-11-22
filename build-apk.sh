@@ -10,6 +10,12 @@ cp "$ROOT/app/src/main/AndroidManifest.xml" "$STAGE/AndroidManifest.xml"
 # The staging tree keeps its own copies of res/ and assets/, and that has now
 # cost two releases: a shader that only reached one of them, and a theme that
 # stayed black under a paper-coloured app. Sync from source every time.
+# **The English tables ship even on a fresh clone.** `app/src/main/assets/` is
+# gitignored, so the canonical copy lives in `tools/i18n/` and is installed here.
+mkdir -p "$ROOT/app/src/main/assets/i18n"
+if [ -f "$ROOT/tools/i18n/en.tsv" ]; then
+    cp "$ROOT/tools/i18n/en.tsv" "$ROOT/tools/i18n/phrases.tsv" "$ROOT/app/src/main/assets/i18n/"
+fi
 cp -a "$ROOT/app/src/main/res/." "$STAGE/res/"
 cp -a "$ROOT/app/src/main/assets/." "$STAGE/assets/"
 cd "$STAGE"
