@@ -1826,94 +1826,7 @@ public class MainActivity extends Activity {
      *
      * @return the correlation, or -1 when it cannot be measured.
      */
-    private static double exportMatchesCanvas(String path, Bitmap canvas) {
-        if (canvas == null || canvas.getWidth() <= 0) return -1;
-        try {
-            final android.graphics.BitmapFactory.Options probeOpt =
-                    new android.graphics.BitmapFactory.Options();
-            probeOpt.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(path, probeOpt);
-            if (probeOpt.outWidth <= 0 || probeOpt.outHeight <= 0) return -1;
-            int sample = 1;
-            while (Math.max(probeOpt.outWidth, probeOpt.outHeight) / (sample * 2) >= 200) sample *= 2;
-            final android.graphics.BitmapFactory.Options o =
-                    new android.graphics.BitmapFactory.Options();
-            o.inSampleSize = sample;
-            final Bitmap bm = BitmapFactory.decodeFile(path, o);
-            if (bm == null) return -1;
-            final int gw = 48;
-            final int gh = Math.max(8, Math.round(gw * (float) bm.getHeight() / bm.getWidth()));
-            final Bitmap a = Bitmap.createScaledBitmap(bm, gw, gh, true);
-            final Bitmap b = Bitmap.createScaledBitmap(canvas, gw, gh, true);
-            final int[] pa = new int[gw * gh], pb = new int[gw * gh];
-            a.getPixels(pa, 0, gw, 0, 0, gw, gh);
-            b.getPixels(pb, 0, gw, 0, 0, gw, gh);
-            double ma = 0, mb = 0;
-            for (int i = 0; i < pa.length; ++i) {
-                ma += (pa[i] & 255) + ((pa[i] >> 8) & 255) + ((pa[i] >> 16) & 255);
-                mb += (pb[i] & 255) + ((pb[i] >> 8) & 255) + ((pb[i] >> 16) & 255);
-            }
-            ma /= pa.length * 3.0;
-            mb /= pb.length * 3.0;
-            double num = 0, da = 0, db = 0;
-            for (int i = 0; i < pa.length; ++i) {
-                final double va = ((pa[i] & 255) + ((pa[i] >> 8) & 255) + ((pa[i] >> 16) & 255)) / 3.0 - ma;
-                final double vb = ((pb[i] & 255) + ((pb[i] >> 8) & 255) + ((pb[i] >> 16) & 255)) / 3.0 - mb;
-                num += va * vb; da += va * va; db += vb * vb;
-            }
-            if (da <= 1e-9 || db <= 1e-9) return -1;
-            return num / Math.sqrt(da * db);
-        } catch (Throwable t) {
-            return -1;
-        }
-    }
 
-    private static String inspectExportedFile(String path) {
-        try {
-            final android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
-            o.inSampleSize = 2;
-            final Bitmap bm = BitmapFactory.decodeFile(path, o);
-            if (bm == null) return "decode failed";
-            final int w = bm.getWidth(), h = bm.getHeight();
-            if (w < 64 || h < 64) { bm.recycle(); return null; }
-            final int[] px = new int[w * h];
-            bm.getPixels(px, 0, w, 0, 0, w, h);
-            bm.recycle();
-            long sx = 0, sy = 0;
-            long nx = 0, ny = 0;
-            for (int y = 0; y < h; ++y) {
-                final int row = y * w;
-                for (int x = 0; x < w - 1; ++x) {
-                    final int a = px[row + x], b = px[row + x + 1];
-                    sx += Math.abs(((a >> 16) & 255) - ((b >> 16) & 255))
-                        + Math.abs(((a >> 8) & 255) - ((b >> 8) & 255))
-                        + Math.abs((a & 255) - (b & 255));
-                    ++nx;
-                }
-            }
-            for (int y = 0; y < h - 1; ++y) {
-                final int row = y * w;
-                for (int x = 0; x < w; ++x) {
-                    final int a = px[row + x], b = px[row + w + x];
-                    sy += Math.abs(((a >> 16) & 255) - ((b >> 16) & 255))
-                        + Math.abs(((a >> 8) & 255) - ((b >> 8) & 255))
-                        + Math.abs((a & 255) - (b & 255));
-                    ++ny;
-                }
-            }
-            if (nx == 0 || ny == 0) return null;
-            final double dx = (double) sx / nx, dy = (double) sy / ny;
-            if (dy <= 0.0) return null;
-            final double ratio = dx / dy;
-            if (ratio < 0.35 || ratio > 3.0) {
-                return String.format(java.util.Locale.US,
-                        "X/Y contrast %.2f (X %.1f, Y %.1f) at %dx%d", ratio, dx, dy, w, h);
-            }
-            return null;
-        } catch (Throwable t) {
-            return null;
-        }
-    }
 
     /**
      * The engine's SIGSEGV handler writes a backtrace to this file. Installing
@@ -13207,7 +13120,7 @@ public class MainActivity extends Activity {
                     // The canvas is only *this* frame's while a batch is not
                     // walking the strip behind our back.
                     final double ncc = batchExportRunning ? -1
-                            : exportMatchesCanvas(tmp.getAbsolutePath(), lastRenderedBitmap);
+                            : app.spektralab.data.ExportVerifier.matchesCanvas(tmp.getAbsolutePath(), lastRenderedBitmap);
                     if (ncc >= 0 && ncc < 0.55) {
                         exportCorruptNow = true;
                         try {
@@ -13223,7 +13136,7 @@ public class MainActivity extends Activity {
                     }
                 }
                 {
-                    final String verdict = exportCorruptNow ? null : inspectExportedFile(tmp.getAbsolutePath());
+                    final String verdict = exportCorruptNow ? null : app.spektralab.data.ExportVerifier.inspect(tmp.getAbsolutePath());
                     if (verdict != null) {
                         try { DebugSink.textNow("export-selfcheck", verdict); } catch (Throwable spkIgnored) { Diagnostics.ignored("getAbsolutePath:15479", spkIgnored); }
                         // **Say it out loud.** This measurement has existed since

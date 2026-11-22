@@ -245,6 +245,7 @@ work and its device measurement and regression plan.
 | ExportSessionPlan decision extracted | `25b0277` | DomainTest + golden |
 | Export/Import/Render controllers assembled | `74177f1` | DomainTest + on-device JPEG export |
 | MediaStore sink + TabBar extracted to data/ui | `dc861ad` | emulator tab navigation + golden |
+| ExportVerifier extracted to data | pending | on-device JPEG export + golden |
 
 ## Updating this plan
 
