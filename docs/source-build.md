@@ -8,14 +8,21 @@ compile:
 1. Five patched translation units include `engine/src/pipeline/tiling.hpp`
    (`src/pipeline/{blur,engine,pipeline,scene_latitude,view_process}.cpp`).
    Neither upstream nor `patches/engine-android.patch` contains that header.
-2. The two JNI units call public C ABI functions that the patched
-   `spk_engine.h` never declares: `spk_clear_pin_auto_exposure_ev`,
-   `spk_debug_print_exposure`, `spk_debug_print_gain`, `spk_device_profile`,
-   `spk_error_code`, `spk_export_source`, `spk_max_plane_bytes`,
-   `spk_pin_auto_exposure_ev`, `spk_probe_canary`, `spk_resume_session`,
-   `spk_set_output_linear`, `spk_stage_snapshot`, `spk_suspend_session`,
-   `spk_trim_pool`. Declarations alone would not be enough — the
-   implementations live in the matching engine tree as well.
+2. The JNI units call ten C ABI functions that the patched `spk_engine.h` never
+   declares: `spk_clear_pin_auto_exposure_ev`, `spk_debug_print_exposure`,
+   `spk_debug_print_gain`, `spk_pin_auto_exposure_ev`, `spk_probe_canary`,
+   `spk_resume_session`, `spk_set_output_linear`, `spk_stage_snapshot`,
+   `spk_suspend_session`, `spk_trim_pool`. Declarations alone would not be
+   enough — the implementations live in the matching engine tree as well.
+
+An earlier version of this document listed fourteen APIs. Four of them
+(`spk_device_profile`, `spk_error_code`, `spk_export_source`,
+`spk_max_plane_bytes`) are already declared *and* implemented by the patch;
+`check-patch.py` reports ten, not fourteen. Public SpektraLab is a source
+reference for the base tree (45 of 55 patch pre-image blobs match its
+`Windows_Linux` refs byte-for-byte) but contains neither `tiling.hpp` nor nine
+of the ten missing APIs. See
+[the source-build repair plan](source-build-repair-plan.md).
 
 `docs/windows-build.md` therefore offers two verified Java/UI paths:
 `-UseReleaseNative` (downloads the release APK) and `-UsePrebuiltNative`, which
@@ -36,7 +43,11 @@ JNI. CI runs it in report-only mode so the gap stays visible.
 ## What to do about it
 
 Publishing the matching engine source (or a complete patch that adds
-`tiling.hpp` and the 14 declarations plus their implementations) is a
+`tiling.hpp` and the ten declarations plus their implementations) is a
 prerequisite for any native change to be reviewable outside the maintainer's
-machine. Until then, treat the C++ sources here as documentation of the JNI
+machine. The phased repair work — reconstructing the small `dispatch_tiled`
+helper from the patch's own call sites, backporting `spk_trim_pool`, triaging
+the remaining APIs, and the pixel-equivalence gate — is in
+[`docs/source-build-repair-plan.md`](source-build-repair-plan.md). Until that
+plan is implemented, treat the C++ sources here as documentation of the JNI
 surface, not as a reproducible build.

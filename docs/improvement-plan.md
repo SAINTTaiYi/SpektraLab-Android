@@ -174,8 +174,8 @@ work and its device measurement and regression plan.
   `RELEASE_KEYSTORE` / `RELEASE_STOREPASS` / `RELEASE_KEYALIAS`). Windows builds
   also verify `EXPECTED_SIGNER_SHA256` when provided, and name the output
   `release-signed`.
-- **Still open:** obtaining/custoding the actual release key and wiring it into
-  the release workflow — requires the maintainer's secrets.
+- **Still open:** obtaining and securing the actual release key and wiring it
+  into the release workflow — requires the maintainer's secrets.
 
 ### [ ] P3.2 — Build convergence (partially done)
 

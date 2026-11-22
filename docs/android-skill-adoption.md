@@ -73,7 +73,8 @@ self-contained Views (`Square`, `ArrowView`, `ToolGlyph`, `CappedScroll`,
 `CropOverlay`, `ColorWheel`, `FilmCoverView`, `CurveView`, `CompareView`)
 moved to `app.spektralab.ui`, with delegate interfaces that keep grading and
 geometry state in the Activity. The Optics and Compose pages open correctly on
-the Orca emulator after the extraction. MainActivity is now 13,045 lines. The app renders identically on
+the Orca emulator after the extraction. MainActivity is still around 13,000 lines
+(13,045 right after the View extraction). The app renders identically on
 the Orca emulator and golden hashes are unchanged.
 
 The pure string/hash helpers (`JsonFields`, `PixelHash`, `EdgeVerdict`,
