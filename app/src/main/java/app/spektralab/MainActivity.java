@@ -928,6 +928,9 @@ public class MainActivity extends Activity {
     private LinearLayout edgeRoot, edgePage, datePage, edgeInner, dateInner;
     private TextView edgeFotuNote;
     private LinearLayout edgeShapeRow;
+    /** 边框那三张卡片。**两个引擎各有一套**：fotufilm 没有日期水印（web 端也没有），
+     *  第一引擎没有印刷边框。 */
+    private View edgeCardRebate, edgeCardDate, edgeCardPf;
     private int edgePageIndex = -1;
     /** Ceiling for a 边框 sub-page, in dp.
      *
@@ -7018,7 +7021,6 @@ public class MainActivity extends Activity {
             postInvalidateOnAnimation();
         }
 
-
         /** Is this point on the glass or its skirt? */
         private boolean insideTool(float x, float y, float R) {
             return Math.hypot(x - toolDrawX, y - toolDrawY) <= R * 1.30f;
@@ -7289,7 +7291,6 @@ public class MainActivity extends Activity {
             toolPaint.setStyle(android.graphics.Paint.Style.FILL);
             c.restoreToCount(save);
         }
-
 
         /** Which print the glass is over, and the rect it was drawn in. */
         private int loupeIndex = -1;
@@ -8200,7 +8201,6 @@ public class MainActivity extends Activity {
                             0f, 0f, 0f, 1f, 0f}));
         }
 
-
         /**
          * **The light the room itself gives off.** Not much of it: the desk is
          * switched off, and what is left is the faint wash a dark bench has
@@ -8722,7 +8722,6 @@ public class MainActivity extends Activity {
                 gridInk.setAlpha(255);
             }
         }
-
 
         /**
          * **How far out a print is, measured on the sharp ellipse.** 0 at the
@@ -10036,7 +10035,6 @@ public class MainActivity extends Activity {
 
             drawLoupe(c, w, h);
         }
-
 
         /**
          * **The lens is AtelierUI's `LensMedia`, ported line for line.**
@@ -22668,12 +22666,12 @@ public class MainActivity extends Activity {
         cardScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout cardStrip = new LinearLayout(this);
         cardStrip.setOrientation(LinearLayout.HORIZONTAL);
-        cardStrip.addView(bigCard("片边", "REBATE", this::edgeSummary, () -> openEdgePage(0)),
-                cardLp());
-        cardStrip.addView(bigCard("日期水印", "DATE BACK", this::dateSummary, () -> openEdgePage(1)),
-                cardLp());
-        cardStrip.addView(bigCard("印刷边框", "PRINT FRAME", this::pfSummary, () -> openEdgePage(2)),
-                cardLp());
+        edgeCardRebate = bigCard("片边", "REBATE", this::edgeSummary, () -> openEdgePage(0));
+        cardStrip.addView(edgeCardRebate, cardLp());
+        edgeCardDate = bigCard("日期水印", "DATE BACK", this::dateSummary, () -> openEdgePage(1));
+        cardStrip.addView(edgeCardDate, cardLp());
+        edgeCardPf = bigCard("印刷边框", "PRINT FRAME", this::pfSummary, () -> openEdgePage(2));
+        cardStrip.addView(edgeCardPf, cardLp());
         cardScroll.addView(cardStrip, new android.widget.FrameLayout.LayoutParams(-2, -2));
         home.addView(cardScroll, new LinearLayout.LayoutParams(-1, -2));
 
@@ -22749,6 +22747,11 @@ public class MainActivity extends Activity {
         if (!overscanOn) return "未开启 · 点进去设置";
         final int at = edgeIds.indexOf(overscanFormat);
         final String gate = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
+        // **Two engines, two strips.** fotufilm's border is its own PrintFrame:
+        // the base colour comes from the stock's dMin and there is no fog, no
+        // leak and no frame number -- those three belong to the first engine's
+        // rebate, where they are still on the page.
+        if (isFotuStock(filmStock)) return gate + (edgeTextOn ? " · 厂印" : "");
         return gate + " · 雾 " + fmt1(edgeFog) + " · 漏光 " + fmt1(edgeLeaks)
                 + " · 张数 " + (frameNumber < 0.5f ? "自动" : String.valueOf(Math.round(frameNumber)));
     }
@@ -22945,8 +22948,9 @@ public class MainActivity extends Activity {
         edgePage = new LinearLayout(this);
         edgePage.setOrientation(LinearLayout.VERTICAL);
         edgePage.addView(pageHead("片边 / REBATE"), new LinearLayout.LayoutParams(-1, dp(38)));
-        edgeFotuNote = label("fotufilm：片边和画面一起冲出来 —— 片门阴影、齿孔、厂标、张数、"
-                + "日期都是曝光，过颗粒和相纸", 7.5f, UI_MUTED, tfHan);
+        edgeFotuNote = label("fotufilm：片边是它自己的印刷边框 —— 光箱下的片基、齿孔、厂标"
+                + "（官方那张表里有的才印），和画面一起过颗粒与相纸。雾、漏光、张数、日期是"
+                + "第一引擎的 rebate，这边没有。", 7.5f, UI_MUTED, tfHan);
         edgeFotuNote.setPadding(dp(2), 0, dp(2), dp(6));
         edgeFotuNote.setVisibility(View.GONE);
         edgePage.addView(edgeFotuNote, new LinearLayout.LayoutParams(-1, -2));
@@ -23396,6 +23400,13 @@ public class MainActivity extends Activity {
         hideRebateRow(edgeLeaksBar, drawn);
         hideRebateRow(edgeFNumValue, drawn);
         hideRebateRow(dateEvBar, drawn);
+        // **片基雾 / 片边张数也是 rebate 的。** fotufilm 的片边是光箱下的胶片本身
+        // ——片基色由胶片的 dMin 算（不是一根雾滑杆），张数 web 端也不印。
+        hideRebateRow(edgeFogBar, drawn);
+        hideRebateRow(frameNoBar, drawn);
+        if (edgeCardDate != null) edgeCardDate.setVisibility(drawn ? View.GONE : View.VISIBLE);
+        if (edgeCardPf != null) edgeCardPf.setVisibility(drawn ? View.VISIBLE : View.GONE);
+        if (drawn && edgePageIndex == 1) openEdgePage(-1);
         // 片边模式 and 片门形状 choose how the engine *cuts* the mask -- the
         // sprocket profile and the gate's lip. A drawn strip has one of each.
         if (edgeShapeRow != null) edgeShapeRow.setVisibility(drawn ? View.GONE : View.VISIBLE);
@@ -33675,51 +33686,7 @@ public class MainActivity extends Activity {
             if (b.length() > 0) b.append(';');
             b.append("mm:").append(f("%.2f", shortMm));
         }
-        if (withRebate && ((overscanOn && !pfGaugeIsPrintFrame()) || (pfIsFilm() && !pfGaugeIsPrintFrame()))) {
-            // The film outside the frame, through the same pipeline as the
-            // picture: `rebate:1` makes the host lay the frame on a strip, and
-            // everything after it -- grain, halation, paper -- runs over the
-            // whole canvas.
-            if (b.length() > 0) b.append(';');
-            b.append("rebate:1");
-            // **The gate the rebate prints comes from the gate, not from the
-            // scale page's slot.** `formatIndex` indexes the 尺度 list, and
-            // that list shares `EDGE_MM`, so it is seventeen cards long: index
-            // 13 is the 4x5 *sheet*. A look whose scale card read "120 mm"
-            // therefore made the host hear `rgate:4x5` while the gate was still
-            // 135, and the render died with
-            //   rebate: overscan: unknown format '4x5' (135, 135_half, ...)
-            // The rebate knows only the ten 135/120 carriers; the seven gauges
-            // ported from fotufilm are the print frame's, and the guard above
-            // has already kept them out. `>= 10` is that list's length.
-            int gate = gateIndex(overscanFormat);
-            if (gate < 0 || gate >= 10) gate = 0;
-            b.append(";rgate:").append(EDGE_IDS[gate]);
-            b.append(";rfog:").append(f("%.2f", Math.max(0f, Math.min(4f, edgeFog))));
-            b.append(";rleaks:").append(f("%.2f", Math.max(0f, Math.min(4f, edgeLeaks))));
-            if (frameNumber > 0.5f) b.append(";rnum:").append(Math.round(frameNumber));
-            if (edgeFNumber > 0.5f) b.append(";rfn:").append(f("%.1f", edgeFNumber));
-            if (edgeCarrier != null && !"none".equals(edgeCarrier)) b.append(";rcar:").append(edgeCarrier);
-            if (edgeHoles != null && "black".equals(edgeHoles)) b.append(";rholes:").append("black");
-            b.append(";rcam:").append(cameraSeed);
-            b.append(";rfr:").append(frameSeed);
-            // **The stock's own inscription.** The host looks it up
-            // (`print_frame::edge_print_for`), from the table of verified edge
-            // prints in the engine's own documentation -- the rebate says
-            // "200 / FUJI / CA24" on a C200, not the catalogue's "FUJIFILM C200".
-            if (edgeTextOn) b.append(";etext:1");
-            if (dateOn && dateText != null && !dateText.isEmpty()) {
-                b.append(";rdate:").append(dateText.replace(';', ' ').replace('|', ' '));
-                b.append(";rplace:").append(datePlacement);
-                b.append(";rcorner:").append(dateCorner);
-                b.append(";rstyle:").append(dateStyle);
-                b.append(";rsize:").append(f("%.2f", dateSize));
-                // The date's *placement* inside the frame: the engine has had
-                // these two since the imprint existed; fotufilm had only the size.
-                b.append(";rinsx:").append(f("%.2f", dateInsetX));
-                b.append(";rinsy:").append(f("%.2f", dateInsetY));
-            }
-        }
+
         // **A print-frame gauge carries its own border.** The seven gauges
         // ported from fotufilm are laid out by the host, so a look sitting on
         // one of them asks for the print frame by itself: a gate chosen before
@@ -33728,27 +33695,19 @@ public class MainActivity extends Activity {
         // A look that only ever carried the gauge (no marker, no explicit
         // pick) draws its border with the 片边 switch; an explicit print frame
         // draws with 边框 → 印刷边框, whatever that switch says.
-        final boolean pfByGauge = isPrintFrameGauge(overscanFormat) && (overscanOn || pfChosen);
-        final String pfKindHere =
-                (pfKind == null || "none".equals(pfKind)) ? "film" : pfKind;
+        // **fotufilm 的边框只有一套：`print_frame`。** 135、半格、XPan、七种 120、
+        // 电影片、页片、Instax 全走它 —— 那才是 web 端画的那张片边。第一引擎的
+        // rebate（片基雾 / 漏光 / 齿孔 / 张数 / DX / 日期）在这里一个字节都不发：
+        // 两套材料、两套参数，混着发就是两种片边叠在一张图上。
+        final String pfKindHere = (pfKind == null || "none".equals(pfKind)) ? "film" : pfKind;
         final boolean pfFilmHere = "film".equals(pfKindHere) || "film-positive".equals(pfKindHere);
-        // **A film print frame exists only on the seven gauges the host lays
-        // out.** Sent against a 135 gate the host answers "film borders on this
-        // gauge are drawn by the rebate module" and the render returns rc=2 --
-        // a blank canvas for a look that only ever touched 边框 → 胶片. The
-        // 相纸 kinds carry no gauge, so they pass either way.
-        if (withRebate && (pfByGauge
-                || (!pfFilmHere && pfKind != null && !"none".equals(pfKind)))) {
+        final boolean pfDraw = withRebate && (overscanOn
+                || (pfKind != null && !"none".equals(pfKind)));
+        if (pfDraw) {
             if (b.length() > 0) b.append(';');
             b.append("pf:").append(pfKindHere);
-            if (pfFilmHere)
-                b.append(";pfg:").append(overscanFormat);
-            // **`etext` is only appended in the rebate block above, and that
-            // block is skipped on these seven gauges** -- so the host was never
-            // asked for the stock's inscription and every print frame came out
-            // blank, even though the table has the lettering. The host resolves
-            // it through `print_frame::edge_print_for`, which knows the motion
-            // code (`5207  EN`) and the sheet's emulsion name.
+            if (pfFilmHere) b.append(";pfg:").append(overscanFormat);
+            // 厂印：官方那张表里有的才画（`edge_print_for`）。
             if (pfFilmHere && edgeTextOn) b.append(";etext:1");
             if (pfNeedsMargin())
                 b.append(";pfm:").append(f("%.2f", Math.max(0f, Math.min(20f, pfMargin))));

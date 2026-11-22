@@ -67,6 +67,22 @@ struct Gauge {
 constexpr Gauge kGauges[] = {
     // 135: KS, 2.794 across x 1.981 along, 4.75 mm pitch, eight a frame.
     {"135",           38.0,  35.0,  36.0,  24.0, 2, 1.981, 2.794, 0.510, 4.750, 0.55, false, false},
+    // 135 half frame: the same strip, a 24 x 18 gate. **Across, then along** --
+    // `EDGE_RATIOS` and the engine's own `135_half` carrier are 4:3, and the app
+    // crops the picture to that before it gets here.
+    {"135_half",      38.0,  35.0,  24.0,  18.0, 2, 1.981, 2.794, 0.510, 4.750, 0.55, false, false},
+    // XPan: 24 x 65 on the same 35 mm strip, a 70 mm piece of film.
+    {"135_xpan",      70.0,  35.0,  65.0,  24.0, 2, 1.981, 2.794, 0.510, 4.750, 0.55, false, false},
+    // **120 roll film: 61.5 mm wide and unperforated.** A plain rebate on both
+    // sides of the gate, 2 mm of film between frames -- the same material the
+    // 135 strip is, with no holes to draw.
+    {"120_645",       45.5,  61.5,  41.5,  56.0, 0, 0, 0, 0, 0, 0, false, false},
+    {"120_6x6",       60.0,  61.5,  56.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
+    {"120_6x7",       74.0,  61.5,  70.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
+    {"120_6x8",       80.0,  61.5,  76.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
+    {"120_6x9",       88.0,  61.5,  84.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
+    {"120_6x12",     124.0,  61.5, 120.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
+    {"120_6x17",     176.0,  61.5, 170.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
     // Super 35: BH, 2.794 x 1.854, 4.74 mm pitch, four a frame.
     {"super35",       35.0,  18.96, 24.92, 18.67, 2, 1.854, 2.794, 0.0,   4.740, 0.55, false, false},
     // 16 mm: a single row at the frame lines.
@@ -304,7 +320,7 @@ void rounded_rect(std::vector<uint8_t>& img, int W, int H, double x, double y,
 // `em` and the position are pixels; the rasteriser only needs one unit.
 void draw_text(std::vector<uint8_t>& img, int W, int H, double x, double baseline,
                double em, const std::string& text, const char* face, double rotate_deg,
-               double tone) {
+               const double ink[3]) {
     if (text.empty() || em < 3.0) return;
     spk::imprint::Contours paths =
         spk::imprint::text_outlines(face, em, text, em * 0.04, 1.0, true, 0.12);
@@ -333,7 +349,7 @@ void draw_text(std::vector<uint8_t>& img, int W, int H, double x, double baselin
             if (!c) continue;
             const double a = double(c) / 255.0;
             for (int k = 0; k < 3; ++k)
-                row[xx * 3 + k] = to8((row[xx * 3 + k] / 255.0) * (1.0 - a) + tone * a);
+                row[xx * 3 + k] = to8((row[xx * 3 + k] / 255.0) * (1.0 - a) + ink[k] * a);
         }
     }
 }
@@ -418,10 +434,12 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
         // An integral positive border: paper white, not a developed strip.
         paper_field(out, W, H, req.paper_rgb, true);
     } else {
-        const double hi = std::max(req.film_rgb[0], std::max(req.film_rgb[1], req.film_rgb[2]));
-        const double lo = std::min(req.film_rgb[0], std::min(req.film_rgb[1], req.film_rgb[2]));
-        const bool mono = (hi - lo) < 0.12;
-        const double base[3] = {mono ? 0.140 : 0.227, mono ? 0.140 : 0.098, mono ? 0.145 : 0.071};
+        // **光箱下的片基，不是近黑。** 负片的片边是片基+灰雾的透射色，归一化到
+        // 0.9 之后是浅暖色；反转片是最大密度，本来就是深的。这个数由 host 用
+        // `pf_density_to_lightbox` 从这支胶片自己的曲线算出来（官方
+        // `PrintFrame` 的 `.film` 分支同一条公式）。以前这里写死
+        // `{0.227, 0.098, 0.071}`，所以我们的片边比 fotufilm 深一档。
+        const double* base = req.film_light;
         for (int y = 0; y < H; ++y) {
             uint8_t* row = out.data() + size_t(y) * size_t(W) * 3;
             for (int x = 0; x < W; ++x) {
@@ -503,12 +521,12 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
                 const double x = double(W) - strip * 0.5 + em * 0.30;
                 if (!text.empty())
                     draw_text(out, W, H, x, double(H) - inset_x, em, text,
-                              "LiberationSans-Bold", -90.0, 0.94);
+                              "LiberationSans-Bold", -90.0, req.film_ink);
                 if (!req.frame_no.empty()) {
                     const double wnum = spk::imprint::text_width(
                         "LiberationSans-Bold", em, req.frame_no, em * 0.04, 1.0);
                     draw_text(out, W, H, x, inset_x + wnum, em, req.frame_no,
-                              "LiberationSans-Bold", -90.0, 0.94);
+                              "LiberationSans-Bold", -90.0, req.film_ink);
                 }
             }
         } else if (g->sheet) {
@@ -532,12 +550,12 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
                 const double baseline = double(H) - strip * 0.5 + em * 0.36;
                 if (!text.empty())
                     draw_text(out, W, H, inset_y, baseline, em, text,
-                              "LiberationSans-Bold", 0.0, 0.94);
+                              "LiberationSans-Bold", 0.0, req.film_ink);
                 if (!req.frame_no.empty()) {
                     const double wnum = spk::imprint::text_width(
                         "LiberationSans-Bold", em, req.frame_no, em * 0.04, 1.0);
                     draw_text(out, W, H, double(W) - inset_y - wnum, baseline, em, req.frame_no,
-                              "LiberationSans-Bold", 0.0, 0.94);
+                              "LiberationSans-Bold", 0.0, req.film_ink);
                 }
             }
         }
@@ -564,12 +582,12 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
             const double baseline = inner_mm * px + strip * 0.5 + em * 0.36;
             if (!text.empty())
                 draw_text(out, W, H, inset_y, baseline, em, text,
-                          "LiberationSans-Bold", 0.0, 0.94);
+                          "LiberationSans-Bold", 0.0, req.film_ink);
             if (!req.frame_no.empty()) {
                 const double wnum = spk::imprint::text_width(
                     "LiberationSans-Bold", em, req.frame_no, em * 0.04, 1.0);
                 draw_text(out, W, H, double(W) - inset_y - wnum, baseline, em, req.frame_no,
-                          "LiberationSans-Bold", 0.0, 0.94);
+                          "LiberationSans-Bold", 0.0, req.film_ink);
             }
         } else if (band_x >= 3.0 * px) {
             // A motion gauge: the print runs up the band beside the frame.
@@ -588,12 +606,12 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
             const double x = inner_mm * px + strip * 0.5 + em * 0.30;
             if (!text.empty())
                 draw_text(out, W, H, x, double(H) - inset_x, em, text,
-                          "LiberationSans-Bold", -90.0, 0.94);
+                          "LiberationSans-Bold", -90.0, req.film_ink);
             if (!req.frame_no.empty()) {
                 const double wnum = spk::imprint::text_width(
                     "LiberationSans-Bold", em, req.frame_no, em * 0.04, 1.0);
                 draw_text(out, W, H, x, inset_x + wnum, em, req.frame_no,
-                          "LiberationSans-Bold", -90.0, 0.94);
+                          "LiberationSans-Bold", -90.0, req.film_ink);
             }
         }
     }
@@ -676,14 +694,12 @@ Kind kind_from_id(const std::string& id) {
 
 bool is_film_kind(Kind k) { return k == Kind::Film || k == Kind::FilmPositive; }
 
-// The gates the `rebate` module lays out. 135 and the 120 frames keep it --
-// it draws a developed strip with fog, leaks and the factory's imprint.
-bool film_gauge_uses_rebate(const std::string& id) {
-    static const char* kRebate[] = {"135", "135_half", "135_xpan", "120_645", "120_6x6",
-                                    "120_6x7", "120_6x8", "120_6x9", "120_6x12", "120_6x17"};
-    for (const char* r : kRebate) if (id == r) return true;
-    return false;
-}
+// **Nothing here is the rebate's any more.** fotufilm frames draw their border
+// with `print_frame` on every gauge -- 135 and the 120 frames included -- and
+// the first engine's rebate stays with the first engine. The function is kept
+// because the host asks it (`pf_draws_film`); it answers "no" for every id, so
+// a film kind always composes here.
+bool film_gauge_uses_rebate(const std::string&) { return false; }
 
 bool film_gauge_known(const std::string& id) {
     return film_gauge_uses_rebate(id) || gauge_for(id) != nullptr;
@@ -712,10 +728,11 @@ bool layout(const Request& req, int src_w, int src_h, Layout& out, std::string& 
     error.clear();
     if (req.kind == Kind::None) return false;
     if (is_film_kind(req.kind)) {
-        if (film_gauge_uses_rebate(req.gauge)) {
-            error = "film borders on this gauge are drawn by the rebate module";
-            return false;
-        }
+        // **Every film gauge is drawn here now.** fotufilm frames stopped using
+        // the rebate altogether (135 and the 120 frames included), so the old
+        // "this gauge belongs to the rebate module" refusal would leave them
+        // with no border at all. `film_gauge_uses_rebate` still answers for the
+        // first engine's carrier list.
         const Gauge* g = gauge_for(req.gauge);
         if (!g) {
             error = "print frame: unknown film gauge '" + req.gauge + "'";

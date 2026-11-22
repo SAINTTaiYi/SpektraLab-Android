@@ -381,6 +381,9 @@ static bool g_pf_etext = false;   // draw the stock's own edge print
 static double g_pf_margin = 3.0, g_pf_fx = 0.0, g_pf_fy = 0.0;
 static double g_pf_paper[3] = {0.930, 0.923, 0.900};
 static double g_pf_film[3]  = {0.965, 0.700, 0.520};
+// The light box's view of the same rebate, and the ink printed on it.
+static double g_pf_film_light[3] = {0.975, 0.960, 0.940};
+static double g_pf_film_ink[3]   = {0.055, 0.050, 0.046};
 
 // D50 (CIE daylight 5000 K) from the S0/S1/S2 basis in `spectral_data.hpp`.
 static void pf_d50(double out[spectral_grid::kCount]) {
@@ -396,8 +399,10 @@ static void pf_d50(double out[spectral_grid::kCount]) {
 
 // A density spectrum seen through D50, as display sRGB. Normalised by the
 // illuminant's own Y so a density of zero is white.
-static void pf_density_to_display(const std::vector<float> &density, double out[3]) {
-    if (density.size() < size_t(spectral_grid::kCount)) return;
+// A density spectrum -> linear sRGB (D50, Bradford). Common to the print-side
+// and the light-box colour below.
+static bool pf_linear_display(const std::vector<float> &density, double lin[3]) {
+    if (density.size() < size_t(spectral_grid::kCount)) return false;
     double spd[spectral_grid::kCount];
     pf_d50(spd);
     double X = 0, Y = 0, Z = 0, Yn = 0;
@@ -409,17 +414,48 @@ static void pf_density_to_display(const std::vector<float> &density, double out[
         Z += I * t * double(spectral_grid::kZBar[i]);
         Yn += I * double(spectral_grid::kYBar[i]);
     }
-    if (!(Yn > 0.0)) return;
+    if (!(Yn > 0.0)) return false;
     const double x = X / Yn, y = Y / Yn, z = Z / Yn;
     // XYZ(D50) -> linear sRGB, Bradford adapted.
-    const double lr =  3.1338561 * x - 1.6168667 * y - 0.4906146 * z;
-    const double lg = -0.9787684 * x + 1.9161415 * y + 0.0334540 * z;
-    const double lb =  0.0719453 * x - 0.2289914 * y + 1.4052427 * z;
-    auto enc = [](double v) {
-        v = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
-        return v <= 0.0031308 ? 12.92 * v : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
-    };
-    out[0] = enc(lr); out[1] = enc(lg); out[2] = enc(lb);
+    lin[0] =  3.1338561 * x - 1.6168667 * y - 0.4906146 * z;
+    lin[1] = -0.9787684 * x + 1.9161415 * y + 0.0334540 * z;
+    lin[2] =  0.0719453 * x - 0.2289914 * y + 1.4052427 * z;
+    return true;
+}
+
+static double pf_encode(double v) {
+    v = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    return v <= 0.0031308 ? 12.92 * v : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
+}
+
+static void pf_encode3(const double lin[3], double out[3]) {
+    out[0] = pf_encode(lin[0]); out[1] = pf_encode(lin[1]); out[2] = pf_encode(lin[2]);
+}
+
+static void pf_density_to_display(const std::vector<float> &density, double out[3]) {
+    double lin[3];
+    if (!pf_linear_display(density, lin)) return;
+    pf_encode3(lin, out);
+}
+
+// **The light box, and one gain for everything on the strip.** fotufilm's
+// `PrintFrame` normalises the rebate's clear base so its brightest channel
+// reaches `lightBoxBaseLevel` (0.9), and multiplies **every mark on the strip by
+// that same number** (`0.9 / max(clear)`), which is why the letters stay dark
+// against a pale base. Normalising each colour by its own maximum instead made
+// the inscription come out as a lighter peach -- measured before this: the text
+// was (220, 150, 110)-ish on a (248, 193, 155) base.
+static void pf_density_pair_to_lightbox(const std::vector<float> &base_density,
+                                        const std::vector<float> &ink_density, double level,
+                                        double out_base[3], double out_ink[3]) {
+    double lb[3], li[3];
+    if (!pf_linear_display(base_density, lb) || !pf_linear_display(ink_density, li)) return;
+    const double m = std::max(lb[0], std::max(lb[1], lb[2]));
+    const double k = (level > 0.0 && m > 1e-9) ? level / m : 1.0;
+    double ob[3] = {lb[0] * k, lb[1] * k, lb[2] * k};
+    double oi[3] = {li[0] * k, li[1] * k, li[2] * k};
+    pf_encode3(ob, out_base);
+    pf_encode3(oi, out_ink);
 }
 
 static void pf_paper_from(const paper::Stock &sheet) {
@@ -433,8 +469,38 @@ static void pf_paper_from(const paper::Stock &sheet) {
 }
 
 static void pf_film_from(const film::Spectra &stock) {
-    if (!stock.has_minimum_density) return;
-    pf_density_to_display(stock.minimum_density, g_pf_film);
+    const int n = int(spectral_grid::kCount);
+    // **两个颜色，都是这支胶片自己的密度。** 负片的片边是 dMin（片基 + 灰雾），
+    // 反转片是 dMax（未曝光的片边显影到最大密度）；印字取 0.72 档（官方
+    // `edgeDensities`）。印出来的那张（Carrier / Emulsion）要不归一化的值，
+    // 光箱下的片边（Film Border）要归一化到 0.9。
+    std::vector<float> base_density(size_t(n), 0.0f), ink_density(size_t(n), 0.0f);
+    bool built = true;
+    for (int c = 0; c < 3; ++c) {
+        const std::vector<float> &dye = stock.dye[size_t(c)];
+        if (int(dye.size()) < n) { built = false; break; }
+        const double dmin = double(stock.curves[size_t(c)].d_min);
+        const double dmax = double(stock.curves[size_t(c)].d_max());
+        const double dbase = stock.reversal ? dmax : dmin;
+        const double dink = dmin + 0.72 * (dmax - dmin);
+        for (int i = 0; i < n; ++i) {
+            base_density[size_t(i)] += float(dbase * double(dye[size_t(i)]));
+            ink_density[size_t(i)] += float(dink * double(dye[size_t(i)]));
+        }
+    }
+    if (!built) {
+        // A measured stock with no dye curves: fall back to its own dMin.
+        if (!stock.has_minimum_density) return;
+        base_density = stock.minimum_density;
+        ink_density = stock.minimum_density;
+    }
+    pf_density_to_display(base_density, g_pf_film);
+    if (stock.reversal) {
+        pf_density_to_display(base_density, g_pf_film_light);
+        pf_density_to_display(ink_density, g_pf_film_ink);
+    } else {
+        pf_density_pair_to_lightbox(base_density, ink_density, 0.9, g_pf_film_light, g_pf_film_ink);
+    }
 }
 
 // Film Border / Film Border Positive: the rebate draws 135 and the 120 frames,
@@ -3635,6 +3701,8 @@ static int run(int argc, char **argv) {
             pf.framing_y = g_pf_fy;
             std::memcpy(pf.paper_rgb, g_pf_paper, sizeof pf.paper_rgb);
             std::memcpy(pf.film_rgb, g_pf_film, sizeof pf.film_rgb);
+            std::memcpy(pf.film_light, g_pf_film_light, sizeof pf.film_light);
+            std::memcpy(pf.film_ink, g_pf_film_ink, sizeof pf.film_ink);
             print_frame::Layout pl;
             std::string pf_error;
             if (print_frame::layout(pf, int(width), int(height), pl, pf_error)) {

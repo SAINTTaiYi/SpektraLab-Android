@@ -61,7 +61,13 @@ struct Request {
     double margin_mm = 3.0;
     // Materials, display-referred 0..1, supplied by the host from the spectra.
     double paper_rgb[3] = {0.930, 0.923, 0.900};
+    // 印出来的片基（Carrier / Emulsion）：胶片自己的密度，不归一化。
     double film_rgb[3]  = {0.965, 0.700, 0.520};
+    // **光箱下的片边**（Film Border）：负片 = 片基透射色归一化到 0.9（浅），
+    // 反转片 = 最大密度（深）。官方 `PrintFrame` 的 `.film` 分支就是这个。
+    double film_light[3] = {0.975, 0.960, 0.940};
+    // 片边上的印字：同一套密度取 0.72 档（官方的 `edgeDensities`）。
+    double film_ink[3]   = {0.055, 0.050, 0.046};
     double card_rgb[3]  = {0.880, 0.872, 0.855};   // slide mount card
     double black_rgb[3] = {0.055, 0.052, 0.050};   // Black Mount
     bool stipple = true;                       // paper micro-texture
