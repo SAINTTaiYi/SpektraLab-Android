@@ -55,46 +55,51 @@ struct Gauge {
     const char* id;
     double film_x, film_y;   // one frame's piece of film, mm
     double ap_x, ap_y;       // the camera aperture, mm
-    int rows;                // perforation rows along the long edges
-    double hole_x, hole_y;   // a perforation, mm (x along the film)
-    double hole_r;           // its corner radius, mm
+    double ap_off_x, ap_off_y;  // where it sits in the film, mm from the film's own corner
+    int rows;                // perforation rows, one per long edge of transport
+    double hole_x, hole_y;   // a perforation, mm: x along the film, y across it
+    double hole_r;           // its corner radius, mm (0 for a Bell & Howell die)
     double pitch;            // mm between holes along the film
     double edge;             // the hole's outside edge from the film's edge, mm
+    bool transport_x;        // the film runs along x (`horizontalTransport`)
     bool instax;             // an integral positive border, not a strip
     bool sheet;              // an unperforated sheet
 };
 
 constexpr Gauge kGauges[] = {
-    // 135: KS, 2.794 across x 1.981 along, 4.75 mm pitch, eight a frame.
-    {"135",           38.0,  35.0,  36.0,  24.0, 2, 1.981, 2.794, 0.510, 4.750, 0.55, false, false},
-    // 135 half frame: the same strip, a 24 x 18 gate. **Across, then along** --
-    // `EDGE_RATIOS` and the engine's own `135_half` carrier are 4:3, and the app
-    // crops the picture to that before it gets here.
-    {"135_half",      38.0,  35.0,  24.0,  18.0, 2, 1.981, 2.794, 0.510, 4.750, 0.55, false, false},
-    // XPan: 24 x 65 on the same 35 mm strip, a 70 mm piece of film.
-    {"135_xpan",      70.0,  35.0,  65.0,  24.0, 2, 1.981, 2.794, 0.510, 4.750, 0.55, false, false},
-    // **120 roll film: 61.5 mm wide and unperforated.** A plain rebate on both
-    // sides of the gate, 2 mm of film between frames -- the same material the
-    // 135 strip is, with no holes to draw.
-    {"120_645",       45.5,  61.5,  41.5,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    {"120_6x6",       60.0,  61.5,  56.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    {"120_6x7",       74.0,  61.5,  70.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    {"120_6x8",       80.0,  61.5,  76.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    {"120_6x9",       88.0,  61.5,  84.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    {"120_6x12",     124.0,  61.5, 120.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    {"120_6x17",     176.0,  61.5, 170.0,  56.0, 0, 0, 0, 0, 0, 0, false, false},
-    // Super 35: BH, 2.794 x 1.854, 4.74 mm pitch, four a frame.
-    {"super35",       35.0,  18.96, 24.92, 18.67, 2, 1.854, 2.794, 0.0,   4.740, 0.55, false, false},
-    // 16 mm: a single row at the frame lines.
-    {"16mm",          16.0,   7.605, 12.35,  7.42, 1, 1.270, 1.829, 0.250, 7.620, 0.60, false, false},
-    // Super 8: Type S (SMPTE ST 149), a single row, a hole at each frame centre.
-    {"super8",         7.976, 4.234,  5.79,  4.01, 1, 1.143, 0.914, 0.0,   4.234, 0.35, false, false},
-    // 4 x 5: an unperforated sheet (notch codes are not drawn).
-    {"4x5",          125.0, 100.0, 120.0,  95.0, 0, 0, 0, 0, 0, 0, false, true},
-    // Instax: the integral border, wider at the foot.
-    {"instax-mini",    54.0,  86.0,  46.0,  62.0, 0, 0, 0, 0, 0, 0, true, false},
-    {"instax-square",  72.0,  86.0,  62.0,  62.0, 0, 0, 0, 0, 0, 0, true, false},
-    {"instax-wide",   108.0,  86.0,  99.0,  62.0, 0, 0, 0, 0, 0, 0, true, false},
+    // **Copied from `FilmBorderGeometry.preset()`** -- the same millimetres the
+    // official app lays out. `ap_off_*` is the aperture's own place in the film,
+    // not a centring: it is what puts 16 mm's picture against the perforations
+    // and an Instax print at the head of its sheet.
+    //
+    // 135: KS, 2.794 across x 1.981 along, pitch 4.75, the hole's outside edge
+    // 2.01 mm from the film's edge, eight a frame.
+    {"135",           38.0,  35.0,  36.0,  24.0, 1.0,  5.5,  2, 1.981, 2.794, 0.510, 4.750, 2.01, true,  false, false},
+    // 135 half frame / XPan: not official presets. Kept so a look saved before
+    // the gauge list was cut still renders; the official app has neither.
+    {"135_half",      38.0,  35.0,  24.0,  18.0, 7.0,  8.5,  2, 1.981, 2.794, 0.510, 4.750, 2.01, true,  false, false},
+    {"135_xpan",      70.0,  35.0,  65.0,  24.0, 2.5,  5.5,  2, 1.981, 2.794, 0.510, 4.750, 2.01, true,  false, false},
+    // 120 roll film: **one format, 6 x 6.** 61 x 60 mm, unperforated.
+    {"120_6x6",       61.0,  60.0,  56.0,  56.0, 2.5,  2.0,  0, 0, 0, 0, 0, 0, false, false, false},
+    // The rest of the 120 range is ours, not the official's: kept for old looks.
+    {"120_645",       45.5,  61.5,  41.5,  56.0, 2.0,  2.75, 0, 0, 0, 0, 0, 0, false, false, false},
+    {"120_6x7",       74.0,  61.5,  70.0,  56.0, 2.0,  2.75, 0, 0, 0, 0, 0, 0, false, false, false},
+    {"120_6x8",       80.0,  61.5,  76.0,  56.0, 2.0,  2.75, 0, 0, 0, 0, 0, 0, false, false, false},
+    {"120_6x9",       88.0,  61.5,  84.0,  56.0, 2.0,  2.75, 0, 0, 0, 0, 0, 0, false, false, false},
+    {"120_6x12",     124.0,  61.5, 120.0,  56.0, 2.0,  2.75, 0, 0, 0, 0, 0, 0, false, false, false},
+    {"120_6x17",     176.0,  61.5, 170.0,  56.0, 3.0,  2.75, 0, 0, 0, 0, 0, 0, false, false, false},
+    // Super 35: BH, 2.794 x 1.854, pitch 4.74, edge 2.01.
+    {"super35",       35.0,  18.96, 24.92, 18.67, 5.04, 0.145, 2, 1.854, 2.794, 0.0,   4.740, 2.01, false, false, false},
+    // 16 mm: Super 16 gate, one row, holes on the frame lines (pitch 7.605).
+    {"16mm",          16.0,   7.605, 12.35,  7.42, 2.85, 0.0925, 1, 1.270, 1.829, 0.250, 7.605, 0.914, false, false, false},
+    // Super 8: Type S, one row, a hole at each frame's centre, edge 0.51.
+    {"super8",         7.976, 4.234,  5.79,  4.01, 1.59, 0.112, 1, 1.143, 0.914, 0.130, 4.234, 0.510, false, false, false},
+    // 4 x 5: an unperforated sheet, 100 x 125 mm, 95 x 120 image area.
+    {"4x5",          100.0, 125.0,  95.0, 120.0, 2.5,  2.5,  0, 0, 0, 0, 0, 0, false, false, true},
+    // Instax: the integral border, the picture at the head of the sheet.
+    {"instax-mini",    54.0,  86.0,  46.0,  62.0, 4.0, 20.0,  0, 0, 0, 0, 0, 0, false, true,  false},
+    {"instax-square",  72.0,  86.0,  62.0,  62.0, 5.0, 19.0,  0, 0, 0, 0, 0, 0, false, true,  false},
+    {"instax-wide",   108.0,  86.0,  99.0,  62.0, 4.5, 19.5,  0, 0, 0, 0, 0, 0, false, true,  false},
 };
 
 // --- the factory's edge print, per stock (`docs/print-frame-model.md`) ------
@@ -422,6 +427,53 @@ void draw_sheet_notch(const Request& req, const Layout& L, std::vector<uint8_t>&
     }
 }
 
+// --- one perforation, the die's own shape (`perforationOutline`) ----------------
+//
+// KS is a rounded rectangle of corner `r`; Bell & Howell is a circle of radius
+// `w/2` cut by two flats `h` apart. Both are filled here with 2 x 2 coverage,
+// which at a strip's millimetres is the antialiasing the official's path
+// rasteriser gives.
+static void hole_shape(std::vector<uint8_t>& out, int W, int H, double cx, double cy,
+                       double w_along, double h_across, double r, bool bell_howell,
+                       const double rgb[3]) {
+    const double hx = w_along * 0.5, hy = h_across * 0.5;
+    const int x0 = std::max(0, int(std::floor(cx - hx)) - 1);
+    const int x1 = std::min(W, int(std::ceil(cx + hx)) + 2);
+    const int y0 = std::max(0, int(std::floor(cy - hy)) - 1);
+    const int y1 = std::min(H, int(std::ceil(cy + hy)) + 2);
+    if (x1 <= x0 || y1 <= y0) return;
+    const double radius = std::max(0.0, std::min(r, std::min(hx, hy)));
+    for (int y = y0; y < y1; ++y) {
+        uint8_t* row = out.data() + size_t(y) * size_t(W) * 3;
+        for (int x = x0; x < x1; ++x) {
+            double cover = 0.0;
+            for (int sy = 0; sy < 2; ++sy) {
+                for (int sx = 0; sx < 2; ++sx) {
+                    const double px = double(x) + 0.25 + 0.5 * double(sx);
+                    const double py = double(y) + 0.25 + 0.5 * double(sy);
+                    const double dx = px - cx, dy = py - cy;
+                    bool inside;
+                    if (bell_howell) {
+                        const double rr = hx;
+                        inside = (dx * dx + dy * dy) <= rr * rr + 1e-9 && std::fabs(dy) <= hy + 1e-9;
+                    } else if (radius <= 0.0) {
+                        inside = std::fabs(dx) <= hx + 1e-9 && std::fabs(dy) <= hy + 1e-9;
+                    } else {
+                        const double qx = std::max(std::fabs(dx) - (hx - radius), 0.0);
+                        const double qy = std::max(std::fabs(dy) - (hy - radius), 0.0);
+                        inside = (qx * qx + qy * qy) <= radius * radius + 1e-9;
+                    }
+                    if (inside) cover += 0.25;
+                }
+            }
+            if (cover <= 0.0) continue;
+            for (int k = 0; k < 3; ++k)
+                row[size_t(x) * 3 + size_t(k)] = to8((row[size_t(x) * 3 + size_t(k)] / 255.0) * (1.0 - cover)
+                                                      + rgb[k] * cover);
+        }
+    }
+}
+
 void compose_film(const Request& req, const Layout& L, const uint8_t* src, int sw, int sh,
                   std::vector<uint8_t>& out) {
     const Gauge* g = gauge_for(req.gauge);
@@ -455,33 +507,40 @@ void compose_film(const Request& req, const Layout& L, const uint8_t* src, int s
     const double mx1 = double(W - L.photo_x - L.photo_w);
     const double my0 = double(L.photo_y);
     const double my1 = double(H - L.photo_y - L.photo_h);
-    // The perforations sit on the axis with the wider margin: above and below a
-    // 135 frame, beside a motion-picture frame (its gate is nearly the full film
-    // width). A one-row gauge is offset in `layout`, so its two margins differ
-    // and only their sum is symmetric.
+    // Where the factory's lettering goes: the wider of the two margins. The
+    // perforations have their own axis (`transport_x`), below.
     const double band_x = 0.5 * (mx0 + mx1);
     const double band_y = 0.5 * (my0 + my1);
     const bool perf_on_x = band_x > band_y;
 
+    // **The die's own pitch and place.** The official app punches every hole on
+    // a pitch grid that starts half a pitch in (16 mm starts on the frame
+    // line), with the hole's *outside* edge `edge` mm from the film's edge --
+    // 2.01 on 135, which leaves a band of base outside the holes. Centring the
+    // holes in the margin (what this did) put them against the film's edge and
+    // was the first thing that made our strip recognisably not the official's.
     if (g->rows > 0) {
         const double px = L.px_per_mm;
+        const bool along_x = (g->transport_x != L.rotated);
         const double hole_along = g->hole_x * px;
         const double hole_across = g->hole_y * px;
-        const double r = g->hole_r * px;
-        const double pitch = g->pitch * px;
         const double edge = g->edge * px;
+        const double pitch = g->pitch * px;
+        const double along_px = along_x ? double(W) : double(H);
+        const double across_px = along_x ? double(H) : double(W);
         const double hole[3] = {positive ? 0.055 : 0.965, positive ? 0.055 : 0.960,
                                 positive ? 0.055 : 0.945};
-        const int long_px = perf_on_x ? H : W;
-        const int short_px = perf_on_x ? W : H;
-        const int n = std::max(1, int(std::floor(double(long_px) / pitch)));
-        const double start = (double(long_px) - double(n) * pitch) * 0.5;
+        const double first = (g->pitch > 7.0) ? 0.0 : pitch * 0.5;   // 16 mm on the frame line
         for (int rowi = 0; rowi < g->rows; ++rowi) {
-            const double across = (rowi == 0) ? edge : (double(short_px) - edge - hole_across);
-            for (int i = 0; i < n; ++i) {
-                const double along = start + double(i) * pitch + (pitch - hole_along) * 0.5;
-                if (perf_on_x) rounded_rect(out, W, H, across, along, hole_across, hole_along, r, hole);
-                else rounded_rect(out, W, H, along, across, hole_along, hole_across, r, hole);
+            const double across0 = (rowi == 0) ? edge : (across_px - edge - hole_across);
+            for (double centre = first; centre <= along_px + 1e-6; centre += pitch) {
+                const double ca = centre, cc = across0 + hole_across * 0.5;
+                if (along_x)
+                    hole_shape(out, W, H, ca, cc, hole_along, hole_across,
+                               g->hole_r * px, g->hole_r <= 0.0, hole);
+                else
+                    hole_shape(out, W, H, cc, ca, hole_across, hole_along,
+                               g->hole_r * px, g->hole_r <= 0.0, hole);
             }
         }
     }
@@ -740,7 +799,16 @@ bool layout(const Request& req, int src_w, int src_h, Layout& out, std::string& 
         }
         const bool portrait = src_h > src_w;
         double fx = g->film_x, fy = g->film_y, ax = g->ap_x, ay = g->ap_y;
-        if (portrait) { std::swap(fx, fy); std::swap(ax, ay); }
+        double off_x = g->ap_off_x, off_y = g->ap_off_y;
+        if (portrait) {
+            const double ap_x_before = ax, off_x_before = off_x;
+            std::swap(fx, fy); std::swap(ax, ay);
+            // A quarter turn: the aperture's across margin becomes its leading
+            // one, and its leading margin becomes the far end of the film.
+            off_x = off_y;
+            off_y = g->film_x - off_x_before - ap_x_before;
+            out.rotated = true;
+        }
         crop_for(src_w, src_h, ax / ay, req.framing_x, req.framing_y,
                  out.crop_x, out.crop_y, out.crop_w, out.crop_h);
         out.px_per_mm = double(out.crop_w) / ax;
@@ -748,31 +816,11 @@ bool layout(const Request& req, int src_w, int src_h, Layout& out, std::string& 
         out.canvas_h = std::max(1, int(std::lround(fy * out.px_per_mm)));
         out.photo_w = out.crop_w;
         out.photo_h = out.crop_h;
-        out.photo_x = (out.canvas_w - out.photo_w) / 2;
-        // An Instax sheet puts the picture at its head: the side margin above,
-        // the chemical pod's band below.
-        out.photo_y = g->instax
-            ? int(std::lround(0.5 * (fx - ax) * out.px_per_mm))
-            : (out.canvas_h - out.photo_h) / 2;
-        // **One row of holes is not a symmetric frame.** 16 mm and Super 8 are
-        // perforated along one edge only, so the aperture is offset away from
-        // it: that edge keeps exactly `edge + hole` of film and the opposite one
-        // keeps the remainder -- which is where the factory printed the stock's
-        // name. Centring instead made the holes cut into the picture (16 mm
-        // wants 2.43 mm of the 1.82 mm it had) and left the inscription a
-        // negative strip, so both gauges came out with no lettering at all.
-        if (g->rows == 1) {
-            const double free_x = fx - ax, free_y = fy - ay;
-            const bool perf_on_x = free_x > free_y;        // same rule as compose_film
-            const double perf_side = g->edge + g->hole_y;  // hole_y is the across size
-            if (perf_on_x) {
-                out.photo_x = int(std::lround(perf_side * out.px_per_mm));
-                out.photo_y = (out.canvas_h - out.photo_h) / 2;
-            } else {
-                out.photo_y = int(std::lround(perf_side * out.px_per_mm));
-                out.photo_x = (out.canvas_w - out.photo_w) / 2;
-            }
-        }
+        // **The aperture sits where the preset puts it**, not centred -- that is
+        // what puts 16 mm's picture against the perforation row and an Instax
+        // print at the head of its sheet with the chemical pod's band below.
+        out.photo_x = std::max(0, int(std::lround(off_x * out.px_per_mm)));
+        out.photo_y = std::max(0, int(std::lround(off_y * out.px_per_mm)));
         out.sheet_w_mm = fx;
         out.sheet_h_mm = fy;
         out.valid = true;

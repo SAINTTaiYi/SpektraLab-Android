@@ -83,6 +83,8 @@ struct Layout {
     double margin_mm = 0.0;
     double rebate_mm = 0.0;
     bool square = false;
+    /// The film was turned a quarter turn to match a portrait picture.
+    bool rotated = false;
 };
 
 bool layout(const Request& req, int src_w, int src_h, Layout& out, std::string& error);

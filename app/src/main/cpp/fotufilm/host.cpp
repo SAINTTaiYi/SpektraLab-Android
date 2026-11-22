@@ -482,7 +482,10 @@ static void pf_film_from(const film::Spectra &stock) {
         const double dmin = double(stock.curves[size_t(c)].d_min);
         const double dmax = double(stock.curves[size_t(c)].d_max());
         const double dbase = stock.reversal ? dmax : dmin;
-        const double dink = dmin + 0.72 * (dmax - dmin);
+        // `edgeDensities`: a negative's letters are 0.72 of the range denser
+        // than its rebate, a transparency's 0.08 -- on the dark dMax edge those
+        // read as faint light marks, which is what a real reversal strip has.
+        const double dink = dmin + (stock.reversal ? 0.08 : 0.72) * (dmax - dmin);
         for (int i = 0; i < n; ++i) {
             base_density[size_t(i)] += float(dbase * double(dye[size_t(i)]));
             ink_density[size_t(i)] += float(dink * double(dye[size_t(i)]));
