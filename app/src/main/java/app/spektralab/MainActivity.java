@@ -559,6 +559,10 @@ public class MainActivity extends Activity {
         // shipped from `uploadCrashFiles` needs that file when the network is
         // down, so init has to come first.
         DebugSink.init(this);
+        // **The tables, before the first dialog.** `reportPreviousExit` and the
+        // crash-file upload can raise a card on the way up, and those are built
+        // from the same Chinese source as everything else.
+        Lang.init(this);
         markFile("sink init");
         // **Who this process is, for `SelfHeal`'s device rules.** The build
         // number is what retires a rule once its root cause ships: a rule that
@@ -589,9 +593,6 @@ public class MainActivity extends Activity {
         // rebuilding every widget, so the preference is read once here and the
         // switch asks for a restart.
         applyPalette(getSharedPreferences("ui", MODE_PRIVATE).getBoolean("dark", false));
-        // **Before the first widget**, like the palette: every label is built
-        // from its Chinese source and translated on the way into the widget.
-        Lang.init(this);
         // **Before the first layout**, so a phone held sideways builds the two
         // columns once instead of building the portrait tree and re-parenting it.
         applyOrientationPref();
