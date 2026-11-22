@@ -75,7 +75,7 @@ public class MainActivity extends Activity {
     /** One retry offer per import; a dialog loop would be worse than the error. */
     boolean e1001Offered = false;
     /** A render is in flight: one native result buffer, one renderer. */
-    private volatile boolean rendering = false;
+    volatile boolean rendering = false;
     /**
      * Which canvas a render belongs to.
      *
@@ -106,7 +106,7 @@ public class MainActivity extends Activity {
     /** Shown only after a TIFF export: the one format the picker hides. */
     TextView sharePill = null;
     // Device-golden test hooks (default 0/false; never set by normal UI use).
-    private static int testBandRows = 0;
+    static int testBandRows = 0;
     static boolean testDeterministic = false;
     static boolean testAutoFilm = false;
 
@@ -119,7 +119,7 @@ public class MainActivity extends Activity {
     app.spektralab.data.MediaStoreExport exportStore;
     final app.spektralab.domain.ExportController exportController =
             new app.spektralab.domain.ExportController();
-    private final app.spektralab.domain.RenderController renderController =
+    final app.spektralab.domain.RenderController renderController =
             new app.spektralab.domain.RenderController();
 
     Bitmap sourceBitmap;
@@ -190,12 +190,12 @@ public class MainActivity extends Activity {
      *  dial is levelling a horizon, and without lines there is nothing to
      *  level against. */
     private boolean rotateGridOn = true;
-    private RotateScale rotateArc;
+    RotateScale rotateArc;
     /** The committed angle when the finger went down: a failed render has to
      *  put the picture back where it was, not leave it turned in the numbers
      *  and straight on the screen. */
-    private float rotationBeforeDrag = 0f;
-    private boolean rotationPending = false;
+    float rotationBeforeDrag = 0f;
+    boolean rotationPending = false;
     /**
      * **The geometry as it was when the user committed it.**
      *
@@ -217,11 +217,11 @@ public class MainActivity extends Activity {
      * commit and consumed by the render thread, which sends it on its own
      * before the ordinary delta. See `sendGeometry`.
      */
-    private boolean pendingGeometry = false;
+    boolean pendingGeometry = false;
     /** Bumped by every geometry commit; a render from before it must not clear
      *  the preview turn (it does not carry it). */
-    private int geometrySeq = 0;
-    private ProgressBar progressBar;
+    int geometrySeq = 0;
+    ProgressBar progressBar;
     ProgressBar exportProgressBar;
     final List<String> filmIds = new ArrayList<>(), filmLabels = new ArrayList<>();
     private final List<String> filmTypes = new ArrayList<>();
@@ -296,7 +296,7 @@ public class MainActivity extends Activity {
         saveSessionState();
     };
 
-    private void schedulePersist() {
+    void schedulePersist() {
         persistHandler.removeCallbacks(persistSession);
         persistHandler.postDelayed(persistSession, 1200);
     }
@@ -515,7 +515,7 @@ public class MainActivity extends Activity {
     private Typeface tfBody;         // Inter 400 — Latin labels
     private Typeface tfHan;          // OPPO Sans — Chinese, and anything mixed
     private View emptyState, rawState;
-    private TextView fileLabel, rawName, busyLabel, originalLabel, paperValue, edgeValue, formatFootValue;
+    TextView fileLabel, rawName, busyLabel, originalLabel, paperValue, edgeValue, formatFootValue;
     /** The 尺度 page's foot caption -- it says who owns the frame's length. */
     private TextView formatFootLabel;
     /** True while the millimetre cards are locked because a rebate is on. */
@@ -858,7 +858,7 @@ public class MainActivity extends Activity {
     final Object renderMutex = new Object();
     /** A stock change that arrived while a render held the session. Folded into
      *  one follow-up render when the current one lands. */
-    private volatile boolean pendingRender = false;
+    volatile boolean pendingRender = false;
 
     // ── live preview ───────────────────────────────────────────────
     /** A drag asked for a picture. `liveLoop` folds every request that lands
@@ -871,7 +871,7 @@ public class MainActivity extends Activity {
     /** Bumped whenever a full-size render starts. A live frame that was already
      *  queued behind `renderMutex` when that happened must never paint: it would
      *  put 800 px back on top of the 2048 px result the user just waited for. */
-    private final java.util.concurrent.atomic.AtomicInteger fullGeneration =
+    final java.util.concurrent.atomic.AtomicInteger fullGeneration =
             new java.util.concurrent.atomic.AtomicInteger();
     /** Which session `deltaSent` describes, and the last value sent for each
      *  key. Written only under `renderMutex`, by the thread that draws. A
@@ -3034,7 +3034,7 @@ public class MainActivity extends Activity {
      *  rebuild: `removeAllViews` clamps the shelf's scroll back to zero, so a
      *  queue that filled a card every second yanked the strip out from under
      *  whoever was scrolling through it. */
-    private void updateCardThumb(String id) {
+    void updateCardThumb(String id) {
         final android.widget.FrameLayout box = filmCardImages.get(id);
         final Bitmap thumb = filmThumbs.get(id);
         if (box == null || thumb == null) return;
@@ -3045,7 +3045,7 @@ public class MainActivity extends Activity {
         box.addView(img, new android.widget.FrameLayout.LayoutParams(-1, -1));
     }
 
-    private void cacheFilmThumb(String stock, Bitmap rendered) {
+    void cacheFilmThumb(String stock, Bitmap rendered) {
         if (stock == null || rendered == null) return;
         try {
             final int w = Math.max(1, dp(86));
@@ -3211,7 +3211,7 @@ public class MainActivity extends Activity {
      *  tree explains the difference. */
     volatile float[] wbUserMul = null;
     /** True while the file is being re-read; renders stand down meanwhile. */
-    private volatile boolean wbDecoding = false;
+    volatile boolean wbDecoding = false;
     private volatile boolean wbPending = false;
     private int wbGeneration = 0;
     private float wbKelvin = 5500f, wbTint = 0f;
@@ -3231,7 +3231,7 @@ public class MainActivity extends Activity {
     private final java.util.List<Runnable> viewRefreshers = new java.util.ArrayList<>();
     private final LinearLayout[] viewPages = new LinearLayout[5];
     /** The rendered result's RGB distribution; null until the panel is built. */
-    private HistogramView histogram = null;
+    HistogramView histogram = null;
     /** A display preference, not a look: it is stored beside the theme. */
     private boolean histogramOn = true;
     /** Live frames between histogram refreshes (see `drawLivePreview`). */
@@ -4590,7 +4590,7 @@ public class MainActivity extends Activity {
     }
 
     /** Shown only when there is something to compare against. */
-    private void refreshComparePill() {
+    void refreshComparePill() {
         if (comparePill == null) return;
         final boolean can = compare != null && lastRenderedBitmap != null;
         comparePill.setVisibility(can ? View.VISIBLE : View.GONE);
@@ -7600,7 +7600,7 @@ public class MainActivity extends Activity {
      * "two big black bars" report, measured rather than guessed. A render that
      * comes back letterboxed says so in the status line.
      */
-    private static int[] blackBands(Bitmap b) {
+    static int[] blackBands(Bitmap b) {
         final int w = b.getWidth(), h = b.getHeight();
         final int[] row = new int[w];
         int top = 0, bottom = 0;
@@ -8927,7 +8927,7 @@ new ImportWorker(this).run(uri);
      * shown as if its numbers were sRGB, which desaturates it by exactly the
      * amount the wider gamut was supposed to add.
      */
-    private Bitmap newFrameBitmap(int w, int h) {
+    Bitmap newFrameBitmap(int w, int h) {
         final Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         final android.graphics.ColorSpace cs = colorSpaceFor(previewSpace);
         if (cs != null && android.os.Build.VERSION.SDK_INT >= 26) bmp.setColorSpace(cs);
@@ -9540,7 +9540,7 @@ new RawImportWorker(this).run(uri);
      * in a delta *is* a stock change), which is what made the sliders feel
      * dead rather than merely slow.
      */
-    private void applyParams() {
+    void applyParams() {
         if (session == null) return;
         // **A delta is never sent from the UI thread.**
         //
@@ -9591,7 +9591,7 @@ new RawImportWorker(this).run(uri);
      * exact JSON, so the next report can say what left the app rather than
      * what should have.
      */
-    private void sendGeometry() {
+    void sendGeometry() {
         if (session == null || filmStock == null) return;
         // **The snapshot, not the live fields.** See `geoSnapRot`: reading the
         // live ones here is what let a UI-thread write land between the commit
@@ -9638,7 +9638,7 @@ new RawImportWorker(this).run(uri);
         }
     }
 
-    private void applyParams(String stock, int longEdge) {
+    void applyParams(String stock, int longEdge) {
         applyParams(stock, printStock == null ? "kodak_portra_endura" : printStock, longEdge);
     }
 
@@ -9651,7 +9651,7 @@ new RawImportWorker(this).run(uri);
      * `printStock`, so every black-and-white card came out sepia -- the shelf
      * showed the wrong recipe and read as "the black-and-white film is broken".
      */
-    private void applyParams(String stock, String paper, int longEdge) {
+    void applyParams(String stock, String paper, int longEdge) {
         applyParamsTo(session, stock, paper, longEdge, previewSpace);
     }
 
@@ -9665,14 +9665,14 @@ new RawImportWorker(this).run(uri);
      * dedupe on the serialised Look means a render that changed nothing costs
      * nothing, which is what makes "one entry per real edit" hold.
      */
-    private void scheduleUndo() {
+    void scheduleUndo() {
         undoHandler.removeCallbacks(undoPush);
         undoHandler.postDelayed(undoPush, 600);
     }
 
     /** A render that failed must not enter the undo stack: replaying it would
      *  fail again, which is "undo brings the error back". */
-    private void cancelUndo() {
+    void cancelUndo() {
         undoHandler.removeCallbacks(undoPush);
     }
 
@@ -9807,7 +9807,7 @@ new RawImportWorker(this).run(uri);
      * Records the EV a render applied, from the progress document read **right
      * after** that render.
      */
-    private void rememberAppliedEv(String progressJson, String tier) {
+    void rememberAppliedEv(String progressJson, String tier) {
         final String text = appliedEvText(progressJson);
         final double applied = JsonFields.firstNumber(progressJson, "auto_exposure_ev");
         if (!Double.isNaN(applied)) {
@@ -10032,7 +10032,7 @@ new RawImportWorker(this).run(uri);
     /** Same set, at whatever long edge the caller is rendering. The catalogue
      *  pass uses a small one so a whole shelf of films is affordable; a look
      *  the user is about to export still goes out at the preview size. */
-    private void applyParams(int longEdge) {
+    void applyParams(int longEdge) {
         if (session == null) return;
         final String stock = filmStock;
         if (stock == null) return;
@@ -10374,7 +10374,7 @@ new RawImportWorker(this).run(uri);
      * answers by killing the launcher. Trimming costs one re-allocation on the
      * next render, which is far cheaper than that.
      */
-    private void trimPoolIfBloated() {
+    void trimPoolIfBloated() {
         if (engine == null) return;
         try {
             final String report = engine.memoryReport();
@@ -10402,338 +10402,7 @@ new RawImportWorker(this).run(uri);
     void renderImage() { renderImage(PREVIEW_LONG_EDGE); }
 
     void renderImage(int longEdge) {
-        // The full-size pass owns the canvas from here. A live frame still in
-        // flight would otherwise land a moment later and put 800 px on top of
-        // the result the user waited for.
-        cancelLivePreview();
-        fullGeneration.incrementAndGet();
-        CrashTrail.mark(this, "render:begin");
-        // **A decode in flight owns the session.** It is closed for a few
-        // seconds while LibRaw re-demosaics; a render that walked in then would
-        // either complain about a null session or queue behind the decode for
-        // the whole of it, which is what "白平衡卡死" was.
-        if (wbDecoding) { pendingRender = true; return; }
-        // Every branch says something. The foot is one thin line, too quiet to
-        // carry "nothing happened"; failures need to be readable.
-        if (session == null) {
-            try { DebugSink.text("render", "no session, lastImportError=" + lastImportError); }
-            catch (Throwable spkIgnored) { Diagnostics.ignored("renderImage:13656", spkIgnored); }
-            // **A frame in the strip means an import is on its way.** Coming
-            // back from the background walks through here while `loadImage` is
-            // still decoding -- there is a picture loading, so "还没有可渲染的
-            // 图像" is the wrong sentence and the dialog is pure noise. Ask for
-            // the render again once the import finishes; if the import really
-            // failed, its own message is the one to show.
-            if (!frames.isEmpty() && lastImportError == null) {
-                pendingRender = true;
-                return;
-            }
-            showErrorDialog(tr("render.no_image_to_render"), lastImportError == null
-                    ? tr("render.import_a_photo_first_tap")
-                    : tr("render.the_last_import_did_not") + lastImportError);
-            return;
-        }
-        if (filmStock == null) {
-            showInAppToast(tr("render.choose_a_film_below"));
-            return;
-        }
-        stopPrefetch();
-        if (rendering) {
-            // One native result buffer for the whole process: two renders would
-            // interleave on it and hand back another frame's dimensions.
-            try { DebugSink.text("render", "already rendering"); } catch (Throwable spkIgnored) { Diagnostics.ignored("renderImage:13680", spkIgnored); }
-            Probe.log("render", "queued film=" + filmStock + " pending=" + pendingRender);
-            statusText.setText(tr("render.rendering"));
-            // Not dropped: a tap that lands mid-render is the *last* choice the
-            // user made, so it becomes the next render instead of a toast.
-            pendingRender = true;
-            showInAppToast(tr("render.rendering_will_render_again_with"));
-            return;
-        }
-        scheduleUndo();          // one entry per settled edit
-        // UDF: capture one immutable snapshot on the UI thread. The worker
-        // below must not read the Activity's mutable look fields any more.
-        final app.spektralab.domain.EditorState editorState =
-                new app.spektralab.domain.EditorState(
-                        filmStock,
-                        printStock == null ? "kodak_portra_endura" : printStock,
-                        meterMethod, currentFrame, showingOriginal, rendering, geometrySeq);
-        final String renderedStock = editorState.filmStock;
-        // **The frame this render belongs to.** Deleting the chips (or opening
-        // another photo) while a render is in flight used to let its callback
-        // call setStage(1) on a canvas that no longer had a frame: the empty
-        // state -- and with it the 选择照片 button -- vanished, which is the
-        // "删掉全部缩略图后导入按钮有时候会消失" report.
-        final int renderedFrame = editorState.frameIndex;
-        final int renderedEpoch = renderEpoch;
-        // **Which geometry this render is allowed to speak for.** A render the
-        // commit did not wait for carries the angle from before it, and letting
-        // it take the preview turn off is exactly the frame that jumps back.
-        final int renderedGeometrySeq = editorState.geometrySequence;
-        rendering = true;
-        progressBar.setVisibility(View.VISIBLE);
-        busyLabel.setVisibility(View.VISIBLE);
-        statusText.setText(tr("render.rendering"));
-        try { DebugSink.text("render", "begin " + sourceWidth + "x" + sourceHeight); }
-        catch (Throwable spkIgnored) { Diagnostics.ignored("renderImage:13707", spkIgnored); }
-
-        new Thread(() -> {
-            try {
-                synchronized (renderMutex) {
-                if (session == null) {
-                    // **A frame change can land between the check the UI thread
-                    // made and this lock.** Throwing here turned that race into
-                    // a dialog on top of a batch export that had already
-                    // finished ("加片边批量导出后弹错 / 会话状态异常"). The frame
-                    // is genuinely gone, so there is nothing to draw: hand the
-                    // UI back the state this method claimed, and let the next
-                    // import render. A rebate export makes every render 2-3 s
-                    // slower, which is exactly why that window got wide enough
-                    // to hit in the field and not on the bench.
-                    CrashTrail.mark(this, "render:session-gone");
-                    UiDispatcher.post(() -> {
-                        rendering = false;
-                        if (progressBar != null) progressBar.setVisibility(View.GONE);
-                        if (busyLabel != null) busyLabel.setVisibility(View.GONE);
-                    });
-                    return;
-                }
-                // The queue stops here, but a card it started before still
-                // finishes and can put a stock back onto this session. Take the
-                // film the user picked, under the same lock the render runs
-                // under, so the picture and the edge text cannot disagree.
-                CrashTrail.markNow(MainActivity.this, "render:lock");
-                // **Geometry first, and not through the delta ledger.** A crop
-                // or a rotation is the one edit the canvas cannot show while it
-                // is being made: the preview turns the *view* and the picture
-                // itself stays where it was until the render comes back. So it
-                // is the one edit that must not depend on `deltaSent` deciding
-                // the value looks unchanged -- and it is sent with the stock,
-                // which is what forces the rebuild a SHOOT-layer field needs.
-                // **Geometry goes last, not first.** It used to be sent before
-                // the full delta, on the theory that the delta would restate
-                // the same value. A device report (`SL-261111-A06E`) shows a
-                // render that came back with the *cover zoom* of a 12 degree
-                // turn and no turn at all: the tree had the angle, the picture
-                // did not. Whatever the full delta does to that field, the
-                // geometry is now written after it, so the last word before
-                // `renderBegin` is this one.
-                final boolean geoOwed = pendingGeometry;
-                pendingGeometry = false;
-                // The use case applies the captured state and then renders;
-                // no Activity field is read by the worker after this point.
-                Thread ticker = startTick("render", session);
-                CrashTrail.markNow(MainActivity.this, "render:call");
-                int[] dims;
-                try {
-                    dims = renderController.begin(
-                            session, editorState, "live", longEdge, false,
-                            (target, state, edge) -> {
-                                applyParams(state.filmStock, (int) edge);
-                                if (geoOwed) {
-                                    sendGeometry();
-                                    try {
-                                        final String gp = target.getParams();
-                                        final int at = gp.indexOf("\"geometry_rotation_deg\"");
-                                        DebugSink.text("geo-check", "after delta " + (at >= 0
-                                                ? gp.substring(at, Math.min(gp.length(), at + 30)) : "absent"));
-                                    } catch (Throwable spkIgnored) {
-                                        Diagnostics.ignored("geo-check", spkIgnored);
-                                    }
-                                }
-                                Probe.log("render", "apply film=" + state.filmStock
-                                        + " long=" + edge + " src=" + sourceWidth + "x" + sourceHeight);
-                                CrashTrail.markNow(MainActivity.this, "render:params");
-                            });
-                } finally {
-                    stopTick(ticker);
-                }
-                int w = dims[0], h = dims[1];
-                CrashTrail.markNow(MainActivity.this, "render:returned " + w + "x" + h);
-                if (w <= 0 || h <= 0) throw new RuntimeException("engine returned empty frame");
-
-                CrashTrail.markNow(MainActivity.this, "render:alloc " + w + "x" + h);
-                Bitmap bmp = newFrameBitmap(w, h);
-                int[] pixels = new int[w * h];
-                CrashTrail.markNow(MainActivity.this, "render:copy");
-                int copied = session.copyArgbRange(pixels, 0, h);
-                if (copied != w * h) {
-                    throw new RuntimeException("pixel copy incomplete " + copied + "/" + (w * h));
-                }
-                bmp.setPixels(pixels, 0, w, 0, 0, w, h);
-                CrashTrail.markNow(MainActivity.this, "render:setPixels");
-                // **The canvas, not just the export.** The reports say the ruler
-                // is already visible while editing, and `log_edge_profile` only
-                // ever ran on an export -- three rounds of "send me the export"
-                // is three rounds of making the user do the measuring. This is
-                // the same read-only scan on the frame that is about to be
-                // shown; it costs ~2 ms on a 2048 tier and is skipped on the
-                // 800 px live path, where it would run ten times a second.
-                if (longEdge >= 1024) {
-                    try {
-                        final String edgeLine = SpektraLabEngine.edgeReport();
-                        final String verdict = edgeVerdictOfLine(edgeLine);
-                        if (verdict != null) {
-                            DebugSink.textNow("edge-canvas", verdict);
-                        } else if (edgeLine != null && edgeCanvasSends < 4) {
-                            // Below the threshold, but say what it measured:
-                            // knowing that preview reads 40 and full reads 8 on
-                            // the same picture is the whole answer.
-                            ++edgeCanvasSends;
-                            DebugSink.textNow("edge-weak", edgeLine);
-                        }
-                    } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13811", spkIgnored); }
-                }
-                session.renderEnd();
-                CrashTrail.markNow(MainActivity.this, "render:end");
-                // What the meter did to *this* frame. A render that looks dark
-                // is either the film's curve or an exposure the engine decided
-                // on, and the two are indistinguishable by eye -- one line of
-                // numbers settles it.
-                try {
-                    rememberAppliedEv(session.progressJson(), "full");
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13821", spkIgnored); }
-                // The rebate's own numbers, next to the buffer they belong to.
-                // "the edge is wrong in the export but right in the preview" is
-                // a question only these two lines can answer.
-                try {
-                    DebugSink.text("overscan-geom", "tier=live " + w + "x" + h + " "
-                            + session.overscanGeometry());
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13828", spkIgnored); }
-                // The engine's log for this render. When a frame comes back as
-                // one flat colour there is nothing else to read: it says which
-                // tier was built, how big, and what each dispatch covered.
-                uploadVkLog();
-
-                final int fw = w, fh = h;
-                // Diagnostic only: the hash and the two sample pixels are what the
-                // "wrong picture" reports are compared against. The preview used to
-                // also be JPEG-compressed and handed to DebugSink.bytes(), which is
-                // a no-op -- pure work on the render thread for a byte array nobody
-                // reads. Keep the numbers, drop the encode (see issue #1 in the audit).
-                try {
-                    final long hsh = PixelHash.fnv1a(pixels, pixels.length, 7);
-                    final String hashLine = "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
-                            + " band=" + testBandRows + " copy=" + copied
-                            + " first=" + Integer.toHexString(pixels[0])
-                            + " mid=" + Integer.toHexString(pixels[(h / 2) * w + w / 2]);
-                    DebugSink.text("preview", hashLine);
-                    // logcat hook for scripts/device-golden.ps1 (no network needed).
-                    android.util.Log.i("SpektraLabHash", hashLine);
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13846", spkIgnored); }
-                UiDispatcher.post(() -> {
-                    if (renderedEpoch != renderEpoch
-                            || currentFrame != renderedFrame || session == null) {
-                        try { DebugSink.text("render", "frame changed mid-render; dropped"); }
-                        catch (Throwable spkIgnored) { Diagnostics.ignored("edgeVerdictOfLine:13851", spkIgnored); }
-                        // **The overlay belongs to this generation too.**
-                        //
-                        // Returning here is what left the canvas saying
-                        // RENDERING for ever: the strip had already switched to
-                        // another photo, so this callback dropped its bitmap --
-                        // and took the only `rendering = false` with it. Every
-                        // later tap then answered "正在渲染", and a render that
-                        // had queued up (`pendingRender`) never ran either,
-                        // because `renderImage` bailed at the same flag.
-                        rendering = false;
-                        clearBusyPlate();
-                        if (pendingRender) {
-                            pendingRender = false;
-                            if (filmStock != null && session != null) renderImage();
-                        }
-                        return;
-                    }
-                    showingOriginal = false;
-                    compare.setAfter(bmp);
-                    if (rotationPending && renderedGeometrySeq >= geometrySeq) {
-                        rotationPending = false;
-                        compare.setPreviewRotation(0f);
-                    }
-                    setStage(1, null);
-                    // Give the pool back if this render left it far larger than
-                    // the frame -- ten shoot-layer edits in a row is what parks
-                    // gigabytes and gets the launcher killed. Off the UI thread:
-                    // trimming destroys buffers and waits on the device.
-                    new Thread(MainActivity.this::trimPoolIfBloated, "pool-trim").start();
-                    setStep(2);
-                    lastRenderedBitmap = bmp;
-                    // The histogram describes what the canvas shows, so it moves
-                    // with the render, not with the tab that displays it.
-                    if (histogram != null) histogram.setBitmap(bmp);
-                    refreshComparePill();
-                    cacheFilmThumb(renderedStock, bmp);
-                    updateCardThumb(renderedStock);
-                    updateFilmSelection();
-                    // A user render stops the queue so it can own the GPU. Put
-                    // it back afterwards, or the rest of the shelf never fills.
-                    startPrefetch();
-                    // A finished render is exactly what makes both pages live
-                    // -- and it is the only place that does.
-                    refreshPanelLocks();
-                    setOriginalVisual(false);
-                    updateFilmSelection();
-                    final int[] bands = blackBands(bmp);
-                    statusText.setText(tr("render.preview_ready") + fw + "×" + fh);
-                    try {
-                        DebugSink.text("bands", "render " + fw + "x" + fh
-                                + " black rows top=" + bands[0] + " bottom=" + bands[1]
-                                + " source=" + sourceWidth + "x" + sourceHeight);
-                    } catch (Throwable spkIgnored) { Diagnostics.ignored("blackBands:13904", spkIgnored); }
-                    progressBar.setVisibility(View.GONE);
-                    busyLabel.setVisibility(View.GONE);
-                    rendering = false;
-                    // The canvas now shows this look; it is also the version
-                    // that has to survive a kill from recents.
-                    schedulePersist();
-                    if (pendingRender) { pendingRender = false; renderImage(); }
-                });
-            }
-            } catch (Throwable e) {
-                try { session.renderEnd(); } catch (Throwable spkIgnored) { Diagnostics.ignored("blackBands:13915", spkIgnored); }
-                DebugSink.text("failure", AppFailure.of(AppFailure.Stage.RENDER, e).stage
-                        + ": " + describe(e));
-                final String msg = describe(e);
-                UiDispatcher.post(() -> {
-                    // **A rotation that failed must not stay half applied.** The
-                    // numbers were committed before the render and the canvas
-                    // still shows the view-space turn; leaving both is a picture
-                    // that looks turned and exports straight. Put the angle back
-                    // and take the preview rotation off in the same frame.
-                    if (rotationPending) {
-                        rotationPending = false;
-                        geometryRotation = rotationBeforeDrag;
-                        if (compare != null) compare.setPreviewRotation(0f);
-                        if (rotateArc != null) rotateArc.setAngle(geometryRotation);
-                    }
-                    // **A failed render is not an edit.** `scheduleUndo` runs
-                    // before the render does, so a failure would still push the
-                    // state that caused it -- and undo then replayed the error
-                    // instead of the picture before it.
-                    cancelUndo();
-                    statusText.setText(tr("render.render_failed") + SpkError.shortForm(msg));
-                    progressBar.setVisibility(View.GONE);
-                    busyLabel.setVisibility(View.GONE);
-                    rendering = false;
-                    // The foot is one 7 sp line: a failure has to be readable,
-                    // and it has to arrive with enough context to be reported.
-                    showErrorDialog(tr("render.render_failed_2"), SpkError.format(msg)
-                            + "\n\n" + sourceWidth + "×" + sourceHeight
-                            + "\n" + probe.describe());
-                    if (pendingRender) { pendingRender = false; renderImage(); }
-                });
-                // E-1001 is "a plane is bigger than one binding may name", and
-                // the only cure is a smaller session. The import cap already
-                // answers for a normal import, so reaching here means the frame
-                // came in past it -- a native-size import, or a build that had
-                // no cap. Offering the retry beats printing a code and leaving
-                // the user to find the long-press menu.
-                // 1001 is the binding range by name; 1009 is a Vulkan call that
-                // failed without naming one, which on a frame this size is the
-                // same ceiling. Both have the same cure.
-                final int code = SpkError.codeOf(msg);
-                if (code == 1001 || code == 1009) offerSmallerImport();
-            }
-        }).start();
+new RenderWorker(this).run(longEdge);
     }
 
     /**
@@ -11243,9 +10912,9 @@ new BatchExportWorker(this).run(format, tier);
     /** How many `edge-canvas` lines this process has sent. Four is enough to
      *  see every tier once; more would be noise in a table that already reads
      *  one row per export. */
-    private int edgeCanvasSends = 0;
+    int edgeCanvasSends = 0;
 
-    private static String edgeVerdictOfLine(String line) {
+    static String edgeVerdictOfLine(String line) {
         final app.spektralab.domain.EdgeVerdict v =
                 app.spektralab.domain.EdgeVerdict.fromLine(line);
         if (v == null) return null;
