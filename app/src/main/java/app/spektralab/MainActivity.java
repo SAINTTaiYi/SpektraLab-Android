@@ -20,6 +20,9 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
 import app.spektralab.ui.UiPalette;
+import app.spektralab.domain.JsonFields;
+import app.spektralab.domain.PixelHash;
+import app.spektralab.domain.EdgeVerdict;
 import app.spektralab.ui.CompareView;
 import app.spektralab.ui.CurveView;
 import app.spektralab.ui.FilmCoverView;
@@ -5609,16 +5612,7 @@ public class MainActivity extends Activity {
                 + " " + labelOf(PLACE_LABELS, PLACE_IDS, datePlacement);
     }
 
-    private static int jsonInt(String json, String key) {
-        if (json == null) return -1;
-        final String needle = "\"" + key + "\":";
-        final int at = json.indexOf(needle);
-        if (at < 0) return -1;
-        int i = at + needle.length();
-        final int start = i;
-        while (i < json.length() && (json.charAt(i) == '-' || Character.isDigit(json.charAt(i)))) ++i;
-        try { return Integer.parseInt(json.substring(start, i)); } catch (Throwable t) { return -1; }
-    }
+    private static int jsonInt(String json, String key) { return JsonFields.firstInt(json, key); }
 
     private static String fmt1(float v) {
         return String.format(java.util.Locale.US, "%.1f", v);
@@ -10937,10 +10931,7 @@ public class MainActivity extends Activity {
 
     /** `"auto_exposure_ev":0.0755` out of a progress document, for a log line. */
     private static String appliedEvText(String progressJson) {
-        if (progressJson == null) return "(no progress json)";
-        final int at = progressJson.indexOf("\"auto_exposure_ev\"");
-        if (at < 0) return "(none)";
-        return progressJson.substring(at, Math.min(progressJson.length(), at + 40));
+        return JsonFields.snippet(progressJson, "auto_exposure_ev", 40);
     }
 
     /**
@@ -10948,30 +10939,12 @@ public class MainActivity extends Activity {
      * after** that render.
      */
     private void rememberAppliedEv(String progressJson, String tier) {
-        String text = appliedEvText(progressJson);
-        if (progressJson != null) {
-            final int at = progressJson.indexOf("\"auto_exposure_ev\":");
-            if (at >= 0) {
-                int i = at + "\"auto_exposure_ev\":".length();
-                while (i < progressJson.length() && progressJson.charAt(i) == ' ') ++i;
-                final int start = i;
-                while (i < progressJson.length()) {
-                    final char c = progressJson.charAt(i);
-                    if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.'
-                            || c == 'e' || c == 'E') ++i;
-                    else break;
-                }
-                if (i > start) {
-                    try {
-                        final double v = Double.parseDouble(progressJson.substring(start, i));
-                        if (!Double.isNaN(v) && !Double.isInfinite(v)) {
-                            lastAppliedEv = v;
-                            lastAppliedEvValid = true;
-                            lastAppliedEvUri = frameUri(currentFrame);
-                        }
-                    } catch (Throwable spkIgnored) { Diagnostics.ignored("substring:13056", spkIgnored); }
-                }
-            }
+        final String text = appliedEvText(progressJson);
+        final double applied = JsonFields.firstNumber(progressJson, "auto_exposure_ev");
+        if (!Double.isNaN(applied)) {
+            lastAppliedEv = applied;
+            lastAppliedEvValid = true;
+            lastAppliedEvUri = frameUri(currentFrame);
         }
         // One line per *change*, not per frame: the live loop draws at 11 Hz and
         // a steady EV is the normal case.
@@ -11313,9 +11286,7 @@ public class MainActivity extends Activity {
 
     /** FNV-1a over the pixels, the same shape the preview log uses. */
     private static long pixelHash(int[] pixels, int size) {
-        long h = 1469598103934665603L;
-        for (int i = 0; i < size; i += 7) { h ^= pixels[i]; h *= 1099511628211L; }
-        return h;
+        return PixelHash.fnv1a(pixels, size, 7);
     }
 
     /** One line a second is enough to tell "blocked" from "never called". */
@@ -11772,8 +11743,7 @@ public class MainActivity extends Activity {
                 // a no-op -- pure work on the render thread for a byte array nobody
                 // reads. Keep the numbers, drop the encode (see issue #1 in the audit).
                 try {
-                    long hsh = 1469598103934665603L;
-                    for (int i = 0; i < pixels.length; i += 7) { hsh ^= pixels[i]; hsh *= 1099511628211L; }
+                    final long hsh = PixelHash.fnv1a(pixels, pixels.length, 7);
                     final String hashLine = "w=" + w + " h=" + h + " hash=" + Long.toHexString(hsh)
                             + " band=" + testBandRows + " copy=" + copied
                             + " first=" + Integer.toHexString(pixels[0])
@@ -12643,56 +12613,24 @@ public class MainActivity extends Activity {
     private int edgeCanvasSends = 0;
 
     private static String edgeVerdictOfLine(String line) {
-        if (line == null || !line.startsWith("edge ")) return null;
-        // **`Y=` is the part that names the defect.** A ruler is not just
-        // "rough on the left": its bars sit at a fixed pitch. `SL-261110-460E`
-        // and the six samples the user sent both repeat at ~6 % of the height
-        // (117 rows in 2000, 114 in 1920), two rows per bar. Passing the first
-        // eight starts up means the pitch arrives with the report instead of
-        // costing another round trip.
-        // **Two tiers, not one.** A clean Adreno render reads 3-12 with no hot
-        // rows; the Mali report reads 111 with 63. The gap is wide, but waiting
-        // for 100 means the only reports that arrive are the ones that already
-        // reproduce -- and a tier that sits at 30-90 tells us just as much
-        // about which axis is wrong. `edge-canvas` throttles itself, so the
-        // lower tier cannot flood.
-        final java.util.regex.Matcher r = java.util.regex.Pattern
-                .compile("Lrow=(\\d+)@(-?\\d+) n(\\d+) g(\\d+) Y=(\\S+)").matcher(line);
-        if (r.find() && Integer.parseInt(r.group(1)) >= 30 && Integer.parseInt(r.group(3)) >= 10) {
-            return tr("export.left_edge_short_marks_peak") + r.group(1) + " y=" + r.group(2)
-                    + tr("export.rows") + r.group(3) + tr("export.spacing") + r.group(4)
-                    + tr("export.groups") + r.group(5) + " · " + line;
+        final app.spektralab.domain.EdgeVerdict v =
+                app.spektralab.domain.EdgeVerdict.fromLine(line);
+        if (v == null) return null;
+        switch (v.kind) {
+            case "left_short_marks":
+                return tr("export.left_edge_short_marks_peak") + v.first + " y=" + v.second
+                        + tr("export.rows") + v.third + tr("export.spacing") + v.fourth
+                        + tr("export.groups") + v.fifth + " · " + line;
+            case "left_wide_band":
+                return tr("export.left_edge_wide_band_peak") + v.first + " y=" + v.second
+                        + tr("export.rows") + v.third + " · " + line;
+            case "vertical_line":
+                return tr("export.vertical_line_x") + v.first + " Δ=" + v.second + " · " + line;
+            case "side_period":
+                return v.first + " every " + v.second + " px · " + line;
+            default:
+                return null;
         }
-        // The same measurement on a band eight times wider (w/8, capped at 256).
-        // "Left side" on a 3400-wide frame is not the first 53 columns, and a
-        // defect at x=150 is invisible to `Lrow`. On the six samples this band
-        // reads 23-139 with 12-33 hot rows; on a clean Adreno render it reads
-        // 1-6 with none, so the gap is wide enough to name it on its own.
-        final java.util.regex.Matcher w = java.util.regex.Pattern
-                .compile("Wrow=(\\d+)@(-?\\d+) n(\\d+)").matcher(line);
-        if (w.find() && Integer.parseInt(w.group(1)) >= 20 && Integer.parseInt(w.group(3)) >= 10) {
-            return tr("export.left_edge_wide_band_peak") + w.group(1) + " y=" + w.group(2)
-                    + tr("export.rows") + w.group(3) + " · " + line;
-        }
-        // **Eight, not five.** `Vmax` used to be reported in 16-bit units while
-        // this threshold was chosen on 8-bit numbers, so every clean export
-        // cleared it: `SL-261110-460E` is six "vertical line x=1524" reports at
-        // Δ=4.4/255 on a picture with no line in it. Both sides are 8-bit now,
-        // and a 30 % one-pixel seam measures 33-36, so 8 still has four times
-        // the headroom it needs.
-        final java.util.regex.Matcher v = java.util.regex.Pattern
-                .compile("Vmax=(\\d+)@(\\d+)").matcher(line);
-        if (v.find() && Integer.parseInt(v.group(1)) >= 8) {
-            return tr("export.vertical_line_x") + v.group(2) + " Δ=" + v.group(1) + " · " + line;
-        }
-        final java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile(" ([LRTB])=(\\d+)@(-?\\d+) p(\\d+)").matcher(line);
-        while (m.find()) {
-            if (Integer.parseInt(m.group(4)) >= 8) {
-                return m.group(1) + " every " + m.group(4) + " px · " + line;
-            }
-        }
-        return null;
     }
 
     /** The file just written does not match the canvas; the worker decides. */

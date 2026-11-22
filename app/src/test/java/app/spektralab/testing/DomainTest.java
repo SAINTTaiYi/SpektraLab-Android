@@ -1,11 +1,14 @@
 package app.spektralab.testing;
 
 import app.spektralab.domain.AppPreferences;
+import app.spektralab.domain.EdgeVerdict;
 import app.spektralab.domain.EditorState;
+import app.spektralab.domain.JsonFields;
 import app.spektralab.domain.EngineApi;
 import app.spektralab.domain.ImportPlanner;
 import app.spektralab.domain.RenderLookUseCase;
 import app.spektralab.domain.RenderPreviewUseCase;
+import app.spektralab.domain.PixelHash;
 import app.spektralab.domain.SessionApi;
 
 import java.nio.ByteBuffer;
@@ -97,6 +100,29 @@ public final class DomainTest {
         check(!prefs.getBoolean("dark", false), "preferences fallback");
         prefs.putBoolean("dark", true);
         check(prefs.getBoolean("dark", false), "preferences write/read round trip");
+
+        String doc = "{\"auto_exposure_ev\": 0.0756, \"canvas_w\":4182}";
+        check(JsonFields.firstInt(doc, "canvas_w") == 4182, "integer field read");
+        check(Math.abs(JsonFields.firstNumber(doc, "auto_exposure_ev") - 0.0756) < 1e-9,
+                "double field read with a leading space");
+        check(JsonFields.firstInt(doc, "missing") == -1, "missing integer is -1");
+        check(Double.isNaN(JsonFields.firstNumber(doc, "missing")), "missing double is NaN");
+        check(JsonFields.snippet(doc, "auto_exposure_ev", 24).startsWith("\"auto_exposure_ev\""),
+                "field snippet");
+        int[] pixels = {1, 2, 3, 4, 5};
+        long expected = 1469598103934665603L;
+        for (int i = 0; i < pixels.length; i += 7) { expected ^= pixels[i]; expected *= 1099511628211L; }
+        check(PixelHash.fnv1a(pixels, pixels.length, 7) == expected, "pixel hash matches FNV-1a");
+
+        EdgeVerdict shortMarks = EdgeVerdict.fromLine(
+                "edge 4000x3000 Lrow=111@430 n63 g117 Y=100,217 Wrow=5@1 n0");
+        check(shortMarks != null && "left_short_marks".equals(shortMarks.kind)
+                && "111".equals(shortMarks.first), "short-mark verdict from a diagnostic line");
+        EdgeVerdict vertical = EdgeVerdict.fromLine("edge 4000x3000 Vmax=33@1524 Lrow=1@0 n=0");
+        check(vertical != null && "vertical_line".equals(vertical.kind)
+                && "1524".equals(vertical.first), "vertical-line verdict");
+        check(EdgeVerdict.fromLine("edge 4000x3000 Lrow=3@0 n0 Wrow=2@0 n0") == null,
+                "clean edge line has no verdict");
 
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");
