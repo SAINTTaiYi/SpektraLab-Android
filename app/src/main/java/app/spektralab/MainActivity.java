@@ -205,6 +205,16 @@ public class MainActivity extends Activity {
     /** The import's float32 RGB frame: a malloc'd native address, 0 = none.
      *  Not a ByteBuffer -- see `SpektraLabEngine.allocPixels`. */
     private long sourcePixels;
+    /**
+     * **那份暂存是给哪一帧的。**
+     *
+     * <p>`spk_open` 只收到一个地址加一对宽高，它没有办法问「这块内存有多
+     * 大」—— 它照着 `宽 × 高 × 通道 × 4` 字节去 `memcpy`。所以这里把「这块
+     * 缓冲是按哪个尺寸分配的」记下来，导出兜底前对一遍：不匹配就宁可不发。
+     * 见 SL-261122-5433 / -44F1 / -700B（1.7.0，`export:suspend` 之后直接
+     * SIGSEGV，栈在 `upload_data` 的 memcpy 里）。
+     */
+    private int sourcePixelsW, sourcePixelsH;
     private int sourceWidth, sourceHeight;
     /** The pixel budget this import was given. Re-reading it after the decode
      *  reports a smaller number -- the decode itself has taken the memory --
@@ -615,6 +625,9 @@ public class MainActivity extends Activity {
         loadGlowPrefs();
         // Prime the switch `DialBar` reads; the first panel is built after this.
         arrivalAnim();
+        // Same contract: every bar reads the static at draw time, so setting it
+        // before the first panel is built is enough.
+        DialBar.setStyle(getSharedPreferences("ui", MODE_PRIVATE).getInt("slider_style", 0));
         CrashTrail.mark(this, "app:onCreate");
         // The native side, before anything reads it: every object the engine
         // is linked against is loaded by path, and a failure is kept (see
@@ -648,6 +661,11 @@ public class MainActivity extends Activity {
                 .postDelayed(() -> UpdateCheck.check(this, false), 3000);
         // Once per build, and late enough that the canvas has settled first.
         maybeShowFeedbackGroup();
+        // The settings page is forty views of `label()` + font spans. Built here,
+        // on an idle-ish moment, the first tap on the menu is one frame instead
+        // of six.
+        new android.os.Handler(android.os.Looper.getMainLooper())
+                .postDelayed(this::warmSettingsPage, 900);
     }
 
     /**
@@ -1313,6 +1331,22 @@ public class MainActivity extends Activity {
         boolean latLocked;
         /** Notches across the range, and how many of them make a major tick. */
         private static final int kSteps = 96, kMajor = 4, kClickEvery = 2;
+
+        /**
+         * 两套样子，一个值。
+         *
+         * <p>`STYLE_RULER` 是原来的：一列刻度在固定指针下滑过去，数字只在按住
+         * 时露出来。`STYLE_TRACK` 是 coss 的 `p-slider-5`（Track with ticks）：
+         * 一条轨 + 拇指，刻度与数字**一直**印在下面。**只有画法和手指落点的
+         * 映射不同** —— 吸附、弹簧、读数、咔哒、双击归位全部共用。
+         *
+         * <p>静态的，因为设置页改一次要立刻作用到所有已经建好的 bar（它们各自
+         * 在 `onDraw` 里读这个值）。
+         */
+        static final int STYLE_RULER = 0, STYLE_TRACK = 1;
+        private static volatile int style = STYLE_RULER;
+
+        static void setStyle(int s) { style = s == STYLE_TRACK ? STYLE_TRACK : STYLE_RULER; }
         /** Screen pitch of one notch, and the unit their formulas are written in. */
         private static final float kPitchDp = 12f, kUnitDp = 14f;
         private static final long kHoldMs = 360;
@@ -1545,7 +1579,24 @@ public class MainActivity extends Activity {
 
         private float pitch() { return kPitchDp * d; }
 
-        private float pointerX() { return getWidth() * 0.5f; }
+        /**
+         * 指针 / 拇指的 x。
+         *
+         * <p>尺子模式是**正中**（刻度从它下面滑过去）；轨道模式是**拇指**所在
+         * 的位置 —— 双击归位就靠它判断「这一下算不算落在拇指上」。
+         */
+        private float pointerX() {
+            if (style == STYLE_TRACK) {
+                final float x0 = trackX0(), x1 = trackX1();
+                return x0 + (x1 - x0) * Math.max(0f, Math.min(1f, pos / (float) kSteps));
+            }
+            return getWidth() * 0.5f;
+        }
+
+        /** 轨道的两端（拇指半径那么宽的留白，拇指才不会被裁掉半颗）。 */
+        private float trackX0() { return Math.min(9f * d, getWidth() * 0.5f); }
+
+        private float trackX1() { return Math.max(trackX0() + 1f, getWidth() - 9f * d); }
 
         private void startAnim() {
             lastFrameAt = android.os.SystemClock.uptimeMillis();
@@ -1639,7 +1690,11 @@ public class MainActivity extends Activity {
                         if (listener != null) listener.onStartTrackingTouch(this);
                     }
                     movedWhileDown = true;
-                    final float want = posAtDown - (ev.getX() - downX) / pitch();
+                    // **两种手感，一个值。** 尺子是相对的（刻度在固定指针下滑，
+                    // 值是手指移动的增量）；轨道是绝对的（拇指走到手指下面）。
+                    final float want = style == STYLE_TRACK
+                            ? (ev.getX() - trackX0()) / (trackX1() - trackX0()) * kSteps
+                            : posAtDown - (ev.getX() - downX) / pitch();
                     final int notch = Math.max(0, Math.min(kSteps, Math.round(want)));
                     if (notch != target) {
                         target = notch;
@@ -1673,6 +1728,8 @@ public class MainActivity extends Activity {
                         if (listener != null) listener.onStopTrackingTouch(this);
                     }
                     // Their release: throw 150 ms of velocity, then spring.
+                    // 轨道是绝对定位的，松手再往前抛会把值甩过手指停下的地方。
+                    if (style == STYLE_TRACK) vel = 0f;
                     final float projected = target + vel * PROJECT_MS;
                     final int landed = Math.max(0, Math.min(kSteps, Math.round(projected)));
                     if (landed != target) {
@@ -1731,6 +1788,7 @@ public class MainActivity extends Activity {
         @Override protected void onDraw(android.graphics.Canvas c) {
             final int w = getWidth(), h = getHeight();
             if (w <= 0 || h <= 0 || getMax() <= 0) return;
+            if (style == STYLE_TRACK) { drawTrack(c, w, h); return; }
             final float pitch = pitch();
             final float cx = pointerX();
             final float unit = kUnitDp * d;
@@ -1852,6 +1910,79 @@ public class MainActivity extends Activity {
                 c.drawText(text, x, baseline, paint);
                 lastRight = x + tw * 0.5f;
             }
+        }
+
+        /**
+         * 轨道样式 —— 照着 coss 的 `p-slider-5`「Slider with ticks」。
+         *
+         * <p>3 dp 的轨：没走过的一段是 `UI_LINE`，走过的一段是主题色。下面 9 个
+         * 刻度，**偶数位是长的那种、带数字**，奇数位只有一半高 —— 参考里那两份
+         * 高度差就是「尺度」和「装饰」的区别。放不下的数字直接跳过，窄行上宁可
+         * 少一个也不要互相压。
+         *
+         * <p>拇指是一颗实心圆点、外面一圈纸色的缝（在蓝的轨道上才看得出它是
+         * 一个可以抓的东西）；按住时大 12%。
+         */
+        private void drawTrack(android.graphics.Canvas c, int w, int h) {
+            final float x0 = trackX0(), x1 = trackX1();
+            final float trackY = 8f * d;
+            final float half = 1.5f * d;
+            final float frac = Math.max(0f, Math.min(1f, pos / (float) kSteps));
+            final float thumbX = x0 + (x1 - x0) * frac;
+
+            paint.setShader(null);
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setAlpha(0xFF);
+
+            paint.setColor(UI_LINE);
+            rect.set(x0, trackY - half, x1, trackY + half);
+            c.drawRoundRect(rect, half, half, paint);
+
+            paint.setColor(UI_BLUE);
+            rect.set(x0, trackY - half, Math.max(x0, thumbX), trackY + half);
+            c.drawRoundRect(rect, half, half, paint);
+
+            // 8 段 = 9 个刻度
+            final int segs = 8;
+            final float top = 16.5f * d;
+            final boolean intro = introT >= 0f;
+            paint.setTypeface(tfBody == null ? android.graphics.Typeface.DEFAULT : tfBody);
+            paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+            paint.setTextSize(6.5f * d);
+            final float baseline = h - 3f * d;
+            float lastRight = -1e9f;
+            for (int i = 0; i <= segs; ++i) {
+                final float x = x0 + (x1 - x0) * i / segs;
+                final boolean major = (i % 2) == 0;
+                float appear = 1f;
+                if (intro) {
+                    // 从拇指那一格往两边落 —— 和尺子那套「两只手合上」同一个方向感
+                    final float rank = Math.abs(x - thumbX) / Math.max(1f, (x1 - x0) * 0.5f);
+                    appear = Math.max(0f, Math.min(1f, introT * 1.8f - rank * 0.8f));
+                    if (appear <= 0.01f) continue;
+                }
+                paint.setColor(UI_MUTED);
+                paint.setAlpha(Math.round((major ? 0xB4 : 0x78) * appear));
+                final float th = (major ? 4f : 2f) * d * (intro ? (0.4f + 0.6f * appear) : 1f);
+                rect.set(x - 0.5f * d, top, x + 0.5f * d, top + th);
+                c.drawRoundRect(rect, 0.5f * d, 0.5f * d, paint);
+                if (!major || format == null || appear < 0.5f) continue;
+                final String text = format.apply(Math.round(i * getMax() / (float) segs));
+                if (text == null || text.isEmpty()) continue;
+                final float tw = paint.measureText(text);
+                if (x - tw * 0.5f < lastRight + 4f * d) continue;
+                paint.setAlpha(Math.round(0xD0 * appear));
+                c.drawText(text, x, baseline, paint);
+                lastRight = x + tw * 0.5f;
+            }
+
+            // 拇指最后画：纸色的缝先铺，蓝点压在上面
+            final float r = 7f * d * (touching ? 1.12f : 1f);
+            paint.setAlpha(0xFF);
+            paint.setColor(UI_PAPER);
+            c.drawCircle(thumbX, trackY, r + 1.5f * d, paint);
+            paint.setColor(UI_BLUE);
+            c.drawCircle(thumbX, trackY, r, paint);
         }
 
         private static int blend(int from, int to, float t) {
@@ -2685,10 +2816,23 @@ public class MainActivity extends Activity {
     }
 
     private final java.util.List<Frame> frames = new java.util.ArrayList<>();
-    private LinearLayout sourceBar, sourceRow, thumbStrip;
+    private android.view.ViewGroup sourceBar;
+    private LinearLayout sourceRow, thumbStrip;
+    /** 照片栏的底：整条画布蓝 + 一块右缘斜切的白板。 */
+    private ShelfBoard shelfBoard;
+    /** 只画白板那一块里的缩略图。 */
+    private ShelfScroll shelfScroll;
+    /** 画布脚上那一条（文件名 + 状态）：收起时它跟着画布的下缘一起下移。 */
+    private View previewFoot;
+    /** 缩略图那一条：当前这张最后画（不用 `setZ` —— translationZ 会带出投影）。 */
+    private ShelfStrip shelfStrip;
     /** The folded strip: a short stack of prints in the canvas's lower-left. */
     private View shelfHandle;
     private ImageView shelfHandleImage;
+    /** 叠在下面那两张：**也是照片**，不是白框。 */
+    private ImageView shelfHandleImageMid, shelfHandleImageBack;
+    /** 画布 + 照片栏 + 脚上那一条，一起装在一列里（脚要能落到照片栏上）。 */
+    private android.widget.FrameLayout canvasColumn;
     /** The strip's own height, and the one value the fold animates. */
     private static final float SHELF_H_DP = 62f;
     /** The two controls that get out of the way first, and what the stack shows. */
@@ -2708,8 +2852,6 @@ public class MainActivity extends Activity {
     private float shelfFold, shelfFoldVel, shelfFoldTarget;
     private boolean shelfFoldAnimating;
     private long shelfFoldClockNs;
-    private ShelfFlyer shelfFlyer;
-    private android.graphics.Bitmap shelfFlyBmp;
     private HorizontalScrollView thumbScroll;
     private boolean shelfCollapsed = false;
     /** Set while a chip is re-opening a frame, so the import does not append a
@@ -5389,6 +5531,14 @@ public class MainActivity extends Activity {
     }
 
     private static final int LT_KLEIN = 0xFF002FA7;    // the app's accent
+
+    /**
+     * 转场中间那一道。参考实现是 {@code #0c0c0c} —— 在暗色主题下那块黑和纸
+     * 只差几个色阶，中间那一拍整个消失（用户说的「返回没有进入好看」有一半
+     * 是它）。这里用**主题橙**：克莱因蓝 → 橙 → 纸，三个节拍在任何主题下都
+     * 分得清。
+     */
+    private static final int CORNER_ORANGE = 0xFFE8862A;
     /**
      * **暗房的墙不是黑洞.** 一面炭灰的墙（不是 #05060A 的「屏幕关了」），中间偏上
      * 一池暖光：照片挂在一个有深度的表面上，四周的暗角才读得出「走出了光」。
@@ -13119,6 +13269,8 @@ public class MainActivity extends Activity {
         if (shelf != null) {
             for (int i = 0; i < shelf.getChildCount(); ++i) {
                 final View kv = shelf.getChildAt(i);
+                // 脚上那条的 translationY 归 `applyShelfFold` 管（收起时它要往下走）。
+                if (kv == previewFoot) continue;
                 kv.animate().cancel();
                 kv.setTranslationY(dp(14f));
                 kv.animate().translationY(0f)
@@ -13460,12 +13612,8 @@ public class MainActivity extends Activity {
         pillLp.bottomMargin = dp(30);
         stage.addView(comparePill, pillLp);
 
-        shelfHandle = buildShelfHandle();
-        android.widget.FrameLayout.LayoutParams handleLp = new android.widget.FrameLayout.LayoutParams(
-                dp(62), dp(62), android.view.Gravity.BOTTOM | android.view.Gravity.START);
-        handleLp.leftMargin = dp(12);
-        handleLp.bottomMargin = dp(34);
-        stage.addView(shelfHandle, handleLp);
+        // 收起后的照片叠现在住在照片栏自己里（见 `buildSourceBar`），
+        // 不再浮在画布左下角 —— 蓝色要能一路并到画布上去。
 
         android.widget.FrameLayout jobs = new android.widget.FrameLayout(this);
         progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
@@ -13488,9 +13636,15 @@ public class MainActivity extends Activity {
         // **画布和它的照片栏是一列。** 竖屏时这一列就是整个 app，横屏时它是
         // 左半边 —— 所以这里多包一层，排法由 `applyEditorLayout()` 决定。
         app.addView(leftColumn, new LinearLayout.LayoutParams(-1, 0, 1f));
-        leftColumn.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1f));
+        // **画布、照片栏、脚上那一条是同一列里的三件东西。** 脚原来挂在 `stage`
+        // 里，而 stage 到照片栏的上沿就结束了 —— 想往下走一步就被裁掉；挂进照片
+        // 栏也试过，`clipChildren=false` 在真机上并没有让它画到父视图之外。装进
+        // 同一个 FrameLayout，脚就永远在自己的父视图里面，怎么走都不会被切。
+        canvasColumn = new android.widget.FrameLayout(this);
+        leftColumn.addView(canvasColumn, new LinearLayout.LayoutParams(-1, 0, 1f));
+        canvasColumn.addView(stage, new android.widget.FrameLayout.LayoutParams(-1, -1));
         editorSourceBar = buildSourceBar();
-        leftColumn.addView(editorSourceBar, new LinearLayout.LayoutParams(-1, dp(SHELF_H_DP)));
+        fillCanvasColumn();
 
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
@@ -13613,13 +13767,14 @@ public class MainActivity extends Activity {
             ((android.view.ViewGroup) filmPaperRow.getParent()).removeView(filmPaperRow);
         }
 
-        leftColumn.addView(canvasStage, new LinearLayout.LayoutParams(-1, 0, 1f));
-        leftColumn.addView(editorSourceBar, new LinearLayout.LayoutParams(-1,
-                dp(SHELF_H_DP * (1f - shelfFold))));
-        editorSourceBar.setVisibility(frames.isEmpty() || shelfCollapsed ? View.GONE : View.VISIBLE);
+        editorSourceBar.setVisibility(View.VISIBLE);
+        fillCanvasColumn();
 
         if (land) {
             app.setOrientation(LinearLayout.HORIZONTAL);
+            if (leftColumn.getParent() instanceof android.view.ViewGroup) {
+                ((android.view.ViewGroup) leftColumn.getParent()).removeView(leftColumn);
+            }
             app.addView(leftColumn, new LinearLayout.LayoutParams(0, -1, 1f));
             app.addView(editorRule(), new LinearLayout.LayoutParams(Math.max(1, dp(0.6f)), -1));
 
@@ -14517,6 +14672,8 @@ public class MainActivity extends Activity {
         menuPill.setPadding(dp(4), dp(4), dp(4), dp(4));
         menuPill.setContentDescription("设置");
         menuPill.setOnClickListener(v -> showSettings());
+        // **按下就得有反应。** 转场再快也有两帧的延迟，手指要知道它被接住了。
+        pressFeedback(menuPill);
         // **Left of the wordmark, not between it and the version.** The menu
         // belongs at the edge of the bar, where every other app puts it;
         // between the name and its version number it reads as part of the name.
@@ -14702,6 +14859,7 @@ public class MainActivity extends Activity {
                 -1, dp(20), android.view.Gravity.BOTTOM);
         footLp.bottomMargin = dp(8);
         stage.addView(foot, footLp);
+        previewFoot = foot;
     }
 
     /** Solid paper shelf outside the canvas: ＋, one chip per photograph opened
@@ -14711,11 +14869,199 @@ public class MainActivity extends Activity {
      *  that card is the same toggle; two controls for one state, four dp apart,
      *  read as two different things.
      */
+    /**
+     * 照片栏的底：整条画布蓝，上面压一块白板，白板右缘是左上→右下的斜切。
+     *
+     * <p>蓝和白是**同一条边**的两侧、一条路径一次填充，所以中间没有缝：两块
+     * 矩形各画各的，抗锯齿边一叠就是那条 1 px 的白线。
+     */
+    private static final class ShelfBoard extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Path white = new android.graphics.Path();
+        private final int blue, paper;
+        private float topX, bottomX, bandTop, bandBottom;
+
+        ShelfBoard(int blue, int paper) {
+            this.blue = blue;
+            this.paper = paper;
+        }
+
+        /**
+         * 斜切的四个数：上下两端在 x 上的位置，以及**这条斜切占的上下边**。
+         *
+         * <p>蓝色不是「照片栏那么高的一条」，而是**和缩略图同高的一条**：照片上下
+         * 各留 10 dp 的白，斜切夹在中间那 42 dp 里。这样它和照片的底（和顶）严丝
+         * 合缝，也不会和上方的画布连成一片 —— 收起时这两条留白归零，蓝才铺满整条。
+         */
+        void setEdge(float top, float bottom, float yTop, float yBottom) {
+            if (Math.abs(top - topX) < 0.02f && Math.abs(bottom - bottomX) < 0.02f
+                    && Math.abs(yTop - bandTop) < 0.02f && Math.abs(yBottom - bandBottom) < 0.02f) return;
+            topX = top;
+            bottomX = bottom;
+            bandTop = yTop;
+            bandBottom = yBottom;
+            invalidateSelf();
+        }
+
+        @Override public void draw(android.graphics.Canvas c) {
+            final android.graphics.Rect b = getBounds();
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+            paint.setShader(null);
+            paint.setColor(blue);
+            c.drawRect(b, paint);
+            if (bottomX <= b.left) return;
+            // **白板 = 整块减去斜切那一条。** 顺序：上边 → 右上 → 下到斜切的上边 →
+            // 斜到斜切的下边 → 回到右边 → 右下 → 左下 → 闭合。非凸形状，用 Fill。
+            final float y0 = b.top + bandTop;
+            final float y1 = b.top + bandBottom;
+            white.reset();
+            white.moveTo(b.left, b.top);
+            white.lineTo(b.right, b.top);
+            white.lineTo(b.right, y0);
+            white.lineTo(topX, y0);
+            white.lineTo(bottomX, y1);
+            white.lineTo(b.right, y1);
+            white.lineTo(b.right, b.bottom);
+            white.lineTo(b.left, b.bottom);
+            white.close();
+            paint.setColor(paper);
+            c.drawPath(white, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.OPAQUE; }
+    }
+
+    /**
+     * 缩略图只在白板上露出来：蓝扫过去的部分**不画**，不是盖一层 —— 盖的话
+     * 缩略图会从蓝上面浮出来。
+     *
+     * <p>裁剪路径的左边界给得很远，因为收起来时缩略图会走到本视图左边界之外
+     * （`stackX` 16 dp 在整条坐标系里，而本视图从 50 dp 开始）。
+     */
+    private static final class ShelfScroll extends android.widget.HorizontalScrollView {
+        private final android.graphics.Path clip = new android.graphics.Path();
+        private float edgeTop, edgeBottom, bandTop, bandBottom;
+        private boolean scrollable = true;
+
+        ShelfScroll(android.content.Context c) {
+            super(c);
+            setHorizontalScrollBarEnabled(false);
+            setOverScrollMode(OVER_SCROLL_NEVER);
+            setClipChildren(false);
+            setClipToPadding(false);
+        }
+
+        void setEdge(float top, float bottom, float y0, float y1) {
+            if (Math.abs(top - edgeTop) < 0.02f && Math.abs(bottom - edgeBottom) < 0.02f
+                    && Math.abs(y0 - bandTop) < 0.02f && Math.abs(y1 - bandBottom) < 0.02f) return;
+            edgeTop = top;
+            edgeBottom = bottom;
+            bandTop = y0;
+            bandBottom = y1;
+            invalidate();
+        }
+
+        void setScrollable(boolean on) { scrollable = on; }
+
+        @Override public boolean onInterceptTouchEvent(android.view.MotionEvent e) {
+            return scrollable && super.onInterceptTouchEvent(e);
+        }
+
+        @Override public boolean onTouchEvent(android.view.MotionEvent e) {
+            return scrollable && super.onTouchEvent(e);
+        }
+
+        @Override protected void dispatchDraw(android.graphics.Canvas c) {
+            if (edgeBottom <= 0.5f) return;          // 整条都被蓝盖住了
+            final int save = c.save();
+            // **只裁照片那一条。** 缩略图正好在这 42 dp 里，所以按这条带裁不会
+            // 切掉任何东西；而它上面的 10 dp、下面的 10 dp 是白 —— 蓝永远不会从
+            // 缩略图上面或下面露出来。梯形是凸的，硬件加速的 `clipPath` 支持。
+            final float y0 = bandTop, y1 = bandBottom;
+            clip.reset();
+            clip.moveTo(-20000f, y0);
+            clip.lineTo(edgeTop, y0);
+            clip.lineTo(edgeBottom, y1);
+            clip.lineTo(-20000f, y1);
+            clip.close();
+            c.clipPath(clip);
+            super.dispatchDraw(c);
+            c.restoreToCount(save);
+        }
+    }
+
+    /**
+     * 缩略图那一条。**只想改画序，不要投影。**
+     *
+     * <p>1.7.1r 用 `View.setZ` 把当前这张顶到最上面 —— 而 `setZ` 改的是
+     * translationZ，那是要画阴影的：每一张缩略图都带了一层软影，看起来像卡片。
+     * 画序是 `ViewGroup` 自己的事，用 `getChildDrawingOrder` 就够了。
+     */
+    private static final class ShelfStrip extends LinearLayout {
+        private int primary = -1;
+
+        ShelfStrip(android.content.Context c) {
+            super(c);
+            setChildrenDrawingOrderEnabled(true);
+        }
+
+        void setPrimary(int index) { primary = index; }
+
+        @Override protected int getChildDrawingOrder(int count, int index) {
+            if (primary < 0 || primary >= count) return index;
+            if (index == count - 1) return primary;          // 当前这张最后画 = 最上面
+            return index < primary ? index : index + 1;
+        }
+    }
+
+    /** 把画布、照片栏、脚上那一条按当前状态装进 `canvasColumn`（转屏也走这里）。 */
+    private void fillCanvasColumn() {
+        if (canvasColumn == null) return;
+        // `applyEditorLayout` 开头会 `leftColumn.removeAllViews()`，把这一列也摘下来。
+        if (leftColumn != null && canvasColumn.getParent() != leftColumn) {
+            if (canvasColumn.getParent() instanceof android.view.ViewGroup) {
+                ((android.view.ViewGroup) canvasColumn.getParent()).removeView(canvasColumn);
+            }
+            leftColumn.addView(canvasColumn, new LinearLayout.LayoutParams(-1, -1));
+        }
+        canvasColumn.removeAllViews();
+        if (canvasStage != null) {
+            // **画布不能压到照片栏底下。** 它是 match_parent，照片栏是叠在它上面
+            // 的一层 —— 不给下边距的话，照片的取景框会比以前高 62 dp。
+            final android.widget.FrameLayout.LayoutParams slp =
+                    new android.widget.FrameLayout.LayoutParams(-1, -1);
+            slp.bottomMargin = dp(frames.isEmpty() ? 0f : SHELF_H_DP);
+            canvasColumn.addView(canvasStage, slp);
+        }
+        if (editorSourceBar != null) {
+            canvasColumn.addView(editorSourceBar, new android.widget.FrameLayout.LayoutParams(
+                    -1, dp(frames.isEmpty() ? 0f : SHELF_H_DP), android.view.Gravity.BOTTOM));
+        }
+        if (previewFoot != null) {
+            final android.view.ViewGroup old = (android.view.ViewGroup) previewFoot.getParent();
+            if (old != null && old != canvasColumn) old.removeView(previewFoot);
+            final android.widget.FrameLayout.LayoutParams flp = new android.widget.FrameLayout.LayoutParams(
+                    -1, dp(20), android.view.Gravity.BOTTOM);
+            flp.bottomMargin = dp(8);
+            canvasColumn.addView(previewFoot, flp);
+        }
+    }
+
     private View buildSourceBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.VERTICAL);
-        bar.setBackgroundColor(UI_PAPER);
+        final android.widget.FrameLayout bar = new android.widget.FrameLayout(this);
         sourceBar = bar;
+        // **和画布同一个颜色。** 换成克莱因蓝试过一版：斜切确实被「圈」出来了，
+        // 可收起以后整条和画布成了两种蓝 —— 那是更糟的错。同色时把它和画布分开
+        // 的是**白**：斜切只占缩略图那 42 dp，上下各留 10 dp 白，所以它读成「照片
+        // 栏里的一块」，而不是「从屏幕顶通下来的柱子」。
+        shelfBoard = new ShelfBoard(UI_STAGE, UI_PAPER);
+        bar.setBackground(shelfBoard);
+        // 宽度只有布局之后才知道，而 `updateShelfVisibility` 常在布局之前跑：
+        // 每次排完版按当前的 p 再算一遍斜切线的位置。
+        bar.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> applyShelfFold(shelfFold));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -14731,58 +15077,55 @@ public class MainActivity extends Activity {
 
         // The strip. Empty until a photograph is opened: no placeholder tile,
         // because an empty shelf is not a missing control.
-        thumbScroll = new HorizontalScrollView(this);
-        thumbScroll.setHorizontalScrollBarEnabled(false);
-        thumbScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        thumbStrip = new LinearLayout(this);
+        shelfScroll = new ShelfScroll(this);
+        thumbScroll = shelfScroll;
+        shelfStrip = new ShelfStrip(this);
+        thumbStrip = shelfStrip;
         thumbStrip.setOrientation(LinearLayout.HORIZONTAL);
         thumbStrip.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        thumbScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
-        row.addView(thumbScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        shelfScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
+        row.addView(shelfScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        final TextView fold = label("\u2039", 15, UI_MUTED, tfHan);
+        // 白字的 ‹：它站在蓝色斜切里，不是站在纸上。
+        final TextView fold = label("\u2039", 15, uiOnCanvas(), tfHan);
         fold.setGravity(android.view.Gravity.CENTER);
         fold.setOnClickListener(v -> setShelfCollapsed(true));
         shelfFoldBtn = fold;
         pressFeedback(fold);
-        row.addView(fold, new LinearLayout.LayoutParams(dp(28), dp(48)));
+        // **缩略图停在斜切之前，不钻进蓝里。** 左外边距就是那道斜切的顶宽
+        // （26 dp）再加一点余量：否则滚到最后一张时它会被前沿按在 16 dp 处，
+        // 而那时 p 还是 0。
+        final LinearLayout.LayoutParams foldLp = new LinearLayout.LayoutParams(dp(28), dp(48));
+        foldLp.leftMargin = dp(32);
+        row.addView(fold, foldLp);
 
-        bar.addView(row, new LinearLayout.LayoutParams(-1, dp(62)));
+        bar.addView(row, new android.widget.FrameLayout.LayoutParams(-1, dp(62)));
+
+        shelfHandle = buildShelfHandle();
+        final android.widget.FrameLayout.LayoutParams stackLp =
+                new android.widget.FrameLayout.LayoutParams(dp(48), dp(42),
+                        android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL);
+        stackLp.leftMargin = dp(16);
+        bar.addView(shelfHandle, stackLp);
         return bar;
     }
+
 
     /** Folded: three cards stacked at the canvas's lower-left corner, the way a
      *  short stack of prints looks -- one picture, two edges behind it, and a
      *  chevron that says the rest of the strip is that way. */
     private View buildShelfHandle() {
-        final int card = dp(52), step = dp(4);
-        android.widget.FrameLayout handle = new android.widget.FrameLayout(this);
-        handle.setVisibility(View.GONE);
+        final int card = dp(42);
+        final android.widget.FrameLayout handle = new android.widget.FrameLayout(this);
+        handle.setVisibility(View.INVISIBLE);
+        handle.setClipChildren(false);
 
-        for (int i = 2; i >= 1; --i) {
-            final View edge = new View(this);
-            if (i == 2) shelfEdgeBack = edge; else shelfEdgeMid = edge;
-            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-            bg.setColor(i == 2 ? 0xFFD9D9D3 : 0xFFECECE7);
-            bg.setCornerRadius(dp(7));
-            bg.setStroke(Math.max(1, dp(1)), UI_LINE);
-            edge.setBackground(bg);
-            android.widget.FrameLayout.LayoutParams lp =
-                    new android.widget.FrameLayout.LayoutParams(card, card);
-            lp.leftMargin = step * i;
-            lp.topMargin = step * i;
-            handle.addView(edge, lp);
-        }
-
-        shelfHandleImage = new ImageView(this);
-        shelfHandleImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        shelfHandleImage.setClipToOutline(true);
-        shelfHandleImage.setOutlineProvider(new android.view.ViewOutlineProvider() {
-            @Override public void getOutline(View v, android.graphics.Outline o) {
-                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), dp(7));
-            }
-        });
-        handle.addView(shelfHandleImage, new android.widget.FrameLayout.LayoutParams(card, card));
+        // **三张照片，不是三张白框。** 最上面是当前这张，后面两张是它前面那两张，
+        // 依次向右下错开 3 dp / 6 dp；框和缩略图是同一套（UI_GROUND + 细边 + 2 dp
+        // 内边距），所以 0.78→0.92 的交接看不出接缝。
+        shelfHandleImageBack = stackCard(handle, card, 2, 1, false);
+        shelfHandleImageMid = stackCard(handle, card, 1, 1, false);
+        shelfHandleImage = stackCard(handle, card, 0, 2, true);
 
         TextView chevron = label("\u203a", 14, uiOnCanvas(), tfDisplay);
         shelfChevron = chevron;
@@ -14794,6 +15137,31 @@ public class MainActivity extends Activity {
         handle.setOnClickListener(v -> setShelfCollapsed(false));
         return handle;
     }
+
+    /** 叠里的一张：框 + 照片，按 `step` 向右下错开 3 dp × step。 */
+    private ImageView stackCard(android.widget.FrameLayout handle, int card, int step,
+                                int strokeDp, boolean active) {
+        final android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+        final android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(UI_GROUND);
+        bg.setStroke(Math.max(1, dp(strokeDp)), active ? UI_BLUE : UI_LINE);
+        box.setBackground(bg);
+        box.setPadding(dp(2), dp(2), dp(2), dp(2));
+        final ImageView img = new ImageView(this);
+        img.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        box.addView(img, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        final android.widget.FrameLayout.LayoutParams lp =
+                new android.widget.FrameLayout.LayoutParams(card, card);
+        lp.leftMargin = dp(3 * step);
+        lp.topMargin = dp(3 * step);
+        handle.addView(box, lp);
+        if (step == 2) shelfEdgeBack = box;
+        else if (step == 1) shelfEdgeMid = box;
+        return img;
+    }
+
+
 
     private Look captureLook() {
         final Look look = new Look();
@@ -15397,55 +15765,55 @@ public class MainActivity extends Activity {
 
     private void updateShelfHandle() {
         if (shelfHandleImage == null) return;
-        Bitmap thumb = (currentFrame >= 0 && currentFrame < frames.size())
-                ? frames.get(currentFrame).thumb : null;
-        shelfHandleImage.setImageBitmap(thumb);
+        final int n = frames.size();
+        final int cur = (currentFrame >= 0 && currentFrame < n) ? currentFrame : (n > 0 ? 0 : -1);
+        if (cur < 0) {
+            shelfHandleImage.setImageBitmap(null);
+            if (shelfHandleImageMid != null) shelfHandleImageMid.setImageBitmap(null);
+            if (shelfHandleImageBack != null) shelfHandleImageBack.setImageBitmap(null);
+            return;
+        }
+        // **三张都有画面。** 照片不够三张时后面两张就重复当前这张 —— 一叠同款
+        // 也比「白色透明框」像一叠照片。
+        shelfHandleImage.setImageBitmap(frames.get(cur).thumb);
+        if (shelfHandleImageMid != null) {
+            shelfHandleImageMid.setImageBitmap(frames.get(Math.max(0, cur - 1)).thumb);
+        }
+        if (shelfHandleImageBack != null) {
+            shelfHandleImageBack.setImageBitmap(frames.get(Math.max(0, cur - 2)).thumb);
+        }
     }
 
-    /** Fold or unfold the photograph strip -- one spring, both directions.
+
+    /** 收起 / 展开照片栏 —— 一个弹簧，两个方向。
      *
-     * <p>The strip costs 62 dp above the panels; the stack at the canvas's
-     * lower left costs nothing. What used to be a switch of three visibilities
-     * and one `LayoutParams.height` is now a single animated number (`shelfFold`)
-     * that the container's height, the two controls, every chip, the two card
-     * edges and the flying picture are all read from -- see
-     * {@link #applyShelfFold(float)}. That is also what makes it interruptible:
-     * a second tap only moves the target.
+     * <p>展开时照片栏占 62 dp；收起时它**不缩高度**：白板被克莱因蓝从右往左
+     * 扫掉，整条并进上方的画布，缩略图被前沿推着叠到左边 16 dp 处。所有东西都
+     * 读同一个 `p`（见 {@link #applyShelfFold}），所以中途再点一次只是把目标反
+     * 过来，位置和速度都留着，原路返回。
      */
     private void setShelfCollapsed(boolean collapsed) {
-        // Nothing to fold into: with no photographs the handle would not be
-        // drawn, and ＋ would go with the row -- a one-way trip.
+        // 没有照片就没有可收的东西：叠是零张照片的叠，再展开也没有出口。
         if (collapsed && frames.isEmpty()) return;
         final float target = collapsed ? 1f : 0f;
         if (shelfCollapsed == collapsed && Math.abs(shelfFoldTarget - target) < 0.001f
                 && !shelfFoldAnimating) return;
         shelfCollapsed = collapsed;
         if (frames.isEmpty() || Math.abs(shelfFold - target) < 0.001f) {
-            // Restore, or the first layout: no animation, just the end state.
+            // 恢复存档，或者第一次排版：不播动画，直接落到端点。
             updateShelfVisibility();
             return;
         }
-        // **The strip has to exist while it moves.** A GONE view has no rect,
-        // and its chips are what the flyer lifts off from.
         if (sourceBar != null) sourceBar.setVisibility(View.VISIBLE);
-        if (shelfHandle != null) {
-            shelfHandle.setVisibility(View.VISIBLE);
-            // No second tap until it lands: the handle is under the pointer
-            // while its own picture is still in the air.
-            shelfHandle.setClickable(!collapsed);
-        }
-        if (collapsed) updateShelfHandle();
         beginShelfFold(target);
     }
 
-    /** The strip is furniture: it exists only when there is something on it.
-     *  Before the first import it is not folded, it is absent -- the canvas's
-     *  own 选择照片 button is the way in, and a 62 dp row of nothing above the
-     *  panels is just a gap.
+
+    /** 照片栏是家具：有照片才在，没有它就是一个缺口。
      *
-     * <p>While a fold is running this is a no-op: the animation owns the strip's
-     * height and the handle's visibility, and a chip arriving mid-flight must
-     * not reset either. `finishShelfFold` reconciles them when it lands.
+     * <p>展开和收起**都是 62 dp** —— 收起时它是画布的一部分（白板扫掉了），
+     * 并不是消失了，所以这里只改可见性，从不改高度。动画在跑时这里什么都不做：
+     * 那一刻条子上的每一件东西都由 `applyShelfFold` 说了算。
      */
     private void updateShelfVisibility() {
         if (sourceBar == null) return;
@@ -15453,28 +15821,39 @@ public class MainActivity extends Activity {
         shelfFold = shelfCollapsed ? 1f : 0f;
         shelfFoldTarget = shelfFold;
         shelfFoldVel = 0f;
-        final boolean show = !frames.isEmpty() && !shelfCollapsed;
-        sourceBar.setVisibility(show ? View.VISIBLE : View.GONE);
-        android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
-        if (lp != null) {
-            lp.height = dp(show ? SHELF_H_DP : 0);
+        final boolean show = !frames.isEmpty();
+        // **条子恒在，只是没有照片时高度为 0。** 画布脚上那条文件名/状态挂在它
+        // 里面（要能滑到照片栏上），条子 GONE 的话它也会跟着消失。
+        sourceBar.setVisibility(View.VISIBLE);
+        if (sourceRow != null) sourceRow.setVisibility(show ? View.VISIBLE : View.GONE);
+        final int h = dp(show ? SHELF_H_DP : 0f);
+        final android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
+        if (lp != null && lp.height != h) {
+            lp.height = h;
             sourceBar.setLayoutParams(lp);
         }
-        if (shelfHandle != null) {
-            shelfHandle.setVisibility(shelfCollapsed && !frames.isEmpty()
-                    ? View.VISIBLE : View.GONE);
-            shelfHandle.setClickable(shelfCollapsed && !frames.isEmpty());
+        // 画布的下边距跟着走：照片的取景框永远到照片栏的上沿为止。
+        if (canvasStage != null && canvasStage.getLayoutParams()
+                instanceof android.widget.FrameLayout.LayoutParams) {
+            final android.widget.FrameLayout.LayoutParams slp =
+                    (android.widget.FrameLayout.LayoutParams) canvasStage.getLayoutParams();
+            if (slp.bottomMargin != h) {
+                slp.bottomMargin = h;
+                canvasStage.setLayoutParams(slp);
+            }
         }
-        if (shelfHandleImage != null) shelfHandleImage.setAlpha(1f);
+        if (shelfHandle != null && !show) shelfHandle.setVisibility(View.INVISIBLE);
+        updateShelfHandle();
         resetShelfControls();
         resetFrameChips();
-        applyShelfCorner(shelfCollapsed ? 1f : 0f);
-        dropShelfFlyer();
+        applyShelfFold(shelfFold);
     }
+
 
     /** A control that says it was hit: 0.88 on the way down, eased back on release. */
     private void pressFeedback(final View v) {
         v.setOnTouchListener((view, ev) -> {
+            if (!view.isEnabled()) return false;
             switch (ev.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_DOWN:
                     view.animate().cancel();
@@ -15498,41 +15877,24 @@ public class MainActivity extends Activity {
     // 照片栏 ⇄ 左下角的照片叠
     // -----------------------------------------------------------------------
 
-    /** Start (or re-aim) the spring. The position and the velocity are kept. */
+    /** 起（或改）一次：只动目标，位置和速度原样带着。 */
     private void beginShelfFold(float target) {
+        if (sourceBar != null) sourceBar.setVisibility(View.VISIBLE);
+        if (target > 0.5f) updateShelfHandle();
+        shelfFoldTarget = target;
         if (uiRoot == null) {
-            shelfFold = shelfFoldTarget = target;
+            shelfFold = target;
             applyShelfFold(target);
             finishShelfFold();
             return;
         }
-        if (shelfFlyer == null) buildShelfFlyer();
-        shelfFlyBmp = primaryFrameThumb();
-        // **A re-aim is not a new flight.** Only a fresh one lifts the picture
-        // off a real view; a reversal keeps the rect, the corner, the border and
-        // the shadow it has at this instant, and the spring carries them back.
-        if (!shelfFoldAnimating && shelfFlyer != null && shelfFlyBmp != null) {
-            shelfFlyer.setBitmap(shelfFlyBmp);
-            final boolean toHandle = target > 0.5f;
-            final android.graphics.RectF start = globalRect(toHandle ? primaryChip() : shelfHandleImage);
-            if (start != null) {
-                moveShelfFlyer(start.left, start.top, start.width(), start.height());
-                shelfFlyer.setCorner(dp(toHandle ? 4f : 11f));
-                shelfFlyer.setBorder(toHandle ? 1f : 0f);
-                shelfFlyer.setShadow(toHandle ? 0f : 1f);
-                shelfFlyer.setVisibility(View.VISIBLE);
-                // The destination must not hold a second copy while the picture
-                // is still in the air.
-                if (shelfHandleImage != null) shelfHandleImage.setAlpha(0f);
-            }
-        }
-        shelfFoldTarget = target;
         if (!shelfFoldAnimating) {
             shelfFoldAnimating = true;
             shelfFoldClockNs = 0L;
             shelfFoldPost();
         }
     }
+
 
     private void shelfFoldPost() {
         if (uiRoot == null) return;
@@ -15547,11 +15909,10 @@ public class MainActivity extends Activity {
             float dt = shelfFoldClockNs == 0L ? 0.016f : (now - shelfFoldClockNs) / 1e9f;
             shelfFoldClockNs = now;
             dt = Math.max(0.001f, Math.min(dt, 1f / 30f));
-            // 0.86 / 420 folding, 0.85 / 400 unfolding: crisp off the mark, soft
-            // into the stop, and no rubber band at the end of either.
-            final boolean folding = shelfFoldTarget > shelfFold;
-            final float k = folding ? 420f : 400f;
-            final float zeta = folding ? 0.86f : 0.85f;
+            // 阻尼 0.92 / 刚度 300，两个方向同一组：起步就看得出在动，落位
+            // 不回头（过冲 0.06 %），380–420 ms 之间停稳。
+            final float k = 300f;
+            final float zeta = 0.92f;
             final float c = 2f * zeta * (float) Math.sqrt(k);
             for (int i = 0; i < 2; ++i) {
                 final float acc = -k * (shelfFold - shelfFoldTarget) - c * shelfFoldVel;
@@ -15571,181 +15932,150 @@ public class MainActivity extends Activity {
     };
 
     /**
-     * One frame of the transition, read off `p` (0 = strip out, 1 = folded).
+     * 一帧：整条动效都读这一个 `p`（0 = 展开，1 = 收成一张叠）。
      *
-     * <p>Every window below is a range of `p`, not of time, which is what makes
-     * the whole thing reversible: reverse the spring and each part unwinds in
-     * the order it wound up, at the speed it is actually moving.
+     * <p>每一段都是 `p` 的区间，不是时间的区间 —— 所以中途反向时每一件东西
+     * 都按自己的进度倒回去，顺序和速度正是卷回来的那一段。
      */
     private void applyShelfFold(float pRaw) {
         final float p = clamp01(pRaw);
-        // 1. The container's height. The stage is the weighted child above it,
-        //    so the canvas takes exactly what the strip gives up and the panels
-        //    under it go down by the same amount -- three edges, one value.
-        if (sourceBar != null) {
-            final android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
-            if (lp != null) {
-                final int h = Math.round(dp(SHELF_H_DP) * (1f - p));
-                if (lp.height != h) {
-                    lp.height = h;
-                    sourceBar.setLayoutParams(lp);
+        final int w = sourceBar == null ? 0 : sourceBar.getWidth();
+        // 白板右缘（左上 → 右下）：下端从「容器宽 − 38 dp」推到 0，上端永远
+        // 比它早一条 26 dp 的斜边。蓝与白就是这条边的两侧。
+        final float bottomX = Math.max(0f, (w - dp(38f)) * (1f - p));
+        final float topX = bottomX - dp(26f);
+        // **斜切只占缩略图那一条。** 照片 42 dp 居中在 62 dp 里，上下各留 10 dp 白；
+        // 收起时这两条留白跟着归零，蓝才铺满整条。
+        final float pad = dp(10f) * (1f - p);
+        final float bandTop = pad;
+        final float bandBottom = dp(SHELF_H_DP) - pad;
+        if (shelfBoard != null) shelfBoard.setEdge(topX, bottomX, bandTop, bandBottom);
+        if (shelfScroll != null) {
+            final float left = shelfScroll.getLeft();
+            final float top = shelfScroll.getTop();
+            shelfScroll.setEdge(topX - left, bottomX - left, bandTop - top, bandBottom - top);
+            // 收起之后那一条不接手势：手指底下是照片叠，不是一条看不见的缩略图。
+            shelfScroll.setScrollable(p < 0.5f);
+        }
+        // ＋：p 0 → 0.35，原地缩到 0.6 并淡出，给左边的照片叠让出位置。
+        final float add = clamp01(p / 0.35f);
+        if (shelfAddBtn != null) {
+            final float sc = 1f - 0.4f * add;
+            shelfAddBtn.setAlpha(1f - add);
+            shelfAddBtn.setScaleX(sc);
+            shelfAddBtn.setScaleY(sc);
+        }
+        // ‹：p 0 → 0.18，淡出并往斜切里退 8 dp。
+        final float fold = clamp01(p / 0.18f);
+        if (shelfFoldBtn != null) {
+            shelfFoldBtn.setAlpha(1f - fold);
+            shelfFoldBtn.setTranslationX(-dp(8f) * fold);
+        }
+        // **淡出不是禁用。** 透明的 ＋ / ‹ 仍然接手指：收起来以后 ＋ 正好在
+        // 照片叠底下，点一下会开出导入单。各自按自己的淡出进度闭嘴。
+        if (shelfAddBtn != null && shelfAddBtn.isEnabled() != (p < 0.30f))
+            shelfAddBtn.setEnabled(p < 0.30f);
+        if (shelfFoldBtn != null && shelfFoldBtn.isEnabled() != (p < 0.15f))
+            shelfFoldBtn.setEnabled(p < 0.15f);
+        pushShelfChips(p, bottomX);
+        applyShelfStack(p);
+        // **画布的下缘跟着蓝一起落到照片栏的底。** 收起以后那一条并进了画布，
+        // 脚上的文件名/状态要是留在原地，就悬在半空。左边给照片叠让开一个身位。
+        if (previewFoot != null) {
+            // 展开时它比画布的下沿高一个照片栏（位置和以前一模一样）；收起时落到
+            // 照片栏的下沿 = 画布视觉上的新底边。没有照片时照片栏高度是 0。
+            final float lift = frames.isEmpty() ? 0f : dp(SHELF_H_DP);
+            previewFoot.setTranslationY(lift * (p - 1f));
+            final int left = Math.round(dp(16f + 50f * p));
+            if (previewFoot.getPaddingLeft() != left) {
+                previewFoot.setPadding(left, 0, dp(16), 0);
+            }
+        }
+    }
+
+    /** 蓝色前沿推着缩略图往左：谁被追上谁动，先追尾，再一张一张叠起来。 */
+    private void pushShelfChips(float p, float bottomX) {
+        if (thumbStrip == null || shelfScroll == null) return;
+        // 斜切在缩略图垂直中心（62 dp 的一半）处的 X —— 那才是推板的前沿。
+        final float front = bottomX - dp(13f) - dp(10f);
+        final float stackX = dp(16f);
+        // **只按看得见的那一段算碰撞。** 条子外面还有半张缩略图（滚到最后一张
+        // 时它探出右边界），它的右缘在墙外面，可谁也不该在 p = 0 就被推走。
+        final float stripRight = shelfScroll.getLeft() + shelfScroll.getWidth();
+        // 被推到位的最后一张换成头上那张卡：两者位置、尺寸一致，所以是**互换**
+        // 而不是叠加上去 —— 提前到 0.78，好让蓝色扫过缩略图之前它已经接住了。
+        final float overlap = clamp01((p - 0.78f) / 0.14f);
+        // 当前这张最后画（画序，不是 Z —— Z 会带出投影）。
+        if (shelfStrip != null) shelfStrip.setPrimary(currentFrame);
+        for (int i = 0; i < thumbStrip.getChildCount(); ++i) {
+            final View chip = thumbStrip.getChildAt(i);
+            final float chipW = chip.getWidth() > 0 ? chip.getWidth() : dp(42f);
+            // **视口里的位置**，不是列表里的绝对偏移：横向滚过之后，碰撞还算得对。
+            final float rest = shelfScroll.getLeft() + chip.getLeft() - shelfScroll.getScrollX();
+            final int rank = stackRank(i);
+            final float step = dp(rank == 1 ? 3f : rank == 2 ? 6f : 0f);
+            // **推板的算法就是规格里那条 clamp**：凡是还在墙右边的，全都挤到
+            // 同一处（墙左边一个身位），直到撞进叠的位置。整张完全在条子里才算
+            // —— 右边界上贴着的那半张不动，它只是被扫掉。
+            final boolean inside = rest + chipW <= stripRight + 0.5f;
+            final float at = inside
+                    ? Math.max(stackX + step, Math.min(rest, front - chipW))
+                    : rest;
+            chip.setTranslationX(at - rest);
+            // 错位跟着位移来：一动没动的缩略图不许提前下沉。
+            final float moved = clamp01((rest - at) / Math.max(1f, dp(10f)));
+            chip.setTranslationY(step * moved);
+            // 第三层以外的，走到主图背后就化掉（位置驱动，所以倒着也化回来）。
+            // 只化最后 12 dp：它们本来就压在最上面那张底下，露不出半个像素。
+            final float fade = rank <= 2 ? 1f : clamp01((at - stackX) / Math.max(1f, dp(12f)));
+            final float alpha = Math.min(fade, 1f - overlap);
+            chip.setAlpha(alpha);
+            // 看不见的缩略图不许接手指：收起来以后整条都是蓝的，可它还在那儿，
+            // 点一下会把一张已经看不见的照片重新打开。
+            final boolean hit = alpha > 0.5f;
+            if (chip.isEnabled() != hit) chip.setEnabled(hit);
+            if (i == currentFrame) {
+                final android.graphics.drawable.Drawable bg = chip.getBackground();
+                if (bg instanceof android.graphics.drawable.GradientDrawable) {
+                    ((android.graphics.drawable.GradientDrawable) bg).setStroke(dp(2),
+                            blend(UI_BLUE, UI_LINE, clamp01((p - 0.55f) / 0.35f)));
                 }
             }
         }
-        // 2. ＋ and ‹ are out of the way inside the first third, each towards
-        //    the middle so the row visibly closes rather than empties.
-        final float ctl = clamp01(p / 0.30f);
-        if (shelfAddBtn != null) {
-            shelfAddBtn.setAlpha(1f - ctl);
-            shelfAddBtn.setTranslationX(-dp(7f) * ctl);
-        }
-        if (shelfFoldBtn != null) {
-            shelfFoldBtn.setAlpha(1f - ctl);
-            shelfFoldBtn.setTranslationX(dp(7f) * ctl);
-        }
-        // 3. The other photographs gather in behind the primary one.
-        gatherFrameChips(p);
-        // 4. The stack: its two card edges slide out from behind the picture in
-        //    the last third, and the chevron comes with them.
+    }
+
+    /** 收在哪里：0 = 当前这张（最上），1 / 2 = 后面两张，再往后不进叠。 */
+    private int stackRank(int index) {
+        if (index == currentFrame) return 0;
+        final int d = Math.abs(index - currentFrame);
+        return d <= 2 ? d : 3;
+    }
+
+    /** 收尾的那张叠：两张纸边先探出来，照片和 › 最后到位。 */
+    private void applyShelfStack(float p) {
         final float out = clamp01((p - 0.62f) / 0.38f);
+        final float on = clamp01((p - 0.78f) / 0.14f);
+        if (shelfHandle != null) {
+            if (p <= 0.001f) {
+                shelfHandle.setVisibility(View.INVISIBLE);
+                shelfHandle.setClickable(false);
+            } else {
+                shelfHandle.setVisibility(View.VISIBLE);
+                shelfHandle.setAlpha(on);
+                shelfHandle.setClickable(p > 0.9f);
+            }
+        }
         if (shelfEdgeBack != null) {
-            shelfEdgeBack.setTranslationX(-dp(8f) * (1f - out));
-            shelfEdgeBack.setTranslationY(-dp(8f) * (1f - out));
+            shelfEdgeBack.setTranslationX(-dp(6f) * (1f - out));
+            shelfEdgeBack.setTranslationY(-dp(6f) * (1f - out));
         }
         if (shelfEdgeMid != null) {
-            shelfEdgeMid.setTranslationX(-dp(4f) * (1f - out));
-            shelfEdgeMid.setTranslationY(-dp(4f) * (1f - out));
+            shelfEdgeMid.setTranslationX(-dp(3f) * (1f - out));
+            shelfEdgeMid.setTranslationY(-dp(3f) * (1f - out));
         }
-        if (shelfChevron != null) shelfChevron.setAlpha(out);
-        // 5. The picture itself, on the overlay above everything.
-        applyShelfFlyer(p);
-        if ((shelfFlyer == null || shelfFlyBmp == null) && shelfHandleImage != null) {
-            shelfHandleImage.setAlpha(p * p);
-        }
+        if (shelfChevron != null) shelfChevron.setAlpha(clamp01((p - 0.80f) / 0.20f));
     }
 
-    /** The chips travel to the primary one's X, shrink a tenth and fade. */
-    private void gatherFrameChips(float p) {
-        if (thumbStrip == null) return;
-        final View primary = primaryChip();
-        if (primary == null) return;
-        // Coming apart, each of the first five leaves 20 ms after the one before
-        // it; going together they all gather at once. A shelf of thirty must not
-        // end in a ripple.
-        final boolean expanding = shelfFoldTarget < 0.5f;
-        final float spread = 1f - p;
-        for (int i = 0; i < thumbStrip.getChildCount(); ++i) {
-            final View chip = thumbStrip.getChildAt(i);
-            final float lag = expanding ? Math.min(i, 5) * 0.05f : 0f;
-            final float t = clamp01((spread - lag) / Math.max(0.4f, 1f - lag));
-            final float k = 1f - t;
-            if (chip == primary) {
-                // The flyer carries this one; its own copy only has to be gone
-                // before the container starts cutting it in half.
-                chip.setAlpha(clamp01((t - 0.45f) / 0.55f));
-                continue;
-            }
-            chip.setTranslationX((primary.getLeft() - chip.getLeft()) * k);
-            final float sc = 1f - 0.10f * k;
-            chip.setScaleX(sc);
-            chip.setScaleY(sc);
-            chip.setAlpha(t);
-        }
-    }
-
-    /** The flying picture: a rect between the two live ends, morphing as it goes. */
-    private void applyShelfFlyer(float p) {
-        if (shelfFlyer == null || shelfFlyBmp == null) return;
-        if (shelfFlyer.getVisibility() != View.VISIBLE) return;
-        final android.graphics.RectF from = globalRect(primaryChip());
-        final android.graphics.RectF to = globalRect(shelfHandleImage);
-        if (from == null || to == null) return;
-        final float t = clamp01((p - 0.05f) / 0.95f);
-        moveShelfFlyer(from.left + (to.left - from.left) * t,
-                from.top + (to.top - from.top) * t,
-                from.width() + (to.width() - from.width()) * t,
-                from.height() + (to.height() - from.height()) * t);
-        // The shelf's 4 dp box becomes the stack's 11 dp card.
-        shelfFlyer.setCorner(dp(4f) + dp(7f) * clamp01((p - 0.35f) / 0.65f));
-        // The blue selection border goes almost at once; the drop shadow that
-        // says "this is on top of the canvas" arrives behind it.
-        shelfFlyer.setBorder(1f - clamp01(p / 0.35f));
-        shelfFlyer.setShadow(clamp01((p - 0.30f) / 0.55f));
-    }
-
-    private void moveShelfFlyer(float x, float y, float w, float h) {
-        if (shelfFlyer == null) return;
-        final android.view.ViewGroup.LayoutParams lp = shelfFlyer.getLayoutParams();
-        if (lp == null) return;
-        final int iw = Math.max(1, Math.round(w));
-        final int ih = Math.max(1, Math.round(h));
-        if (lp.width != iw || lp.height != ih) {
-            lp.width = iw;
-            lp.height = ih;
-            shelfFlyer.setLayoutParams(lp);
-        }
-        shelfFlyer.setX(x);
-        shelfFlyer.setY(y);
-    }
-
-    /** Where a view really is, in the overlay's own coordinate space.
-     *
-     *  <p>The size falls back to the view's own `LayoutParams` when it has not
-     *  been measured yet -- which is exactly the case at the start of an
-     *  *expand*, where the strip was `GONE` (and 0 dp tall) a frame ago. Reading
-     *  `getWidth()` there gives zero and the flight would have no start.
-     */
-    private android.graphics.RectF globalRect(View v) {
-        if (v == null || uiRoot == null) return null;
-        int w = v.getWidth(), h = v.getHeight();
-        final android.view.ViewGroup.LayoutParams lp = v.getLayoutParams();
-        if (lp != null) {
-            if (w <= 0) w = lp.width;
-            if (h <= 0) h = lp.height;
-        }
-        if (w <= 0 || h <= 0) return null;
-        final int[] at = new int[2];
-        final int[] rootAt = new int[2];
-        v.getLocationInWindow(at);
-        uiRoot.getLocationInWindow(rootAt);
-        final float x = at[0] - rootAt[0], y = at[1] - rootAt[1];
-        return new android.graphics.RectF(x, y, x + w, y + h);
-    }
-
-    /** The photograph that stands for the strip: the selected frame, else the first. */
-    private View primaryChip() {
-        if (thumbStrip == null || thumbStrip.getChildCount() == 0) return null;
-        final int at = (currentFrame >= 0 && currentFrame < thumbStrip.getChildCount())
-                ? currentFrame : 0;
-        return thumbStrip.getChildAt(at);
-    }
-
-    private android.graphics.Bitmap primaryFrameThumb() {
-        if (frames.isEmpty()) return null;
-        final int at = (currentFrame >= 0 && currentFrame < frames.size()) ? currentFrame : 0;
-        return frames.get(at).thumb;
-    }
-
-    private void buildShelfFlyer() {
-        if (uiRoot == null) return;
-        try {
-            shelfFlyer = new ShelfFlyer(this);
-            shelfFlyer.setVisibility(View.GONE);
-            final android.widget.FrameLayout.LayoutParams lp =
-                    new android.widget.FrameLayout.LayoutParams(dp(52), dp(52));
-            uiRoot.addView(shelfFlyer, lp);
-        } catch (Throwable t) {
-            shelfFlyer = null;
-            DebugSink.text("shelf", "flyer failed: " + t);
-        }
-    }
-
-    private void dropShelfFlyer() {
-        if (shelfFlyer == null) return;
-        shelfFlyer.setVisibility(View.GONE);
-        shelfFlyer.setBitmap(null);
-        shelfFlyBmp = null;
-    }
 
     private void resetShelfControls() {
         if (shelfAddBtn != null) {
@@ -15770,150 +16100,26 @@ public class MainActivity extends Activity {
         for (int i = 0; i < thumbStrip.getChildCount(); ++i) {
             final View chip = thumbStrip.getChildAt(i);
             chip.setTranslationX(0f);
+            chip.setTranslationY(0f);
             chip.setScaleX(1f);
             chip.setScaleY(1f);
             chip.setAlpha(1f);
         }
     }
 
-    /** The handle's own rounded corners follow the fold (7 dp inside, 11 dp out). */
-    private void applyShelfCorner(float p) {
-        if (shelfHandleImage == null) return;
-        final float r = dp(7f) + dp(4f) * p;
-        shelfHandleImage.setOutlineProvider(new android.view.ViewOutlineProvider() {
-            @Override public void getOutline(View v, android.graphics.Outline o) {
-                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), r);
-            }
-        });
-        shelfHandleImage.invalidateOutline();
-    }
-
-    /** Land on the real components in the same frame the proxy goes away. */
+    /** 落位：把 `p` 钉在端点上，再按它把每件东西算一遍。 */
     private void finishShelfFold() {
         shelfFoldAnimating = false;
         shelfFoldVel = 0f;
         shelfFoldClockNs = 0L;
         final boolean folded = shelfFoldTarget > 0.5f;
         shelfFold = folded ? 1f : 0f;
-        if (shelfHandle != null) {
-            final boolean show = folded && !frames.isEmpty();
-            shelfHandle.setVisibility(show ? View.VISIBLE : View.GONE);
-            shelfHandle.setClickable(show);
-        }
-        if (sourceBar != null) {
-            final boolean show = !folded && !frames.isEmpty();
-            sourceBar.setVisibility(show ? View.VISIBLE : View.GONE);
-            final android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
-            if (lp != null) {
-                lp.height = dp(show ? SHELF_H_DP : 0);
-                sourceBar.setLayoutParams(lp);
-            }
-        }
-        if (shelfHandleImage != null) shelfHandleImage.setAlpha(1f);
-        applyShelfCorner(folded ? 1f : 0f);
-        if (folded) {
-            resetShelfControls();
-        } else {
-            resetShelfControls();
-            resetFrameChips();
-        }
-        // **The proxy goes away after the real views have been laid out.** One
-        // frame later, so the handoff cannot be caught mid-measure.
-        final ShelfFlyer flyer = shelfFlyer;
-        if (flyer != null) {
-            flyer.post(() -> {
-                if (shelfFoldAnimating) return;      // another fold has already begun
-                dropShelfFlyer();
-            });
-        }
+        if (sourceBar != null) sourceBar.setVisibility(View.VISIBLE);
+        if (folded) updateShelfHandle();
+        applyShelfFold(shelfFold);
         Probe.log("shelf", "fold=" + (folded ? 1 : 0) + " frames=" + frames.size());
     }
 
-    /**
-     * The picture while it is in the air.
-     *
-     * <p>It has to leave the strip, which is being cut down to nothing, so it
-     * lives on the root as a real view: the bitmap, a round-rect clip whose
-     * radius is set per frame, and a stroke that fades the selection border out.
-     * The shadow is the platform's -- an elevation with a rounded outline --
-     * because a hand-blurred shadow per frame is a software layer and a cliff.
-     */
-    private final class ShelfFlyer extends View {
-        private android.graphics.Bitmap bmp;
-        private float radius;
-        private int strokeColor = UI_BLUE;
-        private float strokeAlpha = 1f;
-        private float shadow;
-        private final android.graphics.Paint paint =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG
-                        | android.graphics.Paint.FILTER_BITMAP_FLAG);
-        private final android.graphics.Path clip = new android.graphics.Path();
-        private final android.graphics.RectF box = new android.graphics.RectF();
-        private final android.graphics.RectF dst = new android.graphics.RectF();
-
-        ShelfFlyer(android.content.Context c) {
-            super(c);
-            setClipToOutline(false);
-            setOutlineProvider(new android.view.ViewOutlineProvider() {
-                @Override public void getOutline(View v, android.graphics.Outline o) {
-                    o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), radius);
-                }
-            });
-        }
-
-        void setBitmap(android.graphics.Bitmap b) { bmp = b; invalidate(); }
-
-        void setCorner(float r) {
-            if (Math.abs(r - radius) < 0.01f) return;
-            radius = r;
-            invalidateOutline();
-            invalidate();
-        }
-
-        void setBorder(float a) {
-            if (Math.abs(a - strokeAlpha) < 0.01f) return;
-            strokeAlpha = a;
-            invalidate();
-        }
-
-        void setShadow(float v) {
-            if (Math.abs(v - shadow) < 0.01f) return;
-            shadow = v;
-            setElevation(dp(7f) * v);
-            setTranslationZ(dp(1f) * v);
-        }
-
-        @Override protected void onDraw(android.graphics.Canvas c) {
-            final float w = getWidth(), h = getHeight();
-            if (w <= 0f || h <= 0f) return;
-            box.set(0f, 0f, w, h);
-            clip.reset();
-            clip.addRoundRect(box, radius, radius, android.graphics.Path.Direction.CW);
-            c.save();
-            c.clipPath(clip);
-            c.drawColor(UI_GROUND);
-            if (bmp != null && !bmp.isRecycled()) {
-                // CENTER_CROP: the same framing the strip's ImageView uses, so
-                // the first frame of the flight is the picture as it was.
-                final float s = Math.max(w / bmp.getWidth(), h / bmp.getHeight());
-                final float dw = bmp.getWidth() * s, dh = bmp.getHeight() * s;
-                dst.set((w - dw) * 0.5f, (h - dh) * 0.5f, (w + dw) * 0.5f, (h + dh) * 0.5f);
-                c.drawBitmap(bmp, null, dst, paint);
-            }
-            c.restore();
-            if (strokeAlpha > 0.01f) {
-                final float sw = dp(2f);
-                paint.setStyle(android.graphics.Paint.Style.STROKE);
-                paint.setStrokeWidth(sw);
-                paint.setColor(strokeColor);
-                paint.setAlpha((int) (255 * clamp01(strokeAlpha)));
-                box.inset(sw * 0.5f, sw * 0.5f);
-                c.drawRoundRect(box, radius, radius, paint);
-                paint.setStyle(android.graphics.Paint.Style.FILL);
-                paint.setAlpha(255);
-            }
-        }
-    }
 
     /** File the frame that just finished importing, once. */
     private void rememberFrame(Uri uri, int reopenIndex) {
@@ -16040,6 +16246,8 @@ public class MainActivity extends Activity {
         }
         updateShelfHandle();
         updateShelfVisibility();
+        // 缩略图是新的，而它们的位置要等排完版才知道：那时按当前的 `p` 再算一遍。
+        thumbStrip.post(() -> { if (!shelfFoldAnimating) applyShelfFold(shelfFold); });
         try {
             DebugSink.text("frame-strip", "frames=" + frames.size() + " current=" + currentFrame);
         } catch (Throwable ignored) { }
@@ -18332,6 +18540,68 @@ public class MainActivity extends Activity {
     private float wbKelvin = 5500f, wbTint = 0f;
     private static final int[] WB_KELVIN = {0, 5500, 6500, 7500, 3200, 4000, 0};
 
+    /**
+     * 色温/色调 → **相对** RGB 增益（5500 K 处正好 1,1,1），给第二引擎用。
+     *
+     * <p>第一引擎走 LibRaw 的 `user_mul`：那里有相机自己的 XYZ→camera 矩阵，
+     * 解出来的是**绝对**倍率，连同「拍的时候是什么光」一起重解一遍。第二引擎
+     * 没有这一步 —— 它的 `config[450..452]` 是乘在**解码结果**上的三通道增益
+     * （默认 1,1,1），而它的相机档案不交给 Java。所以这里用 sRGB 的矩阵跑同一
+     * 条 CIE 近似，再除以 5500 K 那一组：结果是「相对日光」的倍率，和第一引擎
+     * 在一张日光片上的表现同方向、同量级。
+     *
+     * <p>实测（`host … --slot 450=…`，c200 + crystal，300 px）：3200 K → 蓝
+     * （R 156→75、B 134→168）；8000 K → 暖（R 156→179、B 134→117）。
+     */
+    private static float[] wbGainForKelvin(float kelvin, float tint) {
+        if (!(kelvin > 0f)) return null;
+        final double[] a = planckMul(kelvin, tint);
+        final double[] ref = planckMul(5500d, 0d);
+        if (a == null || ref == null) return null;
+        final float[] out = new float[3];
+        for (int c = 0; c < 3; ++c) {
+            final double v = a[c] / ref[c];
+            if (Double.isNaN(v) || Double.isInfinite(v)) return null;
+            // **夹到 0.15…6，而不是拒绝。** 2000 K 的「真值」是蓝 ×27，乘上去只会
+            // 把整幅烧成纯蓝；夹住之后滑杆的行程仍然单调，只是两端饱和。拒绝的话
+            // 就变成「拖到最左边什么都没发生」—— 那比夹住更像 bug。
+            out[c] = (float) Math.max(0.15, Math.min(6.0, v));
+        }
+        return out;
+    }
+
+    /** 一个黑体在 `t` K 下的三通道响应取倒数、绿归一到 1 —— 与 JNI 里那条同式。 */
+    private static double[] planckMul(double t, double tint) {
+        t = Math.max(2000d, Math.min(12000d, t));
+        double x, y;
+        if (t < 4000d) {
+            x = -0.2661239e9 / (t * t * t) - 0.2343589e6 / (t * t) + 0.8776956e3 / t + 0.179910;
+            y = -0.9549476 * x * x * x - 1.37418593 * x * x + 2.09137015 * x - 0.16748867;
+        } else {
+            x = -3.0258469e9 / (t * t * t) + 2.1070379e6 / (t * t) + 0.2226347e3 / t + 0.240390;
+            y = 3.0817580 * x * x * x - 5.87338670 * x * x + 3.75112997 * x - 0.37001483;
+        }
+        if (!(y > 1e-6)) return null;
+        final double bigX = x / y, bigY = 1d, bigZ = (1d - x - y) / y;
+        // XYZ(D65) → 线性 sRGB：第二引擎不把相机的矩阵交出来，就用这一条。
+        final double r =  3.2406 * bigX - 1.5372 * bigY - 0.4986 * bigZ;
+        final double g = -0.9689 * bigX + 1.8758 * bigY + 0.0415 * bigZ;
+        final double b =  0.0557 * bigX - 0.2040 * bigY + 1.0570 * bigZ;
+        if (!(r > 1e-6) || !(g > 1e-6) || !(b > 1e-6)) return null;
+        final double[] mul = {1d / r, 1d / g, 1d / b};
+        final double n = mul[1];
+        mul[0] /= n; mul[1] /= n; mul[2] /= n;
+        mul[1] *= Math.pow(2d, -Math.max(-150d, Math.min(150d, tint)) / 300d);
+        return mul;
+    }
+
+    /** 当前这一帧要发给第二引擎的白平衡；`null` = 原照（不动）。 */
+    private float[] fotuWbGain() {
+        if (wbPreset == 0) return null;
+        final int p = Math.max(0, Math.min(6, wbPreset));
+        return wbGainForKelvin(p == 6 ? wbKelvin : WB_KELVIN[p], p == 6 ? wbTint : 0f);
+    }
+
     /** Four-zone colour balance: hue in degrees, amount 0..1, lightness -1..1. */
     private final float[] cbHue = new float[4];
     private final float[] cbSat = new float[4];
@@ -18874,7 +19144,9 @@ public class MainActivity extends Activity {
                 // time this returns, so the preview is what the number says.
                 // `redecode` rows are the decode white balance: they close and
                 // re-open the file, which a live frame cannot ride along with.
-                if (bar.isDragging() && !redecode) {
+                // 第二引擎的白平衡是增益、不重解，所以它这一行拖起来是可以走
+                // 实时预览的；第一引擎的重解行不行（那要重读文件）。
+                if (bar.isDragging() && (!redecode || isFotuStock(filmStock))) {
                     requestLivePreview();
                 } else if (!redecode) {
                     // The value moved but the bar says it is not being dragged:
@@ -19458,7 +19730,7 @@ public class MainActivity extends Activity {
         page.addView(row, new LinearLayout.LayoutParams(-1, dp(28)));
         curveView = new CurveView();
         page.addView(curveView, new LinearLayout.LayoutParams(-1, dp(150)));
-        page.addView(label("拖动控制点；空白处点一下加点，最多 8 个", 7.5f, UI_MUTED, tfHan),
+        page.addView(label("拖动控制点；空白处点一下加点（最多 8 个）；双击一个点删掉它", 7.5f, UI_MUTED, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(18)));
     }
 
@@ -19551,14 +19823,21 @@ public class MainActivity extends Activity {
         refreshHueOwnMark();
         refreshCbReadout();
         if (wbDecodeBox != null) {
-            final boolean raw = isRawFile;
-            setEnabledDeepExcept(wbDecodeBox, raw, wbDecodeNote);
+            // **第二引擎也能用这一页。** 它的白平衡是 `config[450..452]` 的三通道
+            // 增益，乘在解码结果上，不需要重读文件 —— 所以 RAW 和 JPEG 都行。只有
+            // 第一引擎才是「写在去马赛克里、必须重解」，那条只对 RAW 成立。
+            final boolean fotu = isFotuStock(filmStock);
+            final boolean live = fotu || isRawFile;
+            setEnabledDeepExcept(wbDecodeBox, live, wbDecodeNote);
             if (wbDecodeNote != null) {
-                wbDecodeNote.setText(raw
-                        ? "这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
-                          + "所以每次都按当前尺寸重新解码一次。"
-                        : "JPEG 的白平衡已经烧进文件里，不能重解。要改色温请用下面的「色温」"
-                          + "「色调」——那是冲印后的偏色，立刻生效。");
+                wbDecodeNote.setText(fotu
+                        ? "第二引擎没有「重解」这一步：色温和色调是乘在解码结果上的增益，"
+                          + "以 5500 K 为中性，RAW 和 JPEG 都能用。"
+                        : isRawFile
+                          ? "这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，"
+                            + "所以每次都按当前尺寸重新解码一次。"
+                          : "JPEG 的白平衡已经烧进文件里，不能重解。要改色温请用下面的「色温」"
+                            + "「色调」——那是冲印后的偏色，立刻生效。");
             }
         }
     }
@@ -19571,10 +19850,13 @@ public class MainActivity extends Activity {
      */
     private void resetViewPanel() {
         boolean wbReset = false;
-        switch (viewPage) {
+        // **重置的是「眼前这一页」，曲线和分级也是页 —— 只是它们不在 strip 里。**
+        // 这三个工具屏打开时只改 `toolPage`，`viewPage` 还停在 strip 的 0..3
+        // 上；照 `viewPage` 分派的话，在曲线屏上按重置，清的是亮度那几根。
+        final int page = toolPage >= 0 ? toolPage : viewPage;
+        switch (page) {
             case 1:   // 颜色
                 viewTemperature = viewTint = viewSaturation = viewVibrance = 0f;
-                for (int i = 0; i < 8; ++i) hslHue[i] = hslSat[i] = hslLum[i] = 0f;
                 // **解码白平衡也在这张页上，而它一直没被重置过。**
                 //
                 // 只在字段上清是不够的：LibRaw 把白平衡写在去马赛克里，负片还是
@@ -19603,6 +19885,9 @@ public class MainActivity extends Activity {
                 break;
             case 5:   // 分级
                 for (int z = 0; z < 4; ++z) { cbHue[z] = 0f; cbSat[z] = 0f; cbLum[z] = 0f; }
+                break;
+            case 6:   // 混色 / HSL
+                for (int i = 0; i < 8; ++i) hslHue[i] = hslSat[i] = hslLum[i] = 0f;
                 break;
             default:  // 亮度
                 cameraEv = 0f;
@@ -19696,6 +19981,16 @@ public class MainActivity extends Activity {
      * session is closed and the file decoded again at the same size.
      */
     private void redecodeWithWhiteBalance() {
+        // **第二引擎没有「重解」这一步。** 它的白平衡是乘在解码结果上的增益
+        // （见 `fotuSlots` 里的 450..452），推一遍就够了 —— 而且这样 JPEG 也能用。
+        if (isFotuStock(filmStock)) {
+            if (uiReady) {
+                showingOriginal = false;
+                setOriginalVisual(false);
+                renderImage();
+            }
+            return;
+        }
         if (!isRawFile || rawFilePath == null) {
             // A JPEG has no negative to re-develop. Saying so once is better
             // than a control that silently does nothing.
@@ -19825,6 +20120,13 @@ public class MainActivity extends Activity {
         // The left gutter carries the output axis, the bottom one the input.
         private final int padL = dp(26), padR = dp(8), padT = dp(8), padB = dp(16);
         private int dragging = -1;
+        /** 双击删点：上一次「点一下」落在哪个点上（-1 = 不是一次点击）。 */
+        private int lastTapPoint = -1;
+        private long lastTapMs;
+        private float lastTapX, lastTapY;
+        /** 这一次手势真的拖动过 / 真的加过点 —— 纯粹点一下不该重渲一遍。 */
+        private boolean moved, added;
+        private float downX, downY;
 
         CurveView() { super(MainActivity.this); }
 
@@ -20027,6 +20329,10 @@ public class MainActivity extends Activity {
             switch (e.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_DOWN: {
                     dragging = -1;
+                    added = false;
+                    moved = false;
+                    downX = e.getX();
+                    downY = e.getY();
                     float best = dp(26);
                     for (int i = 0; i < pts.size(); ++i) {
                         final android.graphics.PointF p = toScreen(pts.get(i)[0], pts.get(i)[1]);
@@ -20039,11 +20345,13 @@ public class MainActivity extends Activity {
                         while (at < pts.size() && pts.get(at)[0] < q[0]) ++at;
                         pts.add(at, q);
                         dragging = at;
+                        added = true;
                         invalidate();
                     }
                     return true;
                 }
                 case android.view.MotionEvent.ACTION_MOVE: {
+                    if (Math.hypot(e.getX() - downX, e.getY() - downY) > dp(6)) moved = true;
                     if (dragging < 0 || dragging >= pts.size()) return true;
                     final float[] q = fromScreen(e.getX(), e.getY());
                     final float lo = dragging > 0 ? pts.get(dragging - 1)[0] + 0.005f : 0f;
@@ -20058,7 +20366,38 @@ public class MainActivity extends Activity {
                 }
                 case android.view.MotionEvent.ACTION_UP:
                 case android.view.MotionEvent.ACTION_CANCEL: {
-                    if (dragging >= 0) {
+                    final boolean up = e.getActionMasked() == android.view.MotionEvent.ACTION_UP;
+                    // **双击一个点 = 删掉它。** 只认「两下都没有拖动过、都落在
+                    // 同一个点上、在双击时限内」；两端不给删 —— 曲线要跨满 0..1，
+                    // 删掉端点等于把整条曲线截断。（这句是 1.7.1o 补的：在那之
+                    // 前这个控件**只有加点、没有删点**，副标题里也没写。）
+                    if (up && !moved && dragging > 0 && dragging < pts.size() - 1
+                            && dragging == lastTapPoint
+                            && nowMs() - lastTapMs <= android.view.ViewConfiguration.getDoubleTapTimeout()
+                            && Math.hypot(e.getX() - lastTapX, e.getY() - lastTapY) <= dp(20)) {
+                        pts.remove(dragging);
+                        dragging = -1;
+                        lastTapPoint = -1;
+                        lastTapMs = 0;
+                        invalidate();
+                        pushViewCurves();
+                        if (uiReady && session != null) {
+                            showingOriginal = false;
+                            setOriginalVisual(false);
+                            renderImage();
+                        }
+                        return true;
+                    }
+                    // 这一下算不算「一次点击」，留给下一次双击去配对。
+                    if (up && !moved && !added) {
+                        lastTapPoint = dragging;
+                        lastTapMs = nowMs();
+                        lastTapX = e.getX(); lastTapY = e.getY();
+                    } else {
+                        lastTapPoint = -1;
+                    }
+                    // 只是点了一下已经存在的点，没有改动：不必重推、不必重渲。
+                    if (dragging >= 0 && (moved || added)) {
                         pushViewCurves();
                         if (uiReady && session != null) {
                             showingOriginal = false;
@@ -28459,6 +28798,8 @@ public class MainActivity extends Activity {
     // 仍然是对的。
 
     private View settingsScreen;
+    /** 正在播的 corner 转场；null = 没有在播（也不允许有两个同时播）。 */
+    private CornerSwitch settingsCorner;
     private ScrollView settingsScroll;
     private LinearLayout settingsBody;
     private TextView settingsTitle, settingsDone;
@@ -28470,6 +28811,9 @@ public class MainActivity extends Activity {
 
     private void showSettings(String section) {
         if (uiRoot == null) return;
+        // 上一段转场还没走完就又被叫醒：先落到它自己的终态（`settingsOpen`
+        // 此刻还是**旧的**，用它判断该落在「开」还是「关」）。
+        if (settingsCorner != null) finishSettingsCorner(!settingsOpen, false);
         settingsSection = section;
         if (settingsScreen == null) {
             settingsScreen = buildSettingsScreen();
@@ -28478,10 +28822,17 @@ public class MainActivity extends Activity {
         if (!settingsOpen) {
             settingsOpen = true;
             settingsScreen.setVisibility(View.VISIBLE);
-            settingsScreen.setAlpha(0f);
-            settingsScreen.animate().alpha(1f).setDuration(200)
-                    .setInterpolator(EASE_OUT).start();
-            syncRoomBars();
+            settingsScreen.setAlpha(1f);
+            // **corner 转场**：三块从左上角长满屏幕（克莱因蓝 → 主题橙 → 设置
+            // 页），每块 0.62 s，彼此错开 90 ms。系统栏等纸铺满再变色 ——
+            // 提前一秒变白，顶上会先亮出一条不属于任何一页的白。
+            //
+            // **顺序是「先起动画、再灌内容」**：`fillSettings()` 要重建一百多
+            // 个 View，几十毫秒，放在动画启动之前就等于按下之后先愣一拍。窗口
+            // 要到 240 ms 才露出，所以内容在下一帧灌进去完全来得及。
+            openSettingsCorner();
+            fillSettings();
+            return;
         }
         fillSettings();
     }
@@ -28491,18 +28842,120 @@ public class MainActivity extends Activity {
         settingsOpen = false;
         settingsSection = null;
         settingsScreen.animate().cancel();
-        settingsScreen.animate().alpha(0f).setDuration(140)
-                .withEndAction(() -> {
-                    // **淡出途中又被打开时，这一下不能把它藏掉。** `showSettings`
-                    // 会把同一个 view 的 alpha 反向拉回 1，但旧动画的末段回调仍
-                    // 然排在那里 —— 少了这道判断，连按「完成」再按 ☰ 就是一页空白。
-                    if (settingsScreen != null && !settingsOpen)
-                        settingsScreen.setVisibility(View.GONE);
-                    // 系统栏等纸退干净再交还给房间，否则顶上那一条会比页面早 140 ms
-                    // 变色。
-                    syncRoomBars();
-                })
-                .start();
+        // 打开还没播完就按了「完成」：先让它落在终态（一整页设置），再倒放。
+        // 两段的首帧因此是同一帧，看得见的是「停一下然后缩回去」，不是跳。
+        if (settingsCorner != null) finishSettingsCorner(false, false);
+        closeSettingsCorner();
+        // **系统栏在这一刻就交还给房间。** 舞台此刻是不透明的（三块都是 1），
+        // 这一下看不见；等它缩完再换，顶上那一条会在整个缩的过程里一直是纸
+        // 色，最后才「啪」地跳成画布色 —— 就是「状态栏跳色」。
+        syncRoomBars();
+    }
+
+    // ------------------------------------------------------- 设置页的 corner 转场
+    //
+    // 移植自 Interlude 的 `src/transitions/corner.ts`（原参数 GROW 0.9 s
+    // expo.inOut、STAGGER 0.12 s、SHIFT 0.1；这里改成 0.62 s / 90 ms 和一条起步
+    // 就走的缓动 —— 理由写在 CornerSwitch 顶部的注释里）。网页那边窗口里放的
+    // 是一张**静止副本**；我们放的是页面的**真身** —— 设置页换页时有一层
+    // 180 ms 的进场，截图会把它定在半路，而真身搬进来一路都是活的。
+
+    /**
+     * 把转场那一层挂上去。它**盖住整个窗口**，不只是内容区 —— `uiRoot` 的
+     * padding 就是两条系统栏的高度（`applySystemInsets`），不抵回来的话，三块
+     * 色块是从状态栏**下面**长出来的，顶上会留一条一直是房间色的窄带。负
+     * margin 抵回去，`clipToPadding` 一起关掉，否则根视图会把超出去的那一条裁掉。
+     *
+     * <p>但**里面的页面必须还是内容区那一块**：舞台自己带同样的 padding，页面
+     * 落回和 uiRoot 里一模一样的位置，否则动画结束搬回去时整页会往下一跳一个
+     * 状态栏的高度。
+     */
+    private void attachCornerStage(CornerSwitch stage) {
+        if (uiRoot == null) return;
+        final android.widget.FrameLayout.LayoutParams lp =
+                new android.widget.FrameLayout.LayoutParams(-1, -1);
+        lp.leftMargin = -uiRoot.getPaddingLeft();
+        lp.topMargin = -uiRoot.getPaddingTop();
+        lp.rightMargin = -uiRoot.getPaddingRight();
+        lp.bottomMargin = -uiRoot.getPaddingBottom();
+        stage.setPadding(uiRoot.getPaddingLeft(), uiRoot.getPaddingTop(),
+                uiRoot.getPaddingRight(), uiRoot.getPaddingBottom());
+        stage.setClipToPadding(false);   // 唯一的裁剪是 dispatchDraw 里那个窗口
+        uiRoot.setClipToPadding(false);
+        uiRoot.addView(stage, lp);
+    }
+
+    /** 打开：把设置页搬进 stage，三块从左上角长满屏幕。 */
+    private void openSettingsCorner() {
+        if (uiRoot == null || settingsScreen == null) return;
+        final CornerSwitch stage = new CornerSwitch(this, LT_KLEIN, CORNER_ORANGE, UI_PAPER);
+        uiRoot.removeView(settingsScreen);
+        stage.addView(settingsScreen, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        attachCornerStage(stage);
+        settingsCorner = stage;
+        stage.play(true, () -> {
+            if (settingsCorner == stage) finishSettingsCorner(false, true);
+        });
+    }
+
+    /** 关闭：页面先缩回左上角，然后深色，最后蓝色 —— 房间就是这么露出来的。 */
+    private void closeSettingsCorner() {
+        if (uiRoot == null || settingsScreen == null) {
+            if (settingsScreen != null) settingsScreen.setVisibility(View.GONE);
+            syncRoomBars();
+            return;
+        }
+        final CornerSwitch stage = new CornerSwitch(this, LT_KLEIN, CORNER_ORANGE, UI_PAPER);
+        uiRoot.removeView(settingsScreen);
+        stage.addView(settingsScreen, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        attachCornerStage(stage);
+        settingsCorner = stage;
+        stage.play(false, () -> {
+            if (settingsCorner == stage) finishSettingsCorner(true, false);
+        });
+    }
+
+    /**
+     * 收尾：把设置页搬回 uiRoot（`hide` 顺手藏起来），扔掉 stage。
+     *
+     * <p>搬回来和扔掉 stage 在同一条消息里，所以中间没有一帧是空的。
+     * `syncBars` 只给「真的走到终点」的那次传 true —— 中途被
+     * {@link #closeSettings()} 收掉时，系统栏这时候变色就早了整整一秒。
+     */
+    private void finishSettingsCorner(boolean hide, boolean syncBars) {
+        final CornerSwitch stage = settingsCorner;
+        settingsCorner = null;
+        if (stage != null) {
+            stage.stop();
+            if (settingsScreen != null && settingsScreen.getParent() == stage) {
+                stage.removeView(settingsScreen);
+                settingsScreen.setTranslationX(0f);
+                settingsScreen.setTranslationY(0f);
+                if (uiRoot != null)
+                    uiRoot.addView(settingsScreen,
+                            new android.widget.FrameLayout.LayoutParams(-1, -1));
+            }
+            if (uiRoot != null) {
+                uiRoot.removeView(stage);
+                uiRoot.setClipToPadding(true);
+            }
+        }
+        if (hide && settingsScreen != null) settingsScreen.setVisibility(View.GONE);
+        if (syncBars) syncRoomBars();
+    }
+
+    /**
+     * 预热：把设置页的视图先建出来。
+     *
+     * <p>`buildSettingsScreen()` 是四十来个 View（每个都是一次 `label()` +
+     * 字体 span）。第一次点 ☰ 的时候它和转场挤在同一个消息里，那一帧就晚了
+     * —— 用户说的「点了要等一下」。放在启动之后空闲时建好，第一次打开就只剩
+     * `fillSettings()` 的几十毫秒。
+     */
+    private void warmSettingsPage() {
+        if (settingsScreen != null || uiRoot == null) return;
+        settingsScreen = buildSettingsScreen();
+        CrashTrail.mark(this, "settings: warmed");
     }
 
     private View buildSettingsScreen() {
@@ -28607,6 +29060,9 @@ public class MainActivity extends Activity {
         settingsRule();
         settingsAdd(settingsRow("屏幕方向", "横屏时画布在左、参数在右", orientationValue(), true,
                 this::showOrientationSheet));
+        settingsRule();
+        settingsAdd(settingsRow("滑杆样式", "尺子 = 原来的样子；轨道 = 拇指跟手，刻度印在下面",
+                sliderStyleValue(), true, this::showSliderStyleSheet));
         settingsRule();
         settingsAdd(settingsSwitch("入场动画", "文字逐字、边框、滑竿刻度、相纸条；关掉更快", arrivalAnim(),
                 this::setArrivalAnim));
@@ -28819,6 +29275,49 @@ public class MainActivity extends Activity {
                         ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                         : android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
         try { setRequestedOrientation(want); } catch (Throwable ignored) { }
+    }
+
+    /** 0 = 尺子（默认），1 = 轨道。 */
+    private int sliderStylePref() {
+        return getSharedPreferences("ui", MODE_PRIVATE).getInt("slider_style", 0);
+    }
+
+    private String sliderStyleValue() {
+        return sliderStylePref() == DialBar.STYLE_TRACK ? "轨道" : "尺子";
+    }
+
+    private void showSliderStyleSheet() {
+        final int cur = sliderStylePref();
+        final String[] names = {
+                "尺子 · 刻度在固定指针下滑动",
+                "轨道 · 拇指跟手，刻度印在下面",
+        };
+        for (int i = 0; i < names.length; ++i) {
+            if (i == cur) names[i] = names[i] + "  \u00b7 现在";
+        }
+        showActionSheet("滑杆样式",
+                "所有滑杆和刻度盘都用这一套。\n"
+                        + "尺子是原来的样子；轨道在下面印一排刻度，偶数位带数字。",
+                names, which -> {
+                    if (which < 0 || which >= 2) return;
+                    getSharedPreferences("ui", MODE_PRIVATE).edit()
+                            .putInt("slider_style", which).apply();
+                    DialBar.setStyle(which);
+                    // **已经建好的那些 bar 只在 onDraw 里读这个静态值**，所以
+                    // 换一下 + 重画一遍就够了，不用重建任何一页。
+                    invalidateDialBars(uiRoot);
+                    if (settingsOpen) fillSettings();
+                });
+    }
+
+    /** 让所有已经建好的滑杆按新的样子重画一遍。 */
+    private static void invalidateDialBars(View v) {
+        if (v == null || v.getVisibility() != View.VISIBLE) return;
+        if (v instanceof DialBar) { v.invalidate(); return; }
+        if (v instanceof android.view.ViewGroup) {
+            final android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); ++i) invalidateDialBars(g.getChildAt(i));
+        }
     }
 
     private void showOrientationSheet() {
@@ -29760,6 +30259,7 @@ public class MainActivity extends Activity {
             sourceBitmap = null;
             // `allocDirect` has no cleaner: dropping the field frees nothing.
             if (sourcePixels != 0) { SpektraLabEngine.freePixels(sourcePixels); sourcePixels = 0; }
+            sourcePixelsW = sourcePixelsH = 0;
             // The previous file's unpacked plane is not this frame's problem.
             try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
             clearShelfCache();
@@ -29903,6 +30403,11 @@ public class MainActivity extends Activity {
             // **A band a call, not a row a call.** One row per `getPixels` and
             // per JNI call was 16,320 of each on a 200 MP import, on the UI
             // thread: the five-second freeze behind SL-261121-C907.
+            // **这块暂存是给这个尺寸的。** 引擎只会照着宽高去读，所以尺寸要
+            // 跟着缓冲一起记（RAW 导入会把 `sourceWidth/Height` 换成解码器的
+            // 尺寸，而那份暂存不是）。
+            sourcePixelsW = sourceWidth;
+            sourcePixelsH = sourceHeight;
             liftRows(sourceBitmap, sourcePixels, sourceWidth, sourceHeight);
             
             final int pw = Math.max(1, Math.round(sourceWidth * Math.min(1f, 1024f / Math.max(sourceWidth, sourceHeight))));
@@ -29949,7 +30454,7 @@ public class MainActivity extends Activity {
             synchronized (renderMutex) {
                 if (session != null) { session.close(); session = null; }
             }
-            session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3);
+            session = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3, pixelBytes);
             CrashTrail.mark(this, "import:session");
             applySessionParams();
             // **The engine has its own copy; this one is 12 B/px of dead
@@ -29966,6 +30471,7 @@ public class MainActivity extends Activity {
                     && (long) sourceWidth * sourceHeight > 4_000_000L) {
                 SpektraLabEngine.freePixels(sourcePixels);
                 sourcePixels = 0;
+                sourcePixelsW = sourcePixelsH = 0;
                 CrashTrail.mark(this, "import:staging freed");
             }
             lastImportError = null;
@@ -30790,6 +31296,24 @@ public class MainActivity extends Activity {
                     importedHeight = dims[1];
                     int w = dims[0];
                     int h = dims[1];
+                    // **这一帧的像素在引擎的解码器里，不在 Java 的暂存里。**
+                    // 以前这里只换 `sourceWidth/Height`：先导一张 JPEG、再导
+                    // 一张 RAW 之后，那份**小的** JPEG 暂存还挂着，而宽高已经
+                    // 是 RAW 的。导出的兜底会 `openSession(sourcePixels,
+                    // sourceWidth, sourceHeight)`，引擎便照着大尺寸去读那块小
+                    // 内存 —— `upload_data` 里一次 57 MB 的 memcpy 直接撞到未
+                    // 映射页，进程当场 SIGSEGV（栈里只有 crash_handler 和
+                    // memcpy，Java 一行都看不到）。
+                    if (sourcePixels != 0) {
+                        // 同一把锁：导出线程可能正拿着这个地址去 `spk_open`。
+                        synchronized (renderMutex) {
+                            SpektraLabEngine.freePixels(sourcePixels);
+                            sourcePixels = 0;
+                            sourcePixelsW = sourcePixelsH = 0;
+                        }
+                        CrashTrail.mark(this, "import:staging dropped (raw)");
+                    }
+                    sourcePixelsW = sourcePixelsH = 0;
                     sourceWidth = w;
                     sourceHeight = h;
                     try { DebugSink.text("raw-dims", "w=" + w + " h=" + h); } catch (Throwable ignored) {}
@@ -33231,6 +33755,16 @@ public class MainActivity extends Activity {
             if (Math.abs(pfFx) > 1e-4f) b.append(";pffx:").append(f("%.3f", pfFx));
             if (Math.abs(pfFy) > 1e-4f) b.append(";pffy:").append(f("%.3f", pfFy));
         }
+        // **第二引擎的白平衡。** 它没有「重解」这一步：`450..452` 是乘在解码
+        // 结果上的三通道增益（默认 1,1,1），所以这里发的是**相对 5500 K** 的
+        // 倍率。第一引擎那边同一个滑杆走的是 LibRaw 的 `user_mul`。
+        final float[] wbg = fotuWbGain();
+        if (wbg != null) {
+            if (b.length() > 0) b.append(';');
+            b.append("450=").append(f("%.5f", wbg[0]))
+             .append(";451=").append(f("%.5f", wbg[1]))
+             .append(";452=").append(f("%.5f", wbg[2]));
+        }
         return b.toString();
     }
 
@@ -35629,7 +36163,7 @@ public class MainActivity extends Activity {
                 }
                 liftRows(bmp, pixels, w, h);
                 bmp.recycle();
-                final SpektraLabEngine.Session live = engine.openSession(pixels, w, h, 3);
+                final SpektraLabEngine.Session live = engine.openSession(pixels, w, h, 3, bytes);
                 try {
                     // **800, not the frame's own width.** `preview_long_edge` is
                     // validated to [800, 8192] -- asking for 400 is refused
@@ -36278,7 +36812,7 @@ public class MainActivity extends Activity {
                 bmp.recycle();
                 SpektraLabEngine.fillRow(pixels, 0, bulk, fw * fh);
 
-                final SpektraLabEngine.Session live = engine.openSession(pixels, fw, fh, 3);
+                final SpektraLabEngine.Session live = engine.openSession(pixels, fw, fh, 3, pixelBytes);
                 try {
                     // **The same numbers as the still, forced.** `force` clears
                     // the delta ledger so nothing is skipped, exactly as an
@@ -38139,7 +38673,8 @@ public class MainActivity extends Activity {
                                     // when its successor exists keeps the peak
                                     // at two of the three instead of three.
                                     if (fullBmp != null) { fullBmp.recycle(); fullBmp = null; }
-                                    fresh = engine.openSession(fullBuf, fw, fh, 3);
+                                    fresh = engine.openSession(fullBuf, fw, fh, 3,
+                                            (long) fw * fh * 12L);
                                     SpektraLabEngine.freePixels(fullBuf);
                                     fullBuf = 0;
                                     CrashTrail.markNow(MainActivity.this,
@@ -38174,9 +38709,23 @@ public class MainActivity extends Activity {
                                                 + "本机现在给不出来。关掉其它应用再试，"
                                                 + "或重新导入时选「缩到…」。");
                             }
-                            if (fresh == null && sourcePixels != 0) {
-                                try { fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3); }
-                                catch (Throwable ignored) { fresh = null; }
+                            // **尺寸对不上就别发。** 这份暂存是 `loadImage`
+                            // 按它自己的宽高分配的；RAW 导入会把宽高换成解码
+                            // 器的（并且把暂存丢掉），所以走到这里时两边理应
+                            // 相等。不相等说明有第三条路改过其中一半 —— 那时
+                            // 让引擎去读就是越界，宁可这一张走预览会话。
+                            if (fresh == null && sourcePixels != 0
+                                    && sourcePixelsW == sourceWidth
+                                    && sourcePixelsH == sourceHeight) {
+                                try {
+                                    fresh = engine.openSession(sourcePixels, sourceWidth, sourceHeight, 3,
+                                            (long) sourcePixelsW * sourcePixelsH * 12L);
+                                } catch (Throwable ignored) { fresh = null; }
+                            } else if (fresh == null && sourcePixels != 0) {
+                                CrashTrail.markNow(MainActivity.this,
+                                        "export: staging skipped, it is " + sourcePixelsW + "x"
+                                                + sourcePixelsH + " and the frame is "
+                                                + sourceWidth + "x" + sourceHeight);
                             }
                             CrashTrail.markNow(MainActivity.this,
                                     "export:session " + (fresh != null ? "fresh" : "none"));
@@ -39184,6 +39733,7 @@ public class MainActivity extends Activity {
             // The source block is the app's largest allocation and has no
             // cleaner behind it; the engine took its own copy at `spk_open`.
             if (sourcePixels != 0) { SpektraLabEngine.freePixels(sourcePixels); sourcePixels = 0; }
+            sourcePixelsW = sourcePixelsH = 0;
         }
         // A clean exit erases the trail: next launch reads non-empty only when
         // this one did not get here.

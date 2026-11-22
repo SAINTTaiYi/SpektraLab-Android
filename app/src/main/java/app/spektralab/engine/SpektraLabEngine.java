@@ -214,7 +214,26 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeFillRow(long addr, long pixelOffset, int[] argb, int count);
 
     public Session openSession(long pixels, int width, int height, int channels) {
-        long sessionHandle = nativeOpenSession(handle, pixels, width, height, channels);
+        return openSession(pixels, width, height, channels, 0L);
+    }
+
+    /**
+     * **Opening with the buffer's real size.**
+     *
+     * <p>`spk_open` receives an address and a width/height pair, and it sizes its
+     * upload from those numbers -- it has no way to ask how much memory is
+     * behind the address. A buffer that is smaller than `width * height *
+     * channels * 4` is therefore a read past its end, and that read happens
+     * inside `memcpy`, with no Java frame anywhere: the process dies with
+     * SIGSEGV and the last trail mark is whatever asked for the render.
+     *
+     * <p>Three reports (SL-261122-5433 / -44F1 / -700B, all 1.7.0) are exactly
+     * that, so the size is now stated and checked. `0` keeps the old behaviour
+     * for a caller that cannot know it.
+     */
+    public Session openSession(long pixels, int width, int height, int channels,
+                               long pixelsBytes) {
+        long sessionHandle = nativeOpenSession(handle, pixels, width, height, channels, pixelsBytes);
         if (sessionHandle == 0) throw new RuntimeException("Failed to open session");
         return new Session(sessionHandle, width, height);
     }
@@ -637,7 +656,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native String nativeCapabilities(long handle);
     private static native String nativeMemoryReport(long handle);
     private static native long nativeTrimPool(long handle);
-    private static native long nativeOpenSession(long engineHandle, long pixels, int width, int height, int channels);
+    private static native long nativeOpenSession(long engineHandle, long pixels, int width, int height, int channels, long pixelsBytes);
     /** The GPU as JSON: binding range, heaps, workgroup limits. */
     public String deviceProfile() { return nativeDeviceProfile(handle); }
 

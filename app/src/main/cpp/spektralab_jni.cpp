@@ -397,12 +397,26 @@ JNI(void, nativeFillRow)(JNIEnv* env, jclass, jlong addr, jlong pixelOffset,
 }
 
 JNI(jlong, nativeOpenSession)(JNIEnv* env, jclass, jlong engineHandle,
-    jlong pixelsAddr, jint width, jint height, jint channels) {
+    jlong pixelsAddr, jint width, jint height, jint channels, jlong pixelsBytes) {
     spk_engine* engine = reinterpret_cast<spk_engine*>(engineHandle);
     if (!engine) { throw_runtime(env, "engine is null"); return 0; }
     if (!pixelsAddr) { throw_runtime(env, "pixels buffer is null"); return 0; }
     if (width <= 0 || height <= 0 || (channels != 1 && channels != 3)) {
         throw_runtime(env, "pixel geometry is invalid: %dx%d x%d", width, height, channels);
+        return 0;
+    }
+    // **The engine cannot see how big the buffer is.** `open_frame` sizes its
+    // upload from width x height x channels, so a caller that states a frame
+    // bigger than the memory behind the pointer hands `memcpy` in `upload_data`
+    // a read past the end -- SIGSEGV, no Java frame, nothing to catch. Refuse
+    // it here instead: the caller gets a sentence it can show. `pixelsBytes`
+    // of 0 means "not stated" and keeps the old behaviour.
+    const jlong needBytes = jlong(width) * jlong(height) * jlong(channels) * 4;
+    if (pixelsBytes > 0 && needBytes > pixelsBytes) {
+        throw_runtime(env,
+                      "pixel buffer is %lld bytes but a %dx%d frame needs %lld — "
+                      "refusing rather than reading past it",
+                      (long long)pixelsBytes, int(width), int(height), (long long)needBytes);
         return 0;
     }
     void* data = reinterpret_cast<void*>(pixelsAddr);
