@@ -4536,24 +4536,28 @@ public class MainActivity extends Activity {
      * shapes you can see, rotation as a dial you can feel.
      */
     private LinearLayout buildComposePanel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead(tr("compose.composition"), this::resetComposePanel),
-                new LinearLayout.LayoutParams(-1, dp(38)));
-
-        LinearLayout sub = new LinearLayout(this);
-        sub.setOrientation(LinearLayout.HORIZONTAL);
-        composeCropTab = composeTabView(tr("compose.crop"), 0);
-        composeRotateTab = composeTabView(tr("compose.rotate"), 1);
-        sub.addView(composeCropTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
-        sub.addView(composeRotateTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
-        panel.addView(sub, new LinearLayout.LayoutParams(-1, dp(32)));
-
-        composeBody = new LinearLayout(this);
-        composeBody.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(composeBody, new LinearLayout.LayoutParams(-1, -2));
-        showComposePage(0);      // the page is built hidden; it must still have content
-        return panel;
+        final app.spektralab.ui.SimplePanels.Compose built =
+                app.spektralab.ui.SimplePanels.compose(this,
+                        new app.spektralab.ui.SimplePanels.ComposeHost() {
+                    @Override public String text(String key) { return tr(key); }
+                    @Override public TextView label(String text, float sp, int color,
+                                                     android.graphics.Typeface tf) {
+                        return MainActivity.this.label(text, sp, color, tf);
+                    }
+                    @Override public LinearLayout sectionHead(String title, Runnable reset) {
+                        return MainActivity.this.sectionHead(title, reset);
+                    }
+                            @Override public void onReset() { resetComposePanel(); }
+                            @Override public TextView tab(String text, int page) {
+                                return composeTabView(text, page);
+                            }
+                            @Override public void onReady() { showComposePage(0); }
+                        }, getResources().getDisplayMetrics().density);
+        composeCropTab = built.cropTab;
+        composeRotateTab = built.rotateTab;
+        composeBody = built.body;
+        showComposePage(0);
+        return built.root;
     }
 
     private TextView composeTabView(String text, int page) {
@@ -5129,31 +5133,26 @@ public class MainActivity extends Activity {
     
 
     private LinearLayout buildFormatPanel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead(tr("border.frame_scale"), this::resetFormatPanel),
-                new LinearLayout.LayoutParams(-1, dp(38)));
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        scroll.setClipToPadding(false);
-        formatCardStrip = new LinearLayout(this);
-        formatCardStrip.setOrientation(LinearLayout.HORIZONTAL);
-        formatCardStrip.setPadding(0, dp(10), 0, 0);
-        formatScroll = scroll;
-        scroll.addView(formatCardStrip, new android.widget.FrameLayout.LayoutParams(-2, dp(127)));
-        panel.addView(scroll, new LinearLayout.LayoutParams(-1, dp(127)));
-
-        LinearLayout foot = new LinearLayout(this);
-        foot.setOrientation(LinearLayout.HORIZONTAL);
-        foot.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        formatFootLabel = label(tr("border.physical_film_size_crop_and"), 8.5f, UiPalette.MUTED, tfHan);
-        foot.addView(formatFootLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        formatFootValue = label("36 mm", 9, UiPalette.BLUE, tfBody);
-        foot.addView(formatFootValue);
-        panel.addView(foot, new LinearLayout.LayoutParams(-1, dp(28)));
-
+        final app.spektralab.ui.SimplePanels.Format built =
+                app.spektralab.ui.SimplePanels.format(this,
+                        new app.spektralab.ui.SimplePanels.Host() {
+                    @Override public String text(String key) { return tr(key); }
+                    @Override public TextView label(String text, float sp, int color,
+                                                     android.graphics.Typeface tf) {
+                        return MainActivity.this.label(text, sp, color, tf);
+                    }
+                    @Override public LinearLayout sectionHead(String title, Runnable reset) {
+                        return MainActivity.this.sectionHead(title, reset);
+                    }
+                            @Override public void onReset() { resetFormatPanel(); }
+                        }, getResources().getDisplayMetrics().density, tfHan, tfBody,
+                        this::rebuildFormatCards, this::resetFormatPanel);
+        formatCardStrip = built.cardStrip;
+        formatScroll = built.scroll;
+        formatFootLabel = built.footLabel;
+        formatFootValue = built.footValue;
         rebuildFormatCards();
-        return panel;
+        return built.root;
     }
 
     /** 76, not 76.0 -- but 69.5 has to stay 69.5. */
@@ -5301,31 +5300,33 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout buildEdgePanel() {
-        edgeRoot = new LinearLayout(this);
-        edgeRoot.setOrientation(LinearLayout.VERTICAL);
-
-        // Two big cards. A card is a switch, a one-line summary, and a door
-        // into its own page -- not fifteen controls at once.
-        LinearLayout home = new LinearLayout(this);
-        home.setOrientation(LinearLayout.VERTICAL);
-        home.addView(sectionHead(tr("border.frame_imprint"), this::resetEdgePanel),
-                new LinearLayout.LayoutParams(-1, dp(38)));
-
-        HorizontalScrollView cardScroll = new HorizontalScrollView(this);
-        cardScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout cardStrip = new LinearLayout(this);
-        cardStrip.setOrientation(LinearLayout.HORIZONTAL);
-        cardStrip.addView(bigCard(tr("border.film_border"), "REBATE", this::edgeSummary, () -> openEdgePage(0)),
-                cardLp());
-        cardStrip.addView(bigCard(tr("border.date_stamp"), "DATE BACK", this::dateSummary, () -> openEdgePage(1)),
-                cardLp());
-        cardScroll.addView(cardStrip, new android.widget.FrameLayout.LayoutParams(-2, -2));
-        home.addView(cardScroll, new LinearLayout.LayoutParams(-1, -2));
-
-        edgeRoot.addView(home, new LinearLayout.LayoutParams(-1, -2));
+        final app.spektralab.ui.SimplePanels.Edge built =
+                app.spektralab.ui.SimplePanels.edge(this,
+                        new app.spektralab.ui.SimplePanels.EdgeHost() {
+                    @Override public String text(String key) { return tr(key); }
+                    @Override public TextView label(String text, float sp, int color,
+                                                     android.graphics.Typeface tf) {
+                        return MainActivity.this.label(text, sp, color, tf);
+                    }
+                    @Override public LinearLayout sectionHead(String title, Runnable reset) {
+                        return MainActivity.this.sectionHead(title, reset);
+                    }
+                            @Override public void onReset() { resetEdgePanel(); }
+                            @Override public android.view.View bigCard(String title, String subtitle,
+                                    java.util.function.Supplier<String> summary, Runnable onClick) {
+                                return MainActivity.this.bigCard(title, subtitle, summary, onClick);
+                            }
+                            @Override public LinearLayout.LayoutParams cardParams() { return cardLp(); }
+                            @Override public String rebateSummary() { return edgeSummary(); }
+                            @Override public String dateSummary() { return MainActivity.this.dateSummary(); }
+                            @Override public void onRebate() { openEdgePage(0); }
+                            @Override public void onDate() { openEdgePage(1); }
+                        }, getResources().getDisplayMetrics().density,
+                        () -> { buildEdgePages(); refreshEdgeGroups(); });
+        edgeRoot = built.root;
         buildEdgePages();
         refreshEdgeGroups();
-        return edgeRoot;
+        return built.root;
     }
 
     private LinearLayout.LayoutParams cardLp() {
