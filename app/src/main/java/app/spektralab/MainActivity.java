@@ -47,7 +47,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 public class MainActivity extends Activity {
-    private SpektraLabEngine engine;
+    SpektraLabEngine engine;
     /** This GPU's limits, read once per engine. Drives the import cap and the export tiers. */
     private DeviceProbe probe = DeviceProbe.parse("{}");
     /** The canary runs once per process, on its own thread. */
@@ -88,7 +88,7 @@ public class MainActivity extends Activity {
     private int renderEpoch = 0;
     // `volatile`: a batch export polls it from a worker while the UI thread
     // assigns it after a decode.
-    private volatile SpektraLabEngine.Session session;
+    volatile SpektraLabEngine.Session session;
     private boolean isRawFile = false;
     /** Set in `onPause`, cleared in `onResume`. `startPrefetch` refuses to open
      *  a queue while this is set: the ring in the 1.5.0o report shows fifteen
@@ -104,7 +104,7 @@ public class MainActivity extends Activity {
     private Uri lastExportUri = null;
     private String lastExportMime = null;
     /** Shown only after a TIFF export: the one format the picker hides. */
-    private TextView sharePill = null;
+    TextView sharePill = null;
     // Device-golden test hooks (default 0/false; never set by normal UI use).
     private static int testBandRows = 0;
     private static boolean testDeterministic = false;
@@ -185,7 +185,7 @@ public class MainActivity extends Activity {
      *  already offers 停止, but it is two taps deep and the sheet that holds it
      *  is the same one that *starts* an export. A batch can run ten minutes;
      *  the stop control belongs next to the progress, not behind a menu. */
-    private TextView abortBatchPill;
+    TextView abortBatchPill;
     /** The 构图 → 旋转 reference grid. On by default: the whole point of the
      *  dial is levelling a horizon, and without lines there is nothing to
      *  level against. */
@@ -222,7 +222,7 @@ public class MainActivity extends Activity {
      *  the preview turn (it does not carry it). */
     private int geometrySeq = 0;
     private ProgressBar progressBar;
-    private ProgressBar exportProgressBar;
+    ProgressBar exportProgressBar;
     private final List<String> filmIds = new ArrayList<>(), filmLabels = new ArrayList<>();
     private final List<String> filmTypes = new ArrayList<>();
     /** Each film's declared paper (`target_print` in its profile, or the
@@ -232,7 +232,7 @@ public class MainActivity extends Activity {
     private final List<String> printIds = new ArrayList<>(), printLabels = new ArrayList<>();
     /** null until the user picks a film: a fresh launch must not look like
      *  a Portra 400 session, and must not render one behind their back. */
-    private String filmStock = null;
+    String filmStock = null;
     private String printStock = "kodak_portra_endura";
     private float printExposure = 1.0f;
     /**
@@ -855,7 +855,7 @@ public class MainActivity extends Activity {
     /** One render at a time, whole sequence -- the engine's lock only covers a
      *  single call, so a queued 512 px pass could otherwise swap parameters
      *  between the user's renderBegin and its copyArgbRange. */
-    private final Object renderMutex = new Object();
+    final Object renderMutex = new Object();
     /** A stock change that arrived while a render held the session. Folded into
      *  one follow-up render when the current one lands. */
     private volatile boolean pendingRender = false;
@@ -957,7 +957,7 @@ public class MainActivity extends Activity {
      *  against 3.9 s at 2048 for the same frame. Releasing the thumb was the
      *  only thing that used to draw, so every gesture ended in a two-to-four
      *  second wait; a frame every 0.43 s is what makes the canvas track. */
-    private static final int LIVE_LONG_EDGE = 800;
+    static final int LIVE_LONG_EDGE = 800;
     /** Two live frames closer together than this are the same gesture. The
      *  render itself is ten times this, so the gap only stops a burst of
      *  requests from re-arming the loop right after a frame lands. */
@@ -2225,7 +2225,7 @@ public class MainActivity extends Activity {
      *  while the render used 1.40 is worse than no slider. `setBarProgress`
      *  goes through `onProgressChanged`, so the number and the field move
      *  together. */
-    private void applyLook(Look look) {
+    void applyLook(Look look) {
         if (look == null) return;
         filmStock = look.filmStock;
         printStock = look.printStock;
@@ -2450,7 +2450,7 @@ public class MainActivity extends Activity {
         return look;
     }
 
-    private void saveLookIntoFrames() {
+    void saveLookIntoFrames() {
         if (currentFrame < 0 || currentFrame >= frames.size()) return;
         final Frame f = frames.get(currentFrame);
         f.look = captureLook();
@@ -2689,7 +2689,7 @@ public class MainActivity extends Activity {
      * while the other five were re-decoded. Reported: the first export came out
      * about two stops darker than its own preview, and the other five matched.
      */
-    private void reopenFrameForced(int index) {
+    void reopenFrameForced(int index) {
         if (index < 0 || index >= frames.size()) return;
         final Frame frame = frames.get(index);
         saveLookIntoFrames();
@@ -7162,7 +7162,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void stopPrefetch() {
+    void stopPrefetch() {
         prefetchGeneration++;
         prefetchRunning = false;
     }
@@ -11170,9 +11170,9 @@ public class MainActivity extends Activity {
         } catch (Throwable spkIgnored) { Diagnostics.ignored("toString:13635", spkIgnored); }
     }
 
-    private void renderImage() { renderImage(PREVIEW_LONG_EDGE); }
+    void renderImage() { renderImage(PREVIEW_LONG_EDGE); }
 
-    private void renderImage(int longEdge) {
+    void renderImage(int longEdge) {
         // The full-size pass owns the canvas from here. A live frame still in
         // flight would otherwise land a moment later and put 800 px on top of
         // the result the user waited for.
@@ -11631,8 +11631,8 @@ public class MainActivity extends Activity {
     // has to be built at full size -- so it runs one at a time through the same
     // path a single export uses.
 
-    private volatile boolean batchExportRunning = false;
-    private volatile boolean batchExportAbort = false;
+    volatile boolean batchExportRunning = false;
+    volatile boolean batchExportAbort = false;
 
     /** Take the grant, or keep a copy that survives a restart. Null on failure. */
     Uri persistOrCopy(Uri uri) {
@@ -11686,7 +11686,7 @@ public class MainActivity extends Activity {
 new BatchImportWorker(this).run(uris);
     }
 
-    private void uiWait(Runnable r, long ms) {
+    void uiWait(Runnable r, long ms) {
         // Already on the UI thread: run inline instead of posting and waiting
         // on a latch that can never be satisfied.
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
@@ -11704,7 +11704,7 @@ new BatchImportWorker(this).run(uris);
         catch (InterruptedException ignored) { }
     }
 
-    private boolean pollUntil(java.util.function.BooleanSupplier cond, long ms) {
+    boolean pollUntil(java.util.function.BooleanSupplier cond, long ms) {
         final long end = System.currentTimeMillis() + ms;
         while (System.currentTimeMillis() < end) {
             if (cond.getAsBoolean()) return true;
@@ -11722,157 +11722,10 @@ new BatchImportWorker(this).run(uris);
      * is that the canvas shows each frame as it is processed.
      */
     private void startBatchExport(String format, String tier) {
-        if (batchExportRunning) {
-            showInAppToast(tr("export.batch_export_is_already_running"));
-            return;
-        }
-        if (frames.size() < 2) {
-            showInAppToast(tr("export.only_one_photo_is_available"));
-            return;
-        }
-        saveLookIntoFrames();
-        final int total = frames.size();
-        final int home = currentFrame;
-        batchExportRunning = true;
-        batchExportAbort = false;
-        if (abortBatchPill != null) abortBatchPill.setVisibility(View.VISIBLE);
-        // **Stop the shelf that is already running.** `startPrefetch` refuses
-        // to start a new one while a batch is going, but the queue the last
-        // import kicked off keeps painting twenty-five cards -- and the trail
-        // of the crash at `export:write full jpeg` shows it doing exactly that
-        // inside the export: twenty-five pipeline rebuilds competing for the
-        // same pool with a 12.6 MP render that is about to allocate.
-        stopPrefetch();
-        if (sharePill != null) sharePill.setVisibility(View.GONE);
-        new Thread(() -> {
-            int ok = 0, failed = 0;
-            try {
-            for (int i = 0; i < total; ++i) {
-                if (batchExportAbort) break;
-                final int index = i;
-                // **The strip can shrink while the batch runs.** `total` was
-                // captured when the loop started; deleting a chip (or the
-                // restore path rewriting the strip) leaves fewer frames than
-                // that, and `frames.get(i)` then throws
-                // `IndexOutOfBoundsException: Index 3 out of bounds for length
-                // 3` on the batch thread -- which looks like "批量导出结束了，
-                // 然后报错" and loses the remaining frames.
-                if (index >= frames.size()) { ++failed; continue; }
-                final Frame frame = frames.get(index);
-                final String name = frame.name == null
-                        ? tr("export.photo") + (i + 1) + tr("export.suffix") : frame.name;
-                if (frame.look == null || frame.look.filmStock == null) {
-                    ++failed;               // nothing to print: no film chosen
-                    continue;
-                }
-                UiDispatcher.post(() -> {
-                    if (statusText != null) {
-                        statusText.setText(tr("export.batch_export") + (index + 1) + "/" + total + ": " + name);
-                    }
-                    if (exportProgressBar != null) exportProgressBar.setVisibility(View.VISIBLE);
-                });
-                // **State the Look before the decode, every frame.** `loadImage`
-                // also applies it, but only while `reopeningFrame` survives the
-                // trip; stating it here makes the export independent of that
-                // flag. Reported: six frames came back with the film but not
-                // the print exposure or the optics, which is what a half-applied
-                // Look looks like.
-                try {
-                    DebugSink.text("batch-look", (index + 1) + "/" + total
-                            + " film=" + frame.look.filmStock
-                            + " print=" + frame.look.printStock
-                            + " exp=" + frame.look.printExposure
-                            + " grain=" + frame.look.grainAmount
-                            + " hal=" + frame.look.halationAmount
-                            + " glare=" + frame.look.glareAmount
-                            + " edr=" + frame.look.edrOn
-                            + " viewC=" + frame.look.viewContrast);
-                } catch (Throwable spkIgnored) { Diagnostics.ignored("get:14331", spkIgnored); }
-                uiWait(() -> {
-                    applyLook(frame.look);
-                    // **Drop the previous frame's session before asking for
-                    // this one.** `loadImage` closes it on its own worker, so
-                    // for a moment `session` still held the *old* object -- the
-                    // poll below was satisfied by it, the export started, and
-                    // the worker closed that session underneath (NPE in
-                    // `exportJpeg`, E-9000). Closing it here, under the lock,
-                    // makes `session != null` mean this frame and nothing else.
-                    synchronized (renderMutex) {
-                        if (session != null) { session.close(); session = null; }
-                    }
-                    // **Forced, even for the frame already on screen.** The
-                    // shortcut `reopenFrame` takes (`index == currentFrame &&
-                    // session != null`) leaves the first export on the session
-                    // the import opened, while every later frame is re-decoded.
-                    reopenFrameForced(index);
-                }, 5000);
-                if (!pollUntil(() -> session != null, 180000)) {
-                    ++failed;
-                    try { DebugSink.text("batch-export", "open failed " + index + " " + name); }
-                    catch (Throwable spkIgnored) { Diagnostics.ignored("get:14353", spkIgnored); }
-                    continue;
-                }
-                final java.util.concurrent.CountDownLatch done =
-                        new java.util.concurrent.CountDownLatch(1);
-                uiWait(() -> exportImage(format, tier, done::countDown), 5000);
-                boolean finished = false;
-                try { finished = done.await(20, java.util.concurrent.TimeUnit.MINUTES); }
-                catch (InterruptedException ie) { break; }
-                if (finished) ++ok; else ++failed;
-                // **Before the next frame asks for its own planes.**
-                uiWait(() -> {
-                    synchronized (renderMutex) {
-                        if (session != null) { session.close(); session = null; }
-                    }
-                }, 5000);
-                try { if (engine != null) engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("get:14369", spkIgnored); }
-                // **The next frame starts from zero.** The decoded raw cache
-                // holds one frame's unpacked plane, and the heap still carries
-                // the last frame's bitmaps; six frames of that is what made the
-                // fifth one die.
-                try { SpektraLabEngine.clearRawCache(); } catch (Throwable spkIgnored) { Diagnostics.ignored("get:14374", spkIgnored); }
-                System.gc();
-            }
-            } finally {
-                // **The flag has to come down even when the loop throws**, or
-                // every later batch is refused and every error dialog is eaten.
-                final int fok = ok, ffail = failed;
-                UiDispatcher.post(() -> {
-                    batchExportRunning = false;
-                    if (abortBatchPill != null) abortBatchPill.setVisibility(View.GONE);
-                    if (exportProgressBar != null) exportProgressBar.setVisibility(View.GONE);
-                    final String msg = tr("export.batch_export_finished") + fok + tr("export.succeeded")
-                            + (ffail > 0 ? ", " + ffail + tr("export.failed_no_film_selected_or") : "");
-                    if (statusText != null) statusText.setText(msg);
-                    showInAppToast(msg);
-                    if (home >= 0 && home < frames.size()) {
-                        final int back = home;
-                        reopenFrame(back);
-                        // **The restore has to render.** `loadImage` deliberately
-                        // stops at the original, so without this the canvas stayed
-                        // on "RENDERING / Decoding RAW…" after a batch that had
-                        // already finished.
-                        new Thread(() -> {
-                            if (!pollUntil(() -> session != null, 120000)) return;
-                            UiDispatcher.post(() -> {
-                                // **800, not 2048.** Six full-size exports leave
-                                // the pool carrying a gigabyte of lookup tables
-                                // that nothing reclaims; the redisplay then asked
-                                // for another 20 MP chain and the system killed
-                                // the process right there -- two reports, both
-                                // "it dies when it goes back to the first frame".
-                                // The frame is a preview at this point anyway;
-                                // tapping a film re-renders at full size.
-                                if (back < frames.size() && filmStock != null) renderImage(LIVE_LONG_EDGE);
-                            });
-                        }, "SpektraLab-batch-restore").start();
-                    }
-                });
-            }
-        }, "SpektraLab-batch-export").start();
+new BatchExportWorker(this).run(format, tier);
     }
 
-    private void exportImage() {
+    void exportImage() {
         exportImage("jpeg", "preview");
     }
 
@@ -12189,12 +12042,12 @@ new BatchImportWorker(this).run(uris);
     /** One automatic retry per user-initiated export. */
     private volatile boolean exportRetried = false;
 
-    private void exportImage(String format, String tier) {
+    void exportImage(String format, String tier) {
         exportRetried = false;
         exportImage(format, tier, null);
     }
 
-    private void exportImage(String format, String tier, final Runnable onDone) {
+    void exportImage(String format, String tier, final Runnable onDone) {
         CrashTrail.mark(this, "export:begin");
         // **The export's exposure, decided once, before any branch.** The open
         // params, the forced delta and the pin all have to agree: the canvas'
