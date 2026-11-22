@@ -347,7 +347,10 @@ public class MainActivity extends Activity {
      *  either a grey wash or a kept window depending on a constant nobody could
      *  see. */
     private String meterMethod = "protect_highlights";
-    private TextView meterChip;
+    /** The metering button: one drawn glyph whose mark is the mode. */
+    private MiniIcon meterGlyph;
+    /** fotufilm has a single strategy, so its slot says AUTO instead of a choice. */
+    private TextView meterAuto;
     /** The EDR switch in the print panel; `edrOn` is still the value. */
     private Square edrMark, spotMark, edrPlusMark;
     private Square hueOwnMark;
@@ -14408,8 +14411,15 @@ public class MainActivity extends Activity {
         LinearLayout top = new LinearLayout(this);
         editorTopBar = top;
         top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(android.view.Gravity.TOP);
-        top.setPadding(dp(16), dp(12), dp(16), dp(8));
+        // **One centre line for the whole bar.** The menu glyph sat 5.1 dp
+        // below the wordmark's cap centre: `wordRow` was TOP-aligned so the
+        // version could hang off the cap line, and a 30 dp pill with 6 dp of
+        // padding put its three bars at 11.5..20.5 dp against a cap that runs
+        // 4.4..17.4. Measured on Inter at 18 sp: the line box centre is 10.9 dp
+        // and the cap centre 10.8, so centring the row is enough -- the version
+        // moves into an inner TOP row to keep starting at the cap.
+        top.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        top.setPadding(dp(16), dp(6), dp(16), dp(6));
         top.setBackground(new android.graphics.drawable.GradientDrawable(
                 android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
                 topWash()));
@@ -14417,17 +14427,16 @@ public class MainActivity extends Activity {
 
         LinearLayout brand = new LinearLayout(this);
         brand.setOrientation(LinearLayout.VERTICAL);
-        brand.setPadding(0, dp(2), 0, 0);
+        brand.setPadding(0, 0, 0, 0);
         LinearLayout wordRow = new LinearLayout(this);
         wordRow.setOrientation(LinearLayout.HORIZONTAL);
-        wordRow.setGravity(android.view.Gravity.TOP);
+        wordRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
         // `UI_PAPER` is the panel colour: white on the light theme (correct on
         // the navy canvas) and near-black on the dark one, where it vanished
         // into the black. The wordmark is always the canvas's *contrast* colour.
         TextView word = label("SpektraLab", 18, uiOnCanvas(), tfDisplay);
         word.setLetterSpacing(-0.045f);
         word.setSingleLine(true);
-        wordRow.addView(word);
         // **The menu is a drawn glyph, not a text "≡".** Next to a real icon a
         // font character reads as a mistake; Material's `menu` path is the
         // designed 24 dp shape. It replaces the long-press on the wordmark,
@@ -14436,22 +14445,30 @@ public class MainActivity extends Activity {
         menuPill.setImageResource(getResources().getIdentifier(
                 "ic_menu_white", "drawable", getPackageName()));
         menuPill.setAlpha(0.85f);
-        menuPill.setPadding(dp(6), dp(6), dp(6), dp(6));
+        // 4 dp of padding in a 32 dp pill leaves the 24 dp glyph at its
+        // designed size and still hands back a 32 dp touch target.
+        menuPill.setPadding(dp(4), dp(4), dp(4), dp(4));
         menuPill.setContentDescription("设置");
         menuPill.setOnClickListener(v -> showSettings());
         // **Left of the wordmark, not between it and the version.** The menu
         // belongs at the edge of the bar, where every other app puts it;
         // between the name and its version number it reads as part of the name.
-        final LinearLayout.LayoutParams menuLp = new LinearLayout.LayoutParams(dp(30), dp(30));
+        final LinearLayout.LayoutParams menuLp = new LinearLayout.LayoutParams(dp(32), dp(32));
         menuLp.rightMargin = dp(10);
-        menuLp.topMargin = dp(1);
         wordRow.addView(menuPill, 0, menuLp);
         TextView version = label("v" + UpdateCheck.versionName(this), 6.5f, uiOnCanvas(), tfBody);
         version.setAlpha(0.7f);
         LinearLayout.LayoutParams versionLp = new LinearLayout.LayoutParams(-2, -2);
         versionLp.leftMargin = dp(4);
         versionLp.topMargin = 0;
-        wordRow.addView(version, versionLp);
+        // The superscript keeps the wordmark's cap line; the row centres the
+        // pair against the menu glyph.
+        final LinearLayout mark = new LinearLayout(this);
+        mark.setOrientation(LinearLayout.HORIZONTAL);
+        mark.setGravity(android.view.Gravity.TOP);
+        mark.addView(word);
+        mark.addView(version, versionLp);
+        wordRow.addView(mark, new LinearLayout.LayoutParams(-2, -2));
         brand.addView(wordRow);
         top.addView(brand, new LinearLayout.LayoutParams(0, -2, 1f));
 
@@ -15560,11 +15577,19 @@ public class MainActivity extends Activity {
         TextView titleView = mixedLabel(title, 8.5f, UI_INK);
         titleView.setLetterSpacing(0.06f);
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView resetView = label("重置当前页", 8.5f, UI_MUTED, tfHan);
-        resetView.setPaintFlags(resetView.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
-        resetView.setPadding(dp(8), dp(10), 0, dp(10));
-        resetView.setOnClickListener(v -> reset.run());
-        head.addView(resetView);
+        // **A glyph, not an underlined sentence.** `重置当前页` at 8.5 sp was the
+        // loudest thing in a head whose title is the same size, and it repeated
+        // the same seven characters on seven pages. The circular arrow says it
+        // once; long-press still spells it out.
+        final MiniIcon resetIcon = new MiniIcon(this, "reset");
+        resetIcon.setTint(UI_MUTED);
+        resetIcon.setContentDescription("重置当前页");
+        resetIcon.setOnClickListener(v -> reset.run());
+        resetIcon.setOnLongClickListener(v -> {
+            showInAppToast(Lang.t("重置当前页"));
+            return true;
+        });
+        head.addView(resetIcon, new LinearLayout.LayoutParams(dp(32), dp(32)));
         return head;
     }
 
@@ -15685,22 +15710,26 @@ public class MainActivity extends Activity {
         // On: the meter decides the film exposure. Off: the frame keeps the
         // exposure the camera recorded, which is the only way a lamp in a dark
         // room comes back dark instead of being lifted five stops onto Dmax.
-        final TextView meterLabel = label("测光", 8.5f, UI_MUTED, tfHan);
-        meterChip = label("", 8.5f, UI_INK, tfHan);
-        meterChip.setGravity(android.view.Gravity.CENTER);
-        // **48dp, not 40x20.** The old chip was smaller than the minimum touch
-        // target, so a tap that landed two pixels off did nothing -- which is
-        // what "点了没反应" was.
-        meterChip.setPadding(dp(10), dp(6), dp(10), dp(6));
-        meterChip.setMinWidth(dp(48));
-        meterChip.setMinHeight(dp(30));
-        meterChip.setOnClickListener(v -> showMeterPicker());
-        final LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(-2, -2);
-        labelLp.rightMargin = dp(6);
-        filmHead.addView(meterLabel, 1, labelLp);
-        final LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, -2);
-        chipLp.rightMargin = dp(10);
-        filmHead.addView(meterChip, 2, chipLp);
+        // **The metering choice is one glyph.** Which of the eight strategies
+        // is in force is the *shape* inside the frame (`MiniIcon`), so the head
+        // no longer carries a label, a 48 dp chip and a sentence: two 32 dp
+        // buttons sit at the right of the title.
+        meterGlyph = new MiniIcon(this, meterMethod);
+        meterGlyph.setContentDescription("测光方式");
+        meterGlyph.setOnClickListener(v -> showMeterPicker());
+        meterGlyph.setOnLongClickListener(v -> {
+            showInAppToast(Lang.t(meterName(meterMethod)));
+            return true;
+        });
+        meterAuto = label("AUTO", 8.5f, UI_MUTED, tfBody);
+        meterAuto.setLetterSpacing(0.10f);
+        meterAuto.setGravity(android.view.Gravity.CENTER);
+        meterAuto.setVisibility(View.GONE);
+        final int beforeReset = filmHead.getChildCount() - 1;
+        final LinearLayout.LayoutParams glyphLp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        glyphLp.rightMargin = dp(2);
+        filmHead.addView(meterGlyph, beforeReset, glyphLp);
+        filmHead.addView(meterAuto, beforeReset + 1, new LinearLayout.LayoutParams(-2, -2));
         refreshMeterChip();
         panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
 
@@ -24110,7 +24139,7 @@ public class MainActivity extends Activity {
     }
 
     private void refreshMeterChip() {
-        if (meterChip == null) return;
+        if (meterGlyph == null) return;
         // **The second engine has no metering method to choose.**
         //
         // fotufilm's exposure is the print's own Auto Levels: the engine reads the frame and puts
@@ -24119,19 +24148,21 @@ public class MainActivity extends Activity {
         // which the group read, correctly, as "测光哪个都没反应". It says what actually happens
         // instead of pretending to be a control.
         if (isFotuStock(filmStock)) {
-            meterChip.setText("引擎自动");
-            meterChip.setTextColor(UI_MUTED);
-            meterChip.setBackground(outlineBox(false));
-            meterChip.setOnClickListener(null);
-            meterChip.setClickable(false);
+            meterGlyph.setVisibility(View.GONE);
+            if (meterAuto != null) meterAuto.setVisibility(View.VISIBLE);
             return;
         }
-        meterChip.setOnClickListener(v -> showMeterPicker());
-        meterChip.setClickable(true);
+        meterGlyph.setVisibility(View.VISIBLE);
+        if (meterAuto != null) meterAuto.setVisibility(View.GONE);
         final boolean on = meterMethod != null && !meterMethod.isEmpty();
-        meterChip.setText(meterName(meterMethod));
-        meterChip.setTextColor(on ? UI_BLUE : UI_MUTED);
-        meterChip.setBackground(outlineBox(on));
+        // **The mode is the mark, and "on" is the accent.** A frame alone means
+        // the engine's own metering (the same thing `关` means); any chosen
+        // strategy draws its own mark and takes the accent colour, so the head
+        // still says "something is set" without a word.
+        meterGlyph.setMode(on ? meterMethod : "");
+        meterGlyph.setTint(on ? UI_BLUE : UI_MUTED);
+        meterGlyph.setOnClickListener(v -> showMeterPicker());
+        meterGlyph.setClickable(true);
     }
 
     private void resetFilmPanel() {
@@ -28279,6 +28310,142 @@ public class MainActivity extends Activity {
      * 找到一个粗细、大小都不属于这套界面的勾。两条线是十一行代码，而且它跟片边
      * 页那支笔、跟按钮的描边都是同一种画法。
      */
+    /**
+     * **The head's two buttons are drawn, not typed.**
+     *
+     * <p>`重置当前页` and the metering chip were 8.5 sp text in a head whose
+     * title is 8.5 sp: the same weight, the same size, the same colour family,
+     * so the controls read as more title. Both are one 24 dp glyph now, drawn
+     * here so the whole set shares a single stroke weight and optical size --
+     * a font character or a platform drawable would each have brought their
+     * own.
+     *
+     * <p>The metering glyph is one frame with a different mark inside it, and
+     * the mark's *position* is the mode: struck through for the engine's own
+     * metering, a chord across the middle for 平衡, a dot in the upper half for
+     * 亮部重点, a heavy bar under the top edge for 保护高光 (and under the
+     * bottom for 保留暗部), a ring at the centre for 中心, the same ring filled
+     * for 中心加权, four dots for 平均's grid, a meridian for 中位数. At 24 dp
+     * that is legible at a glance; long-press says the name for the one case
+     * where it is not.
+     */
+    private static final class MiniIcon extends View {
+        private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float d;
+        private String mode;
+        private int tint = UI_MUTED;
+        /** Pressed, kept here rather than in the view's alpha. */
+        private boolean down;
+
+        MiniIcon(android.content.Context c, String mode) {
+            super(c);
+            this.mode = mode == null ? "" : mode;
+            this.d = c.getResources().getDisplayMetrics().density;
+            setClickable(true);
+            setFocusable(false);
+        }
+
+        void setMode(String m) {
+            final String next = m == null ? "" : m;
+            if (next.equals(mode)) return;
+            mode = next;
+            invalidate();
+        }
+
+        void setTint(int colour) {
+            tint = colour;
+            invalidate();
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas c) {
+            final float w = getWidth(), h = getHeight();
+            final float s = Math.min(w, h);
+            if (s <= 0f) return;
+            final float cx = w / 2f, cy = h / 2f;
+            final float r = s * 0.30f;
+            final float sw = Math.max(1.55f * d, s * 0.046f);
+            pen.setStyle(Paint.Style.STROKE);
+            pen.setStrokeCap(Paint.Cap.ROUND);
+            pen.setStrokeJoin(Paint.Join.ROUND);
+            pen.setStrokeWidth(sw);
+            pen.setColor(tint);
+            pen.setAlpha(down ? 0x8C : 0xFF);
+
+            if ("reset".equals(mode)) {
+                // Three quarters of a turn with a filled head at its start: the
+                // universal "start this over", and not the top bar's undo.
+                final android.graphics.RectF box =
+                        new android.graphics.RectF(cx - r, cy - r, cx + r, cy + r);
+                final float start = -64f;
+                c.drawArc(box, start, 288f, false, pen);
+                final double a = Math.toRadians(start);
+                final float px = cx + r * (float) Math.cos(a);
+                final float py = cy + r * (float) Math.sin(a);
+                final double t = Math.atan2(Math.cos(a), -Math.sin(a));   // clockwise
+                final float tx = (float) Math.cos(t), ty = (float) Math.sin(t);
+                final float nx = -ty, ny = tx;                            // outward
+                final float len = r * 0.66f, half = r * 0.34f;
+                final android.graphics.Path head = new android.graphics.Path();
+                head.moveTo(px + tx * len, py + ty * len);
+                head.lineTo(px - tx * len * 0.35f + nx * half, py - ty * len * 0.35f + ny * half);
+                head.lineTo(px - tx * len * 0.35f - nx * half, py - ty * len * 0.35f - ny * half);
+                head.close();
+                pen.setStyle(Paint.Style.FILL);
+                c.drawPath(head, pen);
+                pen.setStyle(Paint.Style.STROKE);
+                return;
+            }
+
+            c.drawCircle(cx, cy, r, pen);
+            if (mode.isEmpty()) {
+                final float k = r * 0.66f;   // 0.66 * sqrt(2) = 0.93 r: inside the ring
+                c.drawLine(cx - k, cy + k, cx + k, cy - k, pen);
+            } else if ("balanced".equals(mode)) {
+                c.drawLine(cx - r, cy, cx + r, cy, pen);
+            } else if ("highlight_weighted".equals(mode)) {
+                dot(c, cx, cy - r * 0.46f, r * 0.26f);
+            } else if ("protect_highlights".equals(mode) || "protect_shadows".equals(mode)) {
+                final boolean top = mode.startsWith("protect_high");
+                final float y = top ? cy - r * 0.50f : cy + r * 0.50f;
+                pen.setStrokeWidth(sw * 1.6f);
+                c.drawLine(cx - r * 0.44f, y, cx + r * 0.44f, y, pen);
+                pen.setStrokeWidth(sw);
+            } else if ("center".equals(mode)) {
+                c.drawCircle(cx, cy, r * 0.36f, pen);
+            } else if ("center_weighted".equals(mode)) {
+                c.drawCircle(cx, cy, r * 0.36f, pen);
+                dot(c, cx, cy, r * 0.15f);
+            } else if ("average".equals(mode)) {
+                final float k = r * 0.42f, q = r * 0.17f;
+                dot(c, cx - k, cy - k, q);
+                dot(c, cx + k, cy - k, q);
+                dot(c, cx - k, cy + k, q);
+                dot(c, cx + k, cy + k, q);
+            } else if ("median".equals(mode)) {
+                c.drawLine(cx, cy - r, cx, cy + r, pen);
+            }
+        }
+
+        private void dot(android.graphics.Canvas c, float x, float y, float radius) {
+            pen.setStyle(Paint.Style.FILL);
+            c.drawCircle(x, y, radius, pen);
+            pen.setStyle(Paint.Style.STROKE);
+        }
+
+        @Override public void setPressed(boolean pressed) {
+            super.setPressed(pressed);
+            // **The feedback is the pen's alpha, not the view's.** `setEnabledDeep`
+            // dims a locked page by writing `setAlpha` on every child; a view that
+            // owned its alpha here would light straight back up the moment the
+            // framework changed its pressed state, and the head would say "live"
+            // on a page whose sliders are dead (1.7.1d's bug, one layer up).
+            if (down != pressed) {
+                down = pressed;
+                invalidate();
+            }
+        }
+    }
+
     private static final class CheckMark extends View {
         private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
         CheckMark(android.content.Context c) { super(c); }
