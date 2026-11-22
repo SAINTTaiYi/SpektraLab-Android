@@ -15729,7 +15729,11 @@ public class MainActivity extends Activity {
         final LinearLayout.LayoutParams glyphLp = new LinearLayout.LayoutParams(dp(32), dp(32));
         glyphLp.rightMargin = dp(2);
         filmHead.addView(meterGlyph, beforeReset, glyphLp);
-        filmHead.addView(meterAuto, beforeReset + 1, new LinearLayout.LayoutParams(-2, -2));
+        // The same 32 dp slot the glyph lives in, so switching between the two
+        // engines does not shift the reset button sideways.
+        final LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(dp(34), -2);
+        autoLp.rightMargin = dp(2);
+        filmHead.addView(meterAuto, beforeReset + 1, autoLp);
         refreshMeterChip();
         panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
 
