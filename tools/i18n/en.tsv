@@ -1132,3 +1132,8 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 （需要 Vulkan 1.1 以上的计算管线）。	(Vulkan 1.1 compute pipelines or newer).
 ）。照片已经渲染好，是系统相册没有接受这个文件——重启手机再导一次；如果每次都是这样，把这条发给我	). The picture rendered fine; the system album did not accept the file — restart the phone and export again; if it happens every time, send me this line
 ＋	+
+胶片与相纸	Film and paper
+这支胶片只在 SpektraLab 引擎里 · 可在右上角切换引擎	This film is only in the SpektraLab engine · switch engines at the top right
+这支胶片只在 fotufilm 引擎里 · 可在右上角切换引擎	This film is only in the fotufilm engine · switch engines at the top right
+这支胶片不在 fotufilm 里 · 已回到原图	That film is not in fotufilm · back to the original
+这支胶片不在 SpektraLab 里 · 已回到原图	That film is not in SpektraLab · back to the original

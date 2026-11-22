@@ -347,10 +347,21 @@ public class MainActivity extends Activity {
      *  either a grey wash or a kept window depending on a constant nobody could
      *  see. */
     private String meterMethod = "protect_highlights";
-    /** The metering button: one drawn glyph whose mark is the mode. */
-    private MiniIcon meterGlyph;
-    /** fotufilm has a single strategy, so its slot says AUTO instead of a choice. */
-    private TextView meterAuto;
+    /** The metering choice: the mode's name in a square, thin-bordered box. */
+    private TextView meterChip;
+    /**
+     * **Which engine the shelf develops with.** "spk" or "fotu".
+     *
+     * <p>Not a per-card question any more. The two machines are not
+     * interchangeable, and eighteen films are sold by both of them, so asking
+     * it on every one of those cards was a sheet before every render. The
+     * switch at the head of the page answers it once: it decides what the cards
+     * below are previews *of*, and a film only one engine carries is greyed
+     * instead of hidden.
+     */
+    private String shelfEngine = "spk";
+    /** The two cells of that switch. */
+    private TextView engineSpkCell, engineFotuCell;
     /** The EDR switch in the print panel; `edrOn` is still the value. */
     private Square edrMark, spotMark, edrPlusMark;
     private Square hueOwnMark;
@@ -14915,7 +14926,11 @@ public class MainActivity extends Activity {
      *  together. */
     private void applyLook(Look look) {
         if (look == null) return;
+        final String engineBefore = shelfEngine;
         filmStock = look.filmStock;
+        // The shelf follows the film: a restored fotufilm look comes back on the
+        // engine that can develop it.
+        shelfEngine = isFotuStock(filmStock) ? "fotu" : "spk";
         printStock = look.printStock;
         printExposure = look.printExposure;
         meterMethod = sanitizeMeter(look.meterMethod);
@@ -15158,6 +15173,17 @@ public class MainActivity extends Activity {
         refreshFormatFoot();
         refreshPaperLabel();
         refreshViewLock();
+        // **The look's film may belong to the other engine.** A preset carries
+        // a film; if that film is developed by the engine the shelf is not on,
+        // the switch has to say so and every preview has to be re-rendered --
+        // they were the previous engine's pictures of the same subjects.
+        refreshEngineSwitch();
+        if (!shelfEngine.equals(engineBefore)) {
+            stopPrefetch();
+            clearShelfCache();
+            rebuildFilmCards();
+            startPrefetch();
+        }
     }
 
     /** Park the live controls on the frame that owns them, before leaving it. */
@@ -15581,22 +15607,16 @@ public class MainActivity extends Activity {
         TextView titleView = mixedLabel(title, 8.5f, UI_INK);
         titleView.setLetterSpacing(0.06f);
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
-        // **A glyph, not an underlined sentence.** `重置当前页` at 8.5 sp was the
-        // loudest thing in a head whose title is the same size, and it repeated
-        // the same seven characters on seven pages. The circular arrow says it
-        // once; long-press still spells it out.
-        final MiniIcon resetIcon = new MiniIcon(this, "reset");
-        resetIcon.setTint(UI_MUTED);
-        resetIcon.setContentDescription("重置当前页");
-        resetIcon.setOnClickListener(v -> reset.run());
-        resetIcon.setOnLongClickListener(v -> {
-            showInAppToast(Lang.t("重置当前页"));
-            return true;
-        });
-        // **24 dp, not 32.** At 32 the pair read larger than the 8.5 sp title
-        // beside it; three quarters of that is the size of the glyphs the rest
-        // of the app draws, and it still leaves a 24 dp target.
-        head.addView(resetIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        // **Text again, and one word.** The circular arrow was an experiment:
+        // at 24 dp it read as decoration rather than as a target, and what it
+        // stands for is short enough to say. 「重置」, not 「重置当前页」 -- the
+        // page it resets is the page it is on.
+        TextView resetView = label("重置", 8.5f, UI_MUTED, tfHan);
+        resetView.setPaintFlags(resetView.getPaintFlags()
+                | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
+        resetView.setPadding(dp(8), dp(9), dp(2), dp(9));
+        resetView.setOnClickListener(v -> reset.run());
+        head.addView(resetView, new LinearLayout.LayoutParams(-2, -2));
         return head;
     }
 
@@ -15712,35 +15732,52 @@ public class MainActivity extends Activity {
     private View buildFilmPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        final LinearLayout filmHead = sectionHead("FILM & PAPER / 胶片与相纸", this::resetFilmPanel);
-        // **The "As Shot" switch, where the original app puts the same choice.**
-        // On: the meter decides the film exposure. Off: the frame keeps the
-        // exposure the camera recorded, which is the only way a lamp in a dark
-        // room comes back dark instead of being lifted five stops onto Dmax.
-        // **The metering choice is one glyph.** Which of the eight strategies
-        // is in force is the *shape* inside the frame (`MiniIcon`), so the head
-        // no longer carries a label, a 48 dp chip and a sentence: two 32 dp
-        // buttons sit at the right of the title.
-        meterGlyph = new MiniIcon(this, meterMethod);
-        meterGlyph.setContentDescription("测光方式");
-        meterGlyph.setOnClickListener(v -> showMeterPicker());
-        meterGlyph.setOnLongClickListener(v -> {
-            showInAppToast(Lang.t(meterName(meterMethod)));
-            return true;
-        });
-        meterAuto = label("AUTO", 8.5f, UI_MUTED, tfBody);
-        meterAuto.setLetterSpacing(0.10f);
-        meterAuto.setGravity(android.view.Gravity.CENTER);
-        meterAuto.setVisibility(View.GONE);
+        // **The title says it once, in one language.** The bilingual head was a
+        // signpost in a page that is already titled; what belongs beside it are
+        // the two controls the page cannot answer for itself.
+        final LinearLayout filmHead = sectionHead("胶片与相纸", this::resetFilmPanel);
+        // **Which engine develops the shelf.** The two machines are not
+        // interchangeable, and eighteen films are sold by both of them: asking
+        // "which engine" on every one of those cards was a sheet before every
+        // render. The switch answers it once, and it decides what the cards
+        // below are previews *of* -- a film only one engine carries is greyed
+        // rather than hidden, because hiding it would make the shelf lie about
+        // what the app can do.
+        engineSpkCell = label("SPK", 7.5f, UI_BLUE, tfBody);
+        engineFotuCell = label("FOTU", 7.5f, UI_BLUE, tfBody);
+        engineSpkCell.setGravity(android.view.Gravity.CENTER);
+        engineFotuCell.setGravity(android.view.Gravity.CENTER);
+        engineSpkCell.setMinWidth(dp(30));
+        engineSpkCell.setPadding(dp(6), 0, dp(6), 0);
+        engineFotuCell.setMinWidth(dp(34));
+        engineFotuCell.setPadding(dp(6), 0, dp(6), 0);
+        engineSpkCell.setClickable(true);
+        engineFotuCell.setClickable(true);
+        engineSpkCell.setOnClickListener(v -> setShelfEngine("spk"));
+        engineFotuCell.setOnClickListener(v -> setShelfEngine("fotu"));
+        final LinearLayout engineBox = new LinearLayout(this);
+        engineBox.setOrientation(LinearLayout.HORIZONTAL);
+        engineBox.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        engineBox.addView(engineSpkCell, new LinearLayout.LayoutParams(-2, dp(24)));
+        final LinearLayout.LayoutParams fotuCellLp = new LinearLayout.LayoutParams(-2, dp(24));
+        fotuCellLp.leftMargin = dp(4);
+        engineBox.addView(engineFotuCell, fotuCellLp);
         final int beforeReset = filmHead.getChildCount() - 1;
-        final LinearLayout.LayoutParams glyphLp = new LinearLayout.LayoutParams(dp(24), dp(24));
-        glyphLp.rightMargin = dp(2);
-        filmHead.addView(meterGlyph, beforeReset, glyphLp);
-        // The same 32 dp slot the glyph lives in, so switching between the two
-        // engines does not shift the reset button sideways.
-        final LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(dp(26), -2);
-        autoLp.rightMargin = dp(2);
-        filmHead.addView(meterAuto, beforeReset + 1, autoLp);
+        final LinearLayout.LayoutParams engineLp = new LinearLayout.LayoutParams(-2, -2);
+        engineLp.rightMargin = dp(8);
+        filmHead.addView(engineBox, beforeReset, engineLp);
+        // **The metering choice, as text in a square box.** The glyph said
+        // *which* of the eight strategies was in force but never said its name;
+        // a mode is a word, and the box around it is the whole decoration.
+        meterChip = label("", 8.5f, UI_INK, tfHan);
+        meterChip.setGravity(android.view.Gravity.CENTER);
+        meterChip.setPadding(dp(8), 0, dp(8), 0);
+        meterChip.setMinWidth(dp(48));
+        meterChip.setOnClickListener(v -> showMeterPicker());
+        final LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, dp(24));
+        chipLp.rightMargin = dp(4);
+        filmHead.addView(meterChip, beforeReset + 1, chipLp);
+        refreshEngineSwitch();
         refreshMeterChip();
         panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
 
@@ -16003,6 +16040,33 @@ public class MainActivity extends Activity {
         if (stock == null || !stock.startsWith(FotuFilm.PREFIX)) return stock;
         final String spk = FOTU_TWIN_SPK.get(stock.substring(FotuFilm.PREFIX.length()));
         return spk == null ? stock : spk;
+    }
+
+    /**
+     * The id this card answers to in the shelf's engine, or null when that
+     * engine does not ship the film.
+     *
+     * <p>A merged card carries the first engine's id, so both directions are a
+     * lookup in `FOTU_TWIN` / `FOTU_TWIN_SPK`. A stock only one engine has maps
+     * to null -- that is exactly what "greyed out" means.
+     */
+    private String engineIdOf(String cardId) {
+        if (cardId == null) return null;
+        if ("original".equals(cardId)) return cardId;
+        if ("fotu".equals(shelfEngine)) {
+            if (cardId.startsWith(FotuFilm.PREFIX)) return cardId;
+            final String twin = fotuTwinOf(cardId);
+            return twin == null ? null : FotuFilm.PREFIX + twin;
+        }
+        final String spk = cardId.startsWith(FotuFilm.PREFIX)
+                ? FOTU_TWIN_SPK.get(cardId.substring(FotuFilm.PREFIX.length()))
+                : cardId;
+        return spk != null && filmIds.contains(spk) ? spk : null;
+    }
+
+    /** Can the shelf's engine develop this card? 原图 always can. */
+    private boolean engineHas(String cardId) {
+        return "original".equals(cardId) || engineIdOf(cardId) != null;
     }
 
     /** Is this card the one standing for `stock`? A merged card answers yes for
@@ -16448,11 +16512,15 @@ public class MainActivity extends Activity {
 
     private void addFilmCard(final String id, String text, final int index) {
         final boolean original = "original".equals(id);
+        // **A film the shelf's engine does not ship is greyed, not hidden.** It
+        // exists -- the other engine develops it -- and saying so is the honest
+        // state; its tap explains where the switch is.
+        final boolean available = original || engineHas(id);
         boolean active = original ? showingOriginal
-                : (filmStock != null && !showingOriginal && cardShowsStock(id, filmStock));
-        // A film both engines develop: the card carries the mark, and its tap
-        // has one question to ask before it can render anything.
+                : (available && filmStock != null && !showingOriginal && cardShowsStock(id, filmStock));
+        // A film both engines develop: the card carries the mark.
         final String twin = isFotuStock(id) ? null : fotuTwinOf(id);
+        final String key = cardKeyFor(id);
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setTag(id);
@@ -16467,12 +16535,17 @@ public class MainActivity extends Activity {
             TextView mark = label("—", 22, UI_MUTED, tfDisplay);
             mark.setGravity(android.view.Gravity.CENTER);
             imageBox.addView(mark, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        } else if (!filmThumbs.containsKey(id) && prefetchFailureShown(id)) {
+        } else if (!available) {
+            // A box front, not a photograph: a picture here would be the *other*
+            // engine's preview of a film this one cannot develop.
+            imageBox.addView(new FilmCoverView(this, id, text),
+                    new android.widget.FrameLayout.LayoutParams(-1, -1));
+        } else if (!filmThumbs.containsKey(key) && prefetchFailureShown(key)) {
             // **A card that cannot be drawn says so.** An endless loader and a
             // drawn cover both read as "still loading"; after three passes this
             // is the honest state, and a tap retries it.
             imageBox.addView(unavailableTile(), new android.widget.FrameLayout.LayoutParams(-1, -1));
-        } else if (beforeBitmap == null || (isFotuStock(id) && !filmThumbs.containsKey(id))) {
+        } else if (beforeBitmap == null || (isFotuStock(id) && !filmThumbs.containsKey(key))) {
             // **No photograph yet, so there is nothing to preview.** A name
             // typed into a grey rectangle says "empty slot"; a drawn box front
             // says "this is a film". The shelf's job is choosing a stock, and
@@ -16480,12 +16553,7 @@ public class MainActivity extends Activity {
             imageBox.addView(new FilmCoverView(this, id, text),
                     new android.widget.FrameLayout.LayoutParams(-1, -1));
         } else {
-            Bitmap preview = filmThumbs.get(id);
-            // A merged card may have been developed by the other engine last
-            // time: that render is this film too.
-            if (preview == null && twin != null) {
-                preview = filmThumbs.get(FotuFilm.PREFIX + twin);
-            }
+            Bitmap preview = filmThumbs.get(key);
             if (preview == null && filmStock != null && !showingOriginal
                     && cardShowsStock(id, filmStock)) {
                 preview = lastRenderedBitmap;
@@ -16528,7 +16596,7 @@ public class MainActivity extends Activity {
         // and gives the name two readable lines.
         card.addView(imageBox, new LinearLayout.LayoutParams(-1, dp(filmCols > 1 ? 96 : 67)));
 
-        TextView name = label(text, 7.5f, active ? UI_BLUE : UI_INK, tfHan);
+        TextView name = label(text, 7.5f, active ? UI_BLUE : (available ? UI_INK : UI_MUTED), tfHan);
         name.setMaxLines(2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         name.setBackgroundColor(UI_PAPER);
@@ -16539,7 +16607,15 @@ public class MainActivity extends Activity {
         card.addView(name, new LinearLayout.LayoutParams(-1, dp(filmCols > 1 ? 34 : 27)));
 
         card.setClickable(true);
-        card.setOnClickListener(v -> pickFilmCard(id, index));
+        if (available) {
+            card.setOnClickListener(v -> pickFilmCard(id, index));
+        } else {
+            // **A greyed card is still a card.** It says the film exists, who
+            // develops it, and where the switch is -- a dead rectangle would
+            // read as a bug.
+            card.setAlpha(0.38f);
+            card.setOnClickListener(v -> showInAppToast(otherEngineNote()));
+        }
         addShelfCard(card);
         filmCards.add(card);
     }
@@ -16713,7 +16789,9 @@ public class MainActivity extends Activity {
         try {
             final int w = shelfThumbWidthPx();
             final int h = Math.max(1, Math.round(w * rendered.getHeight() / (float) rendered.getWidth()));
-            filmThumbs.put(stock, Bitmap.createScaledBitmap(rendered, w, h, true));
+            // One card, one key: a merged film's render is filed under the card
+            // it is drawn on, whichever engine developed it.
+            filmThumbs.put(cardKeyFor(stock), Bitmap.createScaledBitmap(rendered, w, h, true));
         } catch (Throwable ignored) { }
     }
 
@@ -16769,53 +16847,30 @@ public class MainActivity extends Activity {
             toggleOriginal();
             return;
         }
+        // **The head's switch decides, not the card.** A film the shelf's engine
+        // does not ship is greyed and says why (`addFilmCard`); everything that
+        // reaches here has an id in `shelfEngine`, and that id is what the
+        // renderer needs -- a merged card's tap no longer opens a sheet.
+        final String target = engineIdOf(id);
+        if (target == null) {
+            showInAppToast(otherEngineNote());
+            return;
+        }
         // **A card that gave up gets its next attempt from the tap.** Picking it
         // renders the canvas (which seeds the card through `cacheFilmThumb`), and
         // clearing the counter puts it back in the background queue as well.
-        if (prefetchFails.remove(id) != null) {
-            prefetchFailWhy.remove(id);
+        final String key = cardKeyFor(id);
+        if (prefetchFails.remove(key) != null) {
+            prefetchFailWhy.remove(key);
             if (!prefetchSpkRunning && !prefetchFotuRunning && !rendering && !fotuRendering) {
                 startPrefetch();
             }
         }
-        final String twin = isFotuStock(id) ? null : fotuTwinOf(id);
-        if (twin != null) {
-            // The card is one film; the machines behind it are two. This is the
-            // only place the shelf cannot answer for the user.
-            showEngineChooser(id, twin);
+        if (isFotuStock(target)) {
+            selectFotuStock(target);
             return;
         }
-        if (isFotuStock(id)) {
-            selectFotuStock(id);
-            return;
-        }
-        selectSpkStock(id, index);
-    }
-
-    /**
-     * "Which engine?" -- the one question the merged shelf cannot answer.
-     *
-     * <p>The two machines are not interchangeable, and the honest difference is
-     * what each of them can do: the first engine is the whole app around the
-     * image (片边 / 日期 / 裁切, TIF and DNG), the second reads measured spectra
-     * and prints through twelve media. Marking the engine already in use means
-     * opening the sheet a second time says where the frame stands.
-     */
-    private void showEngineChooser(final String spkId, final String fotuId) {
-        final List<String> labels = new ArrayList<>();
-        labels.add("SpektraLab 引擎");
-        labels.add("fotufilm 引擎");
-        final List<String> notes = new ArrayList<>();
-        notes.add("完整流程 · 片边 / 日期 / 裁切 / TIF");
-        notes.add("光谱实测 · 12 种输出介质");
-        String current = null;
-        if (!showingOriginal && cardShowsStock(spkId, filmStock)) {
-            current = isFotuStock(filmStock) ? labels.get(1) : labels.get(0);
-        }
-        showChoiceSheet("选择引擎", labels, notes, current, i -> true, picked -> {
-            if (labels.get(1).equals(picked)) selectFotuStock(FotuFilm.PREFIX + fotuId);
-            else selectSpkStock(spkId, filmIds.indexOf(spkId));
-        });
+        selectSpkStock(target, filmIds.indexOf(target));
     }
 
     /** A stock of the second engine. Its medium list is not the first engine's
@@ -18923,6 +18978,17 @@ public class MainActivity extends Activity {
         box.setCornerRadius(0f);
         box.setColor(0x00000000);
         box.setStroke(dp(selected ? 2 : 1), selected ? UI_BLUE : UI_LINE);
+        return box;
+    }
+
+    /** The same square, one weight lighter. The head's controls are 24 dp, and a
+     *  2 dp border on one of those is a frame, not a control. */
+    private android.graphics.drawable.GradientDrawable thinBox(boolean on) {
+        android.graphics.drawable.GradientDrawable box = new android.graphics.drawable.GradientDrawable();
+        box.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        box.setCornerRadius(0f);
+        box.setColor(0x00000000);
+        box.setStroke(dp(1), on ? UI_BLUE : UI_LINE);
         return box;
     }
 
@@ -24173,33 +24239,96 @@ public class MainActivity extends Activity {
     }
 
     private void refreshMeterChip() {
-        if (meterGlyph == null) return;
+        if (meterChip == null) return;
         // **The second engine has no metering method to choose.**
         //
-        // fotufilm's exposure is the print's own Auto Levels: the engine reads the frame and puts
-        // the scene's median on the paper's midpoint, one strategy, no selection. Leaving this
-        // chip live on a fotufilm frame opened eight options and changed nothing on the canvas --
-        // which the group read, correctly, as "测光哪个都没反应". It says what actually happens
-        // instead of pretending to be a control.
+        // fotufilm's exposure is the print's own Auto Levels: the engine reads
+        // the frame and puts the scene's median on the paper's midpoint, one
+        // strategy, no selection. Leaving this chip live on a fotufilm frame
+        // opened eight options and changed nothing on the canvas -- which the
+        // group read, correctly, as "测光哪个都没反应". It says what actually
+        // happens instead of pretending to be a control.
         if (isFotuStock(filmStock)) {
-            meterGlyph.setVisibility(View.GONE);
-            if (meterAuto != null) meterAuto.setVisibility(View.VISIBLE);
+            meterChip.setText("AUTO");
+            meterChip.setTextColor(UI_MUTED);
+            meterChip.setBackground(thinBox(false));
+            meterChip.setOnClickListener(null);
+            meterChip.setClickable(false);
             return;
         }
-        meterGlyph.setVisibility(View.VISIBLE);
-        if (meterAuto != null) meterAuto.setVisibility(View.GONE);
+        meterChip.setOnClickListener(v -> showMeterPicker());
+        meterChip.setClickable(true);
         final boolean on = meterMethod != null && !meterMethod.isEmpty();
-        // **The mode is the mark, and "on" is the accent.** A frame alone means
-        // the engine's own metering (the same thing `关` means); any chosen
-        // strategy draws its own mark and takes the accent colour, so the head
-        // still says "something is set" without a word.
-        meterGlyph.setMode(on ? meterMethod : "");
-        // **Ink, not the accent.** What is set is said by the gold inside the
-        // frame; the frame itself stays the page's ink, and the empty one (the
-        // engine's own metering) stays quiet.
-        meterGlyph.setTint(on ? UI_INK : UI_MUTED);
-        meterGlyph.setOnClickListener(v -> showMeterPicker());
-        meterGlyph.setClickable(true);
+        meterChip.setText(meterName(meterMethod));
+        meterChip.setTextColor(on ? UI_BLUE : UI_MUTED);
+        meterChip.setBackground(thinBox(on));
+    }
+
+    /** Paint the switch from `shelfEngine`. Two 1 dp boxes, the live one accented. */
+    private void refreshEngineSwitch() {
+        final boolean fotu = "fotu".equals(shelfEngine);
+        if (engineSpkCell != null) {
+            engineSpkCell.setTextColor(fotu ? UI_MUTED : UI_BLUE);
+            engineSpkCell.setBackground(thinBox(!fotu));
+        }
+        if (engineFotuCell != null) {
+            engineFotuCell.setTextColor(fotu ? UI_BLUE : UI_MUTED);
+            engineFotuCell.setBackground(thinBox(fotu));
+        }
+    }
+
+    /** What a greyed card says when it is tapped. */
+    private String otherEngineNote() {
+        return "fotu".equals(shelfEngine)
+                ? "这支胶片只在 SpektraLab 引擎里 · 可在右上角切换引擎"
+                : "这支胶片只在 fotufilm 引擎里 · 可在右上角切换引擎";
+    }
+
+    /** What the canvas says when the film it is standing on is not sold by the
+     *  engine the user just switched to. */
+    private String missingInEngineNote() {
+        return "fotu".equals(shelfEngine)
+                ? "这支胶片不在 fotufilm 里 · 已回到原图"
+                : "这支胶片不在 SpektraLab 里 · 已回到原图";
+    }
+
+    /**
+     * **The shelf's engine, switched once.**
+     *
+     * <p>Three things move together, and they have to: every preview on the
+     * shelf belongs to the new engine (so each card is re-rendered, not
+     * re-labelled), the film the frame is standing on is mapped to that
+     * engine's id for the same film, and a film the new engine does not ship
+     * puts the frame back on 原图 rather than leaving a canvas the shelf can no
+     * longer reproduce.
+     */
+    private void setShelfEngine(String e) {
+        if (e == null || e.equals(shelfEngine)) return;
+        shelfEngine = e;
+        final boolean fotu = "fotu".equals(e);
+        // The id this frame's film has in the new engine; null when it has none.
+        final String mapped = filmStock == null ? null : engineIdOf(filmStock);
+        // Every picture on the shelf is the other engine's render now.
+        stopPrefetch();
+        clearShelfCache();
+        refreshEngineSwitch();
+        try {
+            DebugSink.text("engine", "shelf=" + e + " film=" + filmStock + " -> " + mapped);
+        } catch (Throwable ignored) { }
+        if (filmStock != null && mapped == null) {
+            resetFilmPanel();          // drops the film, rebuilds the cards, shows 原图
+            refreshEngineSwitch();
+            showInAppToast(missingInEngineNote());
+            startPrefetch();
+            return;
+        }
+        rebuildFilmCards();
+        if (mapped != null) {
+            if (fotu) selectFotuStock(mapped);
+            else selectSpkStock(mapped, filmIds.indexOf(mapped));
+        }
+        refreshMeterChip();
+        startPrefetch();
     }
 
     private void resetFilmPanel() {
@@ -24927,103 +25056,94 @@ public class MainActivity extends Activity {
      * preview size matters more than a complete shelf.
      */
     private void startPrefetch() {
-        // Both are CPU work on one phone, and the second engine's chain decodes
-        // the whole frame as floats: a shelf pass started during a canvas render
-        // is what turned a two-second render into a stalled one.
+        // Both engines are CPU work on one phone, and a shelf pass started
+        // during a canvas render is what turned a two-second render into a
+        // stalled one.
         if (rendering || fotuRendering || prefetchSpkRunning || prefetchFotuRunning) return;
         stopPrefetch();
         if (appPaused) return;
         // **A batch export is not a browsing session.** Reopening each frame
-        // restarts this queue, and twenty-five card renders between two
-        // exports compete for the same GPU and the same session -- the batch
-        // got slower with every frame and the canvas flickered with thumbnails
-        // that were not the export's.
+        // restarts this queue, and fifty-four card renders between two exports
+        // compete for the same GPU and the same session -- the batch got slower
+        // with every frame and the canvas flickered with thumbnails that were
+        // not the export's.
         if (batchExportRunning) return;
-        if (session == null || beforeBitmap == null || filmIds.isEmpty()) return;
-        // Everything still missing. An empty list is the common case on the
-        // second import of the same frame, and starting a thread for it would
-        // only race the user's first render.
-        // Visible brand first, then the rest: the user is looking at one shelf.
-        // Slides are rendered like anything else now; the card's own delta
-        // carries `scan_film`, so a card and the canvas agree.
+        if (session == null || beforeBitmap == null) return;
+        // **Every card the shelf's engine can draw**, in shelf order, the
+        // visible brand first. A card the engine does not ship is greyed and is
+        // not queued: there is nothing to render for it.
         final java.util.List<String> pending = new java.util.ArrayList<>();
         final java.util.List<String> rest = new java.util.ArrayList<>();
-        for (int i = 0; i < filmIds.size(); ++i) {
-            final String id = filmIds.get(i);
-            if (filmThumbs.containsKey(id)) continue;
+        for (int i = 0; i < filmCards.size(); ++i) {
+            final Object tag = filmCards.get(i).getTag();
+            if (!(tag instanceof String)) continue;
+            final String id = (String) tag;
+            if (!engineHas(id)) continue;
+            final String key = cardKeyFor(id);
+            if (filmThumbs.containsKey(key)) continue;
             // It already said "无法预览"; a tap is the next attempt, not a pass.
-            if (prefetchFails.containsKey(id)) continue;
+            if (prefetchFails.containsKey(key)) continue;
             if ("all".equals(brandFilter) || brandFilter.equals(brandOf(id))) pending.add(id);
             else rest.add(id);
         }
         pending.addAll(rest);
-        // **The second engine's shelf.** The loop below walks `filmIds`, the
-        // first engine's catalogue; the forty-seven fotufilm stocks live in
-        // `fotuIds`, so that tab showed drawn covers for ever while every other
-        // tab filled in.
-        final java.util.List<String> fotuQueue = new java.util.ArrayList<>();
-        for (int i = 0; i < fotuIds.size(); ++i) {
-            final String fid = fotuIds.get(i);
-            // A film both engines ship is drawn on the first engine's card; a
-            // second render here would fill a slot nothing on screen is looking
-            // at, at two seconds a card.
-            if (fotuMerged(fid)) continue;
-            final String id = FotuFilm.PREFIX + fid;
-            if (filmThumbs.containsKey(id)) continue;
-            if (prefetchFails.containsKey(id)) continue;
-            if ("all".equals(brandFilter) || brandFilter.equals(brandOf(id))) fotuQueue.add(id);
-        }
-        if (pending.isEmpty() && fotuQueue.isEmpty()) return;
+        if (pending.isEmpty()) return;
 
         final int generation = ++prefetchGeneration;
-        final java.util.List<String> all = new java.util.ArrayList<>(pending);
-        all.addAll(fotuQueue);
-        prefetchMissing = all;
+        prefetchMissing = new java.util.ArrayList<>(pending);
         prefetchRunning = true;
-        markFile("prefetch start engine=" + pending.size() + " fotu=" + fotuQueue.size()
+        prefetchSpkRunning = true;          // one worker, whichever engine it is
+        markFile("prefetch start engine=" + shelfEngine + " cards=" + pending.size()
                 + " sess=" + (session != null) + " before=" + (beforeBitmap != null));
-        // **One worker each.** They share nothing: the first engine has the
-        // session and RENDER_LOCK, the second has its own host lock and is pure
-        // CPU. Alternating them on one thread was the shelf's wall clock being
-        // the sum of two queues; this makes it the longer of the two, and the
-        // first card of each shelf lands at the same instant.
-        if (!pending.isEmpty()) {
-            prefetchSpkRunning = true;
-            prefetchThread = new Thread(() -> prefetchSpkPass(pending, generation), "film-prefetch");
-            prefetchThread.setPriority(Thread.MIN_PRIORITY);
-            prefetchThread.start();
-        }
-        if (!fotuQueue.isEmpty()) {
-            prefetchFotuRunning = true;
-            prefetchFotuThread = new Thread(() -> prefetchFotuPass(fotuQueue, generation), "fotu-prefetch");
-            prefetchFotuThread.setPriority(Thread.MIN_PRIORITY);
-            prefetchFotuThread.start();
-        }
+        prefetchThread = new Thread(() -> prefetchPass(pending, generation), "film-prefetch");
+        prefetchThread.setPriority(Thread.MIN_PRIORITY);
+        prefetchThread.start();
     }
 
     /**
-     * The first engine's half of a shelf pass.
+     * One pass over the shelf, whichever engine is behind it.
      *
-     * <p>This worker owns the session, so it is the only one that moves
-     * `preview_long_edge`; the second engine's worker never touches it.
+     * <p>The first engine's cards own the session, so a pass on that side is
+     * the only thing that moves `preview_long_edge`. The second engine decodes
+     * the photograph again on its own chain for every card, so it waits a
+     * canvas render out before it starts one.
      */
-    private void prefetchSpkPass(java.util.List<String> pending, int generation) {
+    private void prefetchPass(java.util.List<String> pending, int generation) {
         final SpektraLabEngine prefetchEngine = engine;
+        final boolean fotu = "fotu".equals(shelfEngine);
         int sinceTrim = 0;
         try {
-            // The queue renders the `live` tier, whose long edge is the
-            // session's `io.preview_long_edge`. `preview` is a fixed 3400 px in
-            // the engine, which is why the cards used to crawl: each one was a
-            // near-export-sized print. Set the edge once for the whole pass.
-            prefetchEdge = filmCols > 1 ? PREFETCH_LONG_EDGE : 384;
-            setPrefetchEdge(prefetchEdge);
-            prefetchEdgeMoved = true;
+            if (!fotu) {
+                // The queue renders the `live` tier, whose long edge is the
+                // session's `io.preview_long_edge`; `preview` is a fixed
+                // 3400 px in the engine, which is why the cards used to crawl.
+                prefetchEdge = filmCols > 1 ? PREFETCH_LONG_EDGE : 384;
+                setPrefetchEdge(prefetchEdge);
+                prefetchEdgeMoved = true;
+            }
             for (int i = 0; i < pending.size(); ++i) {
                 if (generation != prefetchGeneration || !prefetchRunning) return;
                 final String id = pending.get(i);
-                if (filmThumbs.containsKey(id)) continue;
+                final String key = cardKeyFor(id);
+                if (filmThumbs.containsKey(key)) continue;
+                if (fotu) {
+                    // Both are CPU work on the same phone: wait the render out.
+                    for (int guard = 0; rendering || fotuRendering || wbDecoding; ++guard) {
+                        if (generation != prefetchGeneration || !prefetchRunning || appPaused) return;
+                        if (guard > 900) return;          // ninety seconds: give the queue back
+                        try { Thread.sleep(100); } catch (InterruptedException ie) { return; }
+                    }
+                }
                 final long t0 = nowMs();
-                final Bitmap thumb = renderStockThumbnail(id);
+                Bitmap thumb;
+                try {
+                    thumb = fotu ? renderFotuCardThumb(id) : renderStockThumbnail(id);
+                } catch (Throwable t) {
+                    final String why = String.valueOf(t);
+                    markFile("prefetch card-fail " + id + ": " + t);
+                    runOnUiThread(() -> notePrefetchFailure(key, why));
+                    continue;
+                }
                 final long ms = nowMs() - t0;
                 // **A card is a pipeline rebuild, and a rebuild leaves planes.**
                 // Giving the idle planes back every six cards keeps the shelf's
@@ -25036,15 +25156,15 @@ public class MainActivity extends Activity {
                 }
                 if (thumb == null) {
                     final String why = lastThumbFailure;
-                    runOnUiThread(() -> notePrefetchFailure(id, why));
+                    runOnUiThread(() -> notePrefetchFailure(key, why));
                     continue;
                 }
                 try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable ignored) { }
                 runOnUiThread(() -> {
                     if (generation != prefetchGeneration) return;
-                    filmThumbs.put(id, thumb);
-                    prefetchFails.remove(id);
-                    prefetchFailWhy.remove(id);
+                    filmThumbs.put(key, thumb);
+                    prefetchFails.remove(key);
+                    prefetchFailWhy.remove(key);
                     updateCardThumb(id);
                 });
             }
@@ -25054,13 +25174,31 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** The second engine's half. Its own lock, its own assets, no session. */
-    private void prefetchFotuPass(java.util.List<String> fotuQueue, int generation) {
+    /** One fotufilm card: its own chain, its own medium, scaled to the card. */
+    private Bitmap renderFotuCardThumb(String cardId) {
+        final String fid = FotuFilm.idOf(cardId);
+        final String medium = fotuMediumFor(fid);
+        java.io.File file = null;
         try {
-            prefetchFotuCards(fotuQueue, generation);
+            // 横屏的卡片是竖屏的 1.75 倍宽，缩略图跟着要更大的源。
+            file = fotuDevelop(fid, medium, filmCols > 1 ? 480 : FOTU_CARD_EDGE, "c", false);
+            final Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath());
+            if (bmp == null) {
+                lastThumbFailure = "decode null";
+                return null;
+            }
+            final int tw = shelfThumbWidthPx();
+            final int th = Math.max(1, Math.round(tw * bmp.getHeight() / (float) bmp.getWidth()));
+            final Bitmap small = Bitmap.createScaledBitmap(bmp, tw, th, true);
+            if (small != bmp) bmp.recycle();
+            return small;
+        } catch (java.io.IOException ioe) {
+            lastThumbFailure = "develop " + ioe.getMessage();
+            return null;
         } finally {
-            if (generation == prefetchGeneration) prefetchFotuRunning = false;
-            prefetchFinished(generation);
+            // The chain hands back a JPEG in cacheDir; one per card per pass is
+            // a hundred megabytes nobody reads twice.
+            if (file != null) file.delete();
         }
     }
 
@@ -25157,66 +25295,6 @@ public class MainActivity extends Activity {
         box.addView(head, new LinearLayout.LayoutParams(-1, -2));
         box.addView(sub, new LinearLayout.LayoutParams(-1, -2));
         return box;
-    }
-
-    /**
-     * One pass over the second engine's shelf.
-     *
-     * <p>Two seconds a card is what its chain costs -- it decodes the photograph
-     * again for every one -- so this is a background errand that has to yield:
-     * the queue's generation is checked before each card, and a render the user
-     * asked for (which stops this queue) simply ends the pass. The caller
-     * restarts it when that render lands.
-     */
-    private boolean prefetchFotuCards(java.util.List<String> ids, int generation) {
-        for (String full : ids) {
-            if (generation != prefetchGeneration || !prefetchRunning) return false;
-            if (appPaused || batchExportRunning) return false;
-            if (filmThumbs.containsKey(full)) continue;
-            // Wait out a render of theirs; both are CPU work on the same phone.
-            for (int guard = 0; rendering || fotuRendering || wbDecoding; ++guard) {
-                if (generation != prefetchGeneration || !prefetchRunning || appPaused) return false;
-                if (guard > 900) return false;            // ninety seconds: give the queue back
-                try { Thread.sleep(100); } catch (InterruptedException ie) { return false; }
-            }
-            final String id = FotuFilm.idOf(full);
-            final String medium = fotuMediumFor(id);
-            final long t0 = nowMs();
-            java.io.File file = null;
-            try {
-                // 横屏的卡片是竖屏的 1.75 倍宽，缩略图跟着要更大的源。
-                file = fotuDevelop(id, medium, filmCols > 1 ? 480 : FOTU_CARD_EDGE, "c", false);
-                final Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath());
-                if (bmp == null) {
-                    runOnUiThread(() -> notePrefetchFailure(full, "decode null"));
-                    continue;
-                }
-                final int tw = shelfThumbWidthPx();
-                final int th = Math.max(1, Math.round(tw * bmp.getHeight() / (float) bmp.getWidth()));
-                final Bitmap small = Bitmap.createScaledBitmap(bmp, tw, th, true);
-                if (small != bmp) bmp.recycle();
-                try {
-                    DebugSink.text("prefetch-timing", full + " "
-                            + (nowMs() - t0) + " ms");
-                } catch (Throwable ignored) { }
-                markFile("prefetch fotu ok " + full + " " + (nowMs() - t0) + " ms");
-                runOnUiThread(() -> {
-                    if (generation != prefetchGeneration) return;
-                    filmThumbs.put(full, small);
-                    updateCardThumb(full);
-                });
-            } catch (Throwable t) {
-                markFile("prefetch fotu-fail " + full + ": " + t);
-                final String why = String.valueOf(t);
-                runOnUiThread(() -> notePrefetchFailure(full, why));
-                try { DebugSink.text("prefetch", "fotu " + full + ": " + t); } catch (Throwable ignored) { }
-            } finally {
-                // The chain hands back a JPEG in cacheDir; one per card per pass
-                // is a hundred megabytes nobody reads twice.
-                if (file != null) file.delete();
-            }
-        }
-        return true;
     }
 
     private void setPrefetchEdge(int longEdge) {
@@ -28347,212 +28425,6 @@ public class MainActivity extends Activity {
      * 找到一个粗细、大小都不属于这套界面的勾。两条线是十一行代码，而且它跟片边
      * 页那支笔、跟按钮的描边都是同一种画法。
      */
-    /**
-     * **The head's two buttons, in the language the two reference sheets use.**
-     *
-     * <p>Both are drawn here: ink at two weights plus a single accent fill --
-     * the sheets' gold is the theme's accent in another designer's hands, so it
-     * is `UI_BLUE` (Klein blue on paper, orange on black) rather than a fixed
-     * colour.
-     * Nothing is typed -- a glyph, not a word, on a page whose title is
-     * already the same 8.5 sp.
-     *
-     * <p>The metering set is nine marks in three families:
-     *
-     * <ul>
-     *   <li><b>a viewfinder frame</b> -- empty for the engine's own metering, a
-     *       disc for 平衡, a ringed dot up high for 亮部重点, a band along the
-     *       top edge for 保护高光 and along the bottom for 保留暗部;</li>
-     *   <li><b>a pair of circles</b> -- 中心 is a ring with its disc, 中心加权
-     *       the same ring with only the upper half filled;</li>
-     *   <li><b>a plinth</b> -- 平均's dome and 中位数's block resting on it.</li>
-     * </ul>
-     *
-     * <p>Every proportion is measured off the sheets (frame 257 x 196, stroke
-     * 15.5, arm 69, 平衡's disc 120, the frame's aspect 0.763, the plinth's bar
-     * 209 with 12 ticks and a 48 stem, ...) and expressed as a fraction of the
-     * view, so the same drawing scales from 24 dp to a poster.
-     */
-    private static final class MiniIcon extends View {
-        private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint brush = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private String mode;
-        private int tint = UI_INK;
-        /** Pressed, kept here rather than in the view's alpha. */
-        private boolean down;
-
-        MiniIcon(android.content.Context c, String mode) {
-            super(c);
-            this.mode = mode == null ? "" : mode;
-            pen.setStyle(Paint.Style.STROKE);
-            pen.setStrokeCap(Paint.Cap.ROUND);
-            pen.setStrokeJoin(Paint.Join.ROUND);
-            brush.setStyle(Paint.Style.FILL);
-            setClickable(true);
-            setFocusable(false);
-        }
-
-        void setMode(String m) {
-            final String next = m == null ? "" : m;
-            if (next.equals(mode)) return;
-            mode = next;
-            invalidate();
-        }
-
-        void setTint(int colour) {
-            tint = colour;
-            invalidate();
-        }
-
-        @Override protected void onDraw(android.graphics.Canvas c) {
-            final float w = getWidth(), h = getHeight();
-            final float s = Math.min(w, h);
-            if (s <= 0f) return;
-            final float cx = w / 2f, cy = h / 2f;
-            pen.setColor(tint);
-            // **The accent, not a fixed gold.** The sheets' yellow is the
-            // theme's own accent said by a different designer: Klein blue on
-            // paper, orange on black. `UI_BLUE` is exactly that pair (it is
-            // rewritten by `applyPalette`), so the drawings follow the theme
-            // without a second palette to keep in step.
-            brush.setColor(UI_BLUE);
-            pen.setAlpha(down ? 0x8C : 0xFF);
-            brush.setAlpha(down ? 0x8C : 0xFF);
-
-            if ("reset".equals(mode)) {
-                reset(c, cx, cy, s);
-                return;
-            }
-            // **The frame family's own box**: 257 x 196 on the sheet.
-            final float fw = s * 0.86f;
-            final float fh = fw * 0.7626f;
-            final float st = fw * 0.0603f;
-
-            if ("center".equals(mode) || "center_weighted".equals(mode)) {
-                final float r = fw * 0.3055f;                  // 157 / 257
-                pen.setStrokeWidth(fw * 0.0525f);
-                c.drawCircle(cx, cy, r, pen);
-                if ("center".equals(mode)) {
-                    c.drawCircle(cx, cy, fw * 0.185f, brush);   // 95 / 257
-                } else {
-                    final float rr = fw * 0.253f;               // 130 / 257, upper half
-                    c.drawArc(new android.graphics.RectF(cx - rr, cy - rr, cx + rr, cy + rr),
-                            180f, 180f, true, brush);
-                }
-                return;
-            }
-            if ("average".equals(mode) || "median".equals(mode)) {
-                plinth(c, cx, cy, fw, "average".equals(mode));
-                return;
-            }
-
-            final float x0 = cx - fw / 2f + st / 2f, x1 = cx + fw / 2f - st / 2f;
-            final float y0 = cy - fh / 2f + st / 2f, y1 = cy + fh / 2f - st / 2f;
-            pen.setStrokeWidth(st);
-            bracket(c, x0, y0, x1, y1, fw * 0.268f);
-            if (mode.isEmpty()) return;      // the frame alone: the engine's own metering
-
-            if ("balanced".equals(mode)) {
-                c.drawCircle(cx, cy, fw * 0.2335f, brush);               // 120 / 257
-            } else if ("highlight_weighted".equals(mode)) {
-                // 点测光's ringed dot, where the sheet puts it: up and right.
-                final float px = cx + fw * 0.21f, py = cy - fh * 0.16f;
-                pen.setStrokeWidth(fw * 0.0545f);
-                c.drawCircle(px, py, fw * 0.144f, pen);                  // outer 74 / 257
-                c.drawCircle(px, py, fw * 0.0915f, brush);               // disc 47 / 257
-            } else if ("protect_highlights".equals(mode) || "protect_shadows".equals(mode)) {
-                // 中央偏重's band, moved to the edge it protects.
-                final float bh = fh * 0.485f;                            // 95 / 196
-                final boolean top = "protect_highlights".equals(mode);
-                final float lo = top ? y0 + st / 2f : y1 - st / 2f - bh;
-                c.drawRect(x0 + st / 2f, lo, x1 - st / 2f, lo + bh, brush);
-            }
-        }
-
-        /** Four rounded L corners: the viewfinder the sheet opens with. */
-        private void bracket(android.graphics.Canvas c, float x0, float y0,
-                             float x1, float y1, float arm) {
-            final android.graphics.Path p = new android.graphics.Path();
-            p.moveTo(x0, y0 + arm); p.lineTo(x0, y0); p.lineTo(x0 + arm, y0);
-            p.moveTo(x1 - arm, y0); p.lineTo(x1, y0); p.lineTo(x1, y0 + arm);
-            p.moveTo(x1, y1 - arm); p.lineTo(x1, y1); p.lineTo(x1 - arm, y1);
-            p.moveTo(x0 + arm, y1); p.lineTo(x0, y1); p.lineTo(x0, y1 - arm);
-            c.drawPath(p, pen);
-        }
-
-        /**
-         * 平均 and 中位数: a bar with a tick at each end and a stem under the
-         * middle, carrying a dome or a block. Off the sheet: bar 209 of 257,
-         * stroke 12, ticks 21, stem 48, dome 139, block 57.
-         */
-        private void plinth(android.graphics.Canvas c, float cx, float cy,
-                            float fw, boolean dome) {
-            final float th = fw * 0.0467f;
-            final float barW = fw * (dome ? 0.813f : 0.778f);
-            final float half = fw * (dome ? 0.2705f : 0.111f);
-            final float headH = dome ? half : half * 2f;
-            final float tickH = fw * 0.0817f;
-            final float stemH = fw * 0.187f;
-            final float top = cy - (headH + th + stemH) / 2f;
-            final float barMid = top + headH + th / 2f;
-            pen.setStrokeWidth(th);
-            c.drawLine(cx - barW / 2f, barMid, cx + barW / 2f, barMid, pen);
-            c.drawLine(cx - barW / 2f, barMid, cx - barW / 2f, barMid - th / 2f - tickH, pen);
-            c.drawLine(cx + barW / 2f, barMid, cx + barW / 2f, barMid - th / 2f - tickH, pen);
-            c.drawLine(cx, barMid + th / 2f, cx, barMid + th / 2f + stemH, pen);
-            if (dome) {
-                c.drawArc(new android.graphics.RectF(cx - half, barMid - th / 2f - headH,
-                                cx + half, barMid - th / 2f + headH),
-                        180f, 180f, true, brush);
-            } else {
-                c.drawRect(cx - half, barMid - th / 2f - headH,
-                        cx + half, barMid - th / 2f, brush);
-            }
-        }
-
-        /**
-         * 重置: a heavy open ring with the sheet's gold core and a head cut into
-         * the ring's own end -- a 10 % ring, a 47 % core, and a gap of 42 deg.
-         */
-        private void reset(android.graphics.Canvas c, float cx, float cy, float s) {
-            final float R = s * 0.385f, sw = s * 0.10f;
-            final float head = -46f, gap = 42f;
-            pen.setStrokeWidth(sw);
-            // **The head is where the arc ends, not a sticker beside it.** The
-            // first cut drew -46..246 and put the head at -46, so the gap landed
-            // opposite the arrow and the glyph read as a "C" with a flag.
-            c.drawArc(new android.graphics.RectF(cx - R, cy - R, cx + R, cy + R),
-                    head + gap, 360f - gap, false, pen);
-            // A radial base on the arc's end with its point inside the gap: the
-            // ring looks chamfered rather than decorated, which is what the
-            // sheet's bevel does at 600 px and what still reads at 24 dp.
-            final double a0 = Math.toRadians(head), a1 = Math.toRadians(head + gap * 0.68f);
-            final float ox = (float) Math.cos(a0), oy = (float) Math.sin(a0);
-            final float ix = (float) Math.cos(a1), iy = (float) Math.sin(a1);
-            final android.graphics.Path headPath = new android.graphics.Path();
-            headPath.moveTo(cx + (R + sw * 0.62f) * ox, cy + (R + sw * 0.62f) * oy);
-            headPath.lineTo(cx + R * ix, cy + R * iy);
-            headPath.lineTo(cx + (R - sw * 0.62f) * ox, cy + (R - sw * 0.62f) * oy);
-            headPath.close();
-            brush.setColor(tint);
-            c.drawPath(headPath, brush);
-            brush.setColor(UI_BLUE);
-            c.drawCircle(cx, cy, s * 0.235f, brush);
-        }
-
-        @Override public void setPressed(boolean pressed) {
-            super.setPressed(pressed);
-            // **The feedback is the pen's alpha, not the view's.** `setEnabledDeep`
-            // dims a locked page by writing `setAlpha` on every child; a view
-            // that owned its alpha would light straight back up the moment the
-            // framework changed its pressed state (1.7.1d's bug, one layer up).
-            if (down != pressed) {
-                down = pressed;
-                invalidate();
-            }
-        }
-    }
-
     private static final class CheckMark extends View {
         private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
         CheckMark(android.content.Context c) { super(c); }
