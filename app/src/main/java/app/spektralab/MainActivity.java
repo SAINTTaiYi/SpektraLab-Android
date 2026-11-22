@@ -17568,6 +17568,16 @@ public class MainActivity extends Activity {
      */
     private void gateLatitude() {
         final boolean on = printLatitude > 0;
+        // **Two locks write `enabled`, and this one used to win.**
+        //
+        // `setOpticsUnlocked(false)` disables the whole panel when there is
+        // nothing to render into (`panelsLive()`: no film, 原图, or no session).
+        // This gate ran right after it and wrote `setEnabled(true)` back on its
+        // own eight rows -- so on an empty canvas 高光保护 / 暗部保护 dimmed but
+        // still dragged, and dragging one wrote a print parameter into nothing.
+        //
+        // A row may only listen when the panel is live *and* the mask is off.
+        final boolean live = panelsLive();
         int rows = 0;
         // **A list of the rows, never a tag.** `animateHeightTo` and the T9
         // typing both use `View.setTag` as their own scratch space
@@ -17576,10 +17586,10 @@ public class MainActivity extends Activity {
         // zero rows and the sliders stayed live.
         for (View v : latGated) {
             if (v == null || v.getParent() == null) continue;
-            gateRow(v, on);
+            gateRow(v, on || !live);
             rows += 1;
         }
-        Probe.log("toggle", "gateLatitude on=" + on + " rows=" + rows
+        Probe.log("toggle", "gateLatitude on=" + on + " live=" + live + " rows=" + rows
                 + " tracked=" + latGated.size());
     }
 
@@ -19527,6 +19537,15 @@ public class MainActivity extends Activity {
         }
         syncSubRowActive();
         refreshKnob();
+        // **A rebuilt page is born enabled.** `adjustRow` makes fresh views at
+        // `enabled = true`, so switching 影调 -> 色彩 -> 影调 on a locked panel
+        // handed back a page whose every slider answered: the lock only ever
+        // ran when something else asked for it. Re-assert it on the page that
+        // was just built.
+        if (!panelsLive()) {
+            setEnabledDeep(printBody, false);
+            gateLatitude();
+        }
         if (moved) {
             final View box = printBody.getParent() instanceof View
                     ? (View) printBody.getParent() : null;
@@ -19742,7 +19761,7 @@ public class MainActivity extends Activity {
         // (the text colour and `setEnabled`) is set right here.
         if (latGateName(label)) {
             latGated.addAll(made);
-            for (View v : made) gateRow(v, printLatitude > 0);
+            for (View v : made) gateRow(v, printLatitude > 0 || !panelsLive());
         }
         return made;
     }
