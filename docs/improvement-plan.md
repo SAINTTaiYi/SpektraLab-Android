@@ -240,7 +240,7 @@ work and its device measurement and regression plan.
 | More Views to ui/ (RatioMark, GuideView, HistogramView) | `686e546` | javac + emulator golden |
 | RotateScale + CropOverlay extraction with delegates | `8590764` | emulator Compose page + golden |
 | All stateful Views extracted + onNewIntent test-hook fix | `09e7505` | emulator Optics/Compose + golden |
-| Pure JSON/hash/edge helpers to domain | pending | DomainTest + golden |
+| Pure JSON/hash/edge helpers to domain | `93881e8` | DomainTest + golden |
 
 ## Updating this plan
 
