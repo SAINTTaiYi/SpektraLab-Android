@@ -180,7 +180,7 @@ public class MainActivity extends Activity {
     private CompareView compare;
     /** What the import put on the stage: the frame before any film. */
     private Bitmap beforeBitmap;
-    private TextView statusText;
+    TextView statusText;
     /** **A way out that is on screen for the whole batch.** `showExportDialog`
      *  already offers 停止, but it is two taps deep and the sheet that holds it
      *  is the same one that *starts* an export. A batch can run ten minutes;
@@ -709,7 +709,7 @@ public class MainActivity extends Activity {
     private void pruneThumbFiles() { ThumbCache.prune(this, frames); }
     private void persistThumb(Frame frame) { ThumbCache.persist(this, frame); }
 
-    private void saveSessionState() {
+    void saveSessionState() {
         try {
             final String json = SessionState.toJson(frames, currentFrame, shelfCollapsed).toString();
             // Never overwrite a good state file with an empty document.
@@ -801,7 +801,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private final java.util.List<Frame> frames = new java.util.ArrayList<>();
+    final java.util.List<Frame> frames = new java.util.ArrayList<>();
     private LinearLayout sourceBar, sourceRow, thumbStrip;
     /** The folded strip: a short stack of prints in the canvas's lower-left. */
     private View shelfHandle;
@@ -813,7 +813,7 @@ public class MainActivity extends Activity {
     private boolean reopeningFrame = false;
     /** Set by `reopenFrameForced`: this frame was left on 原图, so do not render it. */
     private boolean reopenToOriginal = false;
-    private int currentFrame = -1;
+    int currentFrame = -1;
     private LinearLayout originalAction;
     private ToolGlyph originalGlyph;
     private int activeTabIndex = 0;
@@ -2556,7 +2556,7 @@ public class MainActivity extends Activity {
     }
 
     /** One chip per opened frame, newest at the right, the open one ringed. */
-    private void rebuildFrameChips() {
+    void rebuildFrameChips() {
         if (thumbStrip == null) return;
         thumbStrip.removeAllViews();
         for (int i = 0; i < frames.size(); ++i) {
@@ -2673,7 +2673,7 @@ public class MainActivity extends Activity {
 
     /** Re-open a frame from the strip. Same entry point the picker uses, so a
      *  RAW chip and a JPEG chip take exactly the roads they took the first time. */
-    private void reopenFrame(int index) {
+    void reopenFrame(int index) {
         CrashTrail.markNow(this, "frame:reopen " + index + " of " + frames.size());
         if (index < 0 || index >= frames.size()) return;
         if (index == currentFrame && session != null) return;
@@ -11635,7 +11635,7 @@ public class MainActivity extends Activity {
     private volatile boolean batchExportAbort = false;
 
     /** Take the grant, or keep a copy that survives a restart. Null on failure. */
-    private Uri persistOrCopy(Uri uri) {
+    Uri persistOrCopy(Uri uri) {
         try {
             getContentResolver().takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -11667,7 +11667,7 @@ public class MainActivity extends Activity {
     }
 
     /** Add a chip without decoding anything. False when it is already there. */
-    private boolean addFrameOnly(Uri uri) {
+    boolean addFrameOnly(Uri uri) {
         if (uri == null) return false;
         for (Frame f : frames) {
             if (f.uri != null && f.uri.toString().equals(uri.toString())) return false;
@@ -11683,31 +11683,7 @@ public class MainActivity extends Activity {
     }
 
     private void startBatchImport(final java.util.List<Uri> uris) {
-        final int total = uris.size();
-        UiDispatcher.post(() -> {
-            if (statusText != null) statusText.setText(tr("export.adding") + total + tr("export.photos"));
-        });
-        new Thread(() -> {
-            int added = 0, failed = 0;
-            for (Uri u : uris) {
-                final Uri target = persistOrCopy(u);
-                if (target == null) { ++failed; continue; }
-                if (addFrameOnly(target)) ++added; else ++failed;
-            }
-            final int a = added, f = failed;
-            UiDispatcher.post(() -> {
-                if (a > 0) {
-                    saveSessionState();
-                    rebuildFrameChips();
-                }
-                final String msg = tr("export.added") + a + tr("export.photos_2") + (f > 0 ? tr("export.skipped") + f + tr("export.photos_2") : "");
-                if (statusText != null) statusText.setText(msg);
-                showInAppToast(msg);
-                if (a > 0 && currentFrame < 0 && !frames.isEmpty()) {
-                    reopenFrame(frames.size() - a);
-                }
-            });
-        }, "SpektraLab-batch-import").start();
+new BatchImportWorker(this).run(uris);
     }
 
     private void uiWait(Runnable r, long ms) {
