@@ -4881,7 +4881,11 @@ public class MainActivity extends Activity {
         });
         notePopup = pw;
         pw.showAsDropDown(anchor, -dp(6), dp(3));
-        body.post(() -> typeNote(body, text));
+        // **The note is typed as a Spanned, so nothing downstream translates
+        // it.** `TransText` skips spanned text on purpose (a span set would
+        // lose its spans), which is why these paragraphs stayed Chinese in the
+        // English interface while every label around them changed.
+        body.post(() -> typeNote(body, Lang.t(text)));
     }
 
     /**
@@ -15589,7 +15593,10 @@ public class MainActivity extends Activity {
             showInAppToast(Lang.t("重置当前页"));
             return true;
         });
-        head.addView(resetIcon, new LinearLayout.LayoutParams(dp(32), dp(32)));
+        // **24 dp, not 32.** At 32 the pair read larger than the 8.5 sp title
+        // beside it; three quarters of that is the size of the glyphs the rest
+        // of the app draws, and it still leaves a 24 dp target.
+        head.addView(resetIcon, new LinearLayout.LayoutParams(dp(24), dp(24)));
         return head;
     }
 
@@ -15726,12 +15733,12 @@ public class MainActivity extends Activity {
         meterAuto.setGravity(android.view.Gravity.CENTER);
         meterAuto.setVisibility(View.GONE);
         final int beforeReset = filmHead.getChildCount() - 1;
-        final LinearLayout.LayoutParams glyphLp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        final LinearLayout.LayoutParams glyphLp = new LinearLayout.LayoutParams(dp(24), dp(24));
         glyphLp.rightMargin = dp(2);
         filmHead.addView(meterGlyph, beforeReset, glyphLp);
         // The same 32 dp slot the glyph lives in, so switching between the two
         // engines does not shift the reset button sideways.
-        final LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(dp(34), -2);
+        final LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(dp(26), -2);
         autoLp.rightMargin = dp(2);
         filmHead.addView(meterAuto, beforeReset + 1, autoLp);
         refreshMeterChip();
@@ -17043,6 +17050,21 @@ public class MainActivity extends Activity {
         return process + " · " + character;
     }
 
+    /**
+     * The same line, in the reader's language.
+     *
+     * <p>**Piece by piece, because the whole is never in the table.** Both
+     * halves are fixed strings with their own entries; the concatenation is
+     * one of thirty-odd combinations and an exact entry for each would be a
+     * table nobody can keep true. (SL: the paper picker's sub-lines stayed
+     * Chinese in English mode while their names changed.)
+     */
+    private static String paperLineT(String id, String character) {
+        final String process = Lang.t(paperProcess(id));
+        if (character == null || character.isEmpty()) return process;
+        return process + " · " + Lang.t(character);
+    }
+
     private static PaperCover paperCoverFor(String id, String label, String note) {
         final PaperCover v = new PaperCover();
         v.body = 0xFFF2EDE3;
@@ -17110,6 +17132,14 @@ public class MainActivity extends Activity {
                 break;
             }
         }
+        // **Last, and only here.** `PaperBarView` draws these four strings with
+        // `drawText`, so no `label()` will ever see them; and the prefix above
+        // is matched against the English names, so the translation cannot come
+        // any earlier. (SL: the paper strip stayed Chinese in English mode.)
+        v.name = Lang.t(v.name);
+        v.process = Lang.t(v.process);
+        v.note = Lang.t(v.note);
+        v.tag = Lang.t(v.tag == null ? "" : v.tag);
         return v;
     }
 
@@ -17439,7 +17469,7 @@ public class MainActivity extends Activity {
         final List<String> ids = new ArrayList<>(printIds);
         final List<String> names = new ArrayList<>(printLabels);
         final List<String> notes = new ArrayList<>();
-        for (String id : printIds) notes.add(paperLine(id, paperNote(id)));
+        for (String id : printIds) notes.add(paperLineT(id, paperNote(id)));
         ids.add(PAPER_SCAN);
         names.add("无相纸 · 直接看胶片");
         notes.add("胶片本身 · 橙片基 · 反相不还原");
@@ -28320,8 +28350,10 @@ public class MainActivity extends Activity {
     /**
      * **The head's two buttons, in the language the two reference sheets use.**
      *
-     * <p>Both are drawn here: ink at two weights plus a single gold fill
-     * (#FECB0E, sampled from the sheets), which is all they have in common.
+     * <p>Both are drawn here: ink at two weights plus a single accent fill --
+     * the sheets' gold is the theme's accent in another designer's hands, so it
+     * is `UI_BLUE` (Klein blue on paper, orange on black) rather than a fixed
+     * colour.
      * Nothing is typed -- a glyph, not a word, on a page whose title is
      * already the same 8.5 sp.
      *
@@ -28342,8 +28374,6 @@ public class MainActivity extends Activity {
      * view, so the same drawing scales from 24 dp to a poster.
      */
     private static final class MiniIcon extends View {
-        /** The one accent both sheets share. */
-        private static final int GOLD = 0xFFFECB0E;
         private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint brush = new Paint(Paint.ANTI_ALIAS_FLAG);
         private String mode;
@@ -28380,7 +28410,12 @@ public class MainActivity extends Activity {
             if (s <= 0f) return;
             final float cx = w / 2f, cy = h / 2f;
             pen.setColor(tint);
-            brush.setColor(GOLD);
+            // **The accent, not a fixed gold.** The sheets' yellow is the
+            // theme's own accent said by a different designer: Klein blue on
+            // paper, orange on black. `UI_BLUE` is exactly that pair (it is
+            // rewritten by `applyPalette`), so the drawings follow the theme
+            // without a second palette to keep in step.
+            brush.setColor(UI_BLUE);
             pen.setAlpha(down ? 0x8C : 0xFF);
             brush.setAlpha(down ? 0x8C : 0xFF);
 
@@ -28501,7 +28536,7 @@ public class MainActivity extends Activity {
             headPath.close();
             brush.setColor(tint);
             c.drawPath(headPath, brush);
-            brush.setColor(GOLD);
+            brush.setColor(UI_BLUE);
             c.drawCircle(cx, cy, s * 0.235f, brush);
         }
 
@@ -33727,7 +33762,7 @@ public class MainActivity extends Activity {
             labels.add(FotuFilm.mediumLabel(medium));
             // What the sheet does, not just its name: this is the only place
             // the second engine's twelve media are explained.
-            notes.add(paperLine(medium, fotuMediumNote(medium)));
+            notes.add(paperLineT(medium, fotuMediumNote(medium)));
         }
         final String current = fotuMedium();
         final int at = media.indexOf(current);
