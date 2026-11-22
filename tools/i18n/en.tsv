@@ -537,6 +537,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 引擎库没有加载成功（libspektrafilm_engine.so）。这是安装包里的原生库没有就位，不是你操作的问题——重装没用；请点「复制」把下面这段完整发给我，我按名字就能定位	The engine library did not load (libspektrafilm_engine.so). The native library inside the package is not in place; this is not something you did, and reinstalling will not help. Tap "Copy" and send me the whole block below; the names alone locate it
 引擎没有写出文件	The engine wrote no file
 引擎没有输出图像	The engine produced no image
+引擎没能读入这组参数——这是这一版程序的问题，不是你的照片，也不是解码失败。请更新到最新版；如果已经是最新版，点「复制」把下面这段发给我	The engine could not read the settings this build sent it - that is a bug in this build, not your photo, and not a decode failure. Please update to the latest version; if you are already on it, tap "Copy" and send me the block below
 引擎自动	Engine auto
 引擎还没准备好	The engine isn't ready yet
 张数	Frame no.
@@ -813,6 +814,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 画面在片门里向上 / 下挪	Slides the picture up / down inside the gate
 画面在片门里向左 / 右挪；只有需要裁切时才有行程	Slides the picture left / right inside the gate; only travels when a crop is needed
 画面最亮的一端落在相纸实测边界内几档。引擎按这张纸自己的黑白边界解曲线，不是硬压	How many stops inside the paper's measured limit the brightest part of the frame lands. The engine solves the curve against this paper's own black and white points, it doesn't just clamp
+界面文字；改完需要重新打开应用	Interface language; a reopen is needed after changing it
 界面文字；英文由 GitHub 上的反馈而来	Interface language; English came from feedback on GitHub
 留银：反差更高，颜色更淡	Retained silver: more contrast, thinner colour
 白平衡重解失败	White balance re-decode failed

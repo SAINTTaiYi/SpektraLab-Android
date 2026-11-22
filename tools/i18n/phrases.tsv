@@ -96,6 +96,7 @@ SpektraLab — Hanze Qiu。把上面的引擎重写成 C++ / Metal 并做出 mac
 \\n\\n缩到 	\\n\\nScale to 
 \\n实况照片：成片始终是全尺寸，区别在动图 —— 原生按相机录的像素，	\\nLive photo: the still is always full size — the difference is the clip. Native uses the pixels the camera recorded,
 \\n缩到 	\\nScale to 
+] 引擎没能读入这组参数（程序的问题，不是照片）· 请把这条发给我	] The engine could not read the settings it was sent (a bug here, not your photo) · please send me this line
 exit: 读不到 ApplicationExitInfo（	exit: cannot read ApplicationExitInfo (
 fotufilm 介质 · 	fotufilm medium · 
 fotufilm 渲染失败（返回 	fotufilm render failed (code 
@@ -112,6 +113,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 」。	".
 」。约 	". About 
 」的骨架（cfg/	": no skeleton (cfg/
+上次导入没有完成：\n\n	The last import did not finish:\n\n
 上面两个 = 解码时改（等于换一种光拍，会重新解码）；下面两个 = 冲印后再偏色（立刻生效，	The top two change decoding (like shooting under different light — the frame is decoded again); the bottom two tint after printing (instant,
 不够时会直接闪退，渲染约 	when it doesn't fit it just dies, and rendering takes about 
 保存失败：	Save failed:
@@ -157,11 +159,13 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 已是最新版本 	Already on the latest version 
 已移除 	Removed 
 引擎库没有加载成功（libspektrafilm_engine.so）。这是安装包里的原生库没有就位，	The engine library didn't load (libspektrafilm_engine.so). A native library in the package isn't in place,
+引擎没能读入这组参数——这是这一版程序的问题，不是你的照片，也不是解码失败。请更新到最新版；如果已经是最新版，点「复制」把下面这段发给我	The engine could not read the settings this build sent it - that is a bug in this build, not your photo, and not a decode failure. Please update to the latest version; if you are already on it, tap "Copy" and send me the block below
 批量 · 全部 	Batch · all 
 批量导出 	Batch export 
 批量导出完成：	Batch export done:
 把这张的参数应用到其它照片…	Apply this photo's settings to others…
 按原图 	At original size 
+按原图导出要重新读一遍这张图（	Exporting at original size re-reads this file (
 按片门比例重试导出…	Retrying the export at the gate's ratio…
 按约 	Re-import at about 
 文件头只有 	File header is only 
@@ -201,6 +205,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 边缘检测：	Edge check: 
 这一页建不起来：	This page failed to build:
 这一页改的是「拍的时候用的是什么光」：白平衡写在去马赛克里，	This page changes the light the photo was taken under: white balance lives in the demosaic,
+这个文件正被系统相册占着：\n	The system album is holding this file open:\n
 这个文件用的是本机没有解码器的压缩（DNG 的 JPEG XL，	This file uses a compression this device has no decoder for (JPEG XL in DNG,
 这四个都是给电脑用的：手机相册多半不显示 16 位 TIFF，	All four are for a computer: phone galleries usually won't show 16-bit TIFF,
 这张 RAW 是 	This RAW is 

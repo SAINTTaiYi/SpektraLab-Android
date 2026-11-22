@@ -150,7 +150,13 @@ public final class Lang {
                 }
             }
             if (hit != null) {
-                if (out == null) out = new StringBuilder(s.length() + 24);
+                // **Keep everything before the first match.** Creating an empty
+                // builder here dropped it -- `"RAW加载失败 " + …` lost its
+                // `RAW`, and a sentence starting with a value lost the value.
+                if (out == null) {
+                    out = new StringBuilder(s.length() + 24);
+                    out.append(s, 0, i);
+                }
                 out.append(phrases.get(hit));
                 i += hit.length();
             } else {

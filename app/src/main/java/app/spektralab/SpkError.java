@@ -80,6 +80,11 @@ public final class SpkError {
 
     public static String format(String raw) {
         if (raw == null || raw.isEmpty()) return "[E-0000] 未知错误";
+        if (isParamsRejection(raw)) {
+            // The code the engine gave, or 1106 (the import path) when it gave none.
+            final int pc = codeOf(raw);
+            return "[E-" + (pc == 0 ? 1106 : pc) + "] " + PARAMS_REJECT + "（" + raw + "）";
+        }
         if (isPermissionFailure(raw)) return "[E-1304] " + IMPORT_PERMISSION + "（" + raw + "）";
         if (isAlbumWriteFailure(raw)) return "[E-1306] " + ALBUM_WRITE + "（" + raw + "）";
         if (isOutOfMemory(raw)) return "[E-1003] " + OUT_OF_MEMORY + "（" + raw + "）";
@@ -99,6 +104,27 @@ public final class SpkError {
      * looking in the wrong place. The chain now travels with the message (see
      * SpektraLabEngine.ensureLoaded), so this only has to name it.
      */
+    /**
+     * **A request the engine cannot parse is not a broken picture.**
+     *
+     * <p>`"print_exposure":1,00` — a comma-decimal locale and one missing
+     * `Locale.US` — made every raw import answer `params_delta: expected a
+     * string at byte 147` (SL-261121-130E, a Fujifilm RAF). The file had
+     * decoded; the JSON was malformed. The dialog called it 「RAW 解码失败」,
+     * which sent the reader to the decoder and cost an hour of looking in the
+     * wrong place. Naming the shape is what makes the next one a one-line
+     * answer, whichever caller produced it.
+     */
+    static boolean isParamsRejection(String raw) {
+        if (raw == null) return false;
+        return raw.contains("params_delta") || raw.contains("expected a string at byte")
+                || raw.contains("expected a number at byte");
+    }
+
+    private static final String PARAMS_REJECT =
+            "引擎没能读入这组参数——这是这一版程序的问题，不是你的照片，也不是解码失败。"
+            + "请更新到最新版；如果已经是最新版，点「复制」把下面这段发给我";
+
     private static final String NATIVE_LOAD =
             "引擎库没有加载成功（libspektrafilm_engine.so）。这是安装包里的原生库没有就位，"
             + "不是你操作的问题——重装没用；请点「复制」把下面这段完整发给我，我按名字就能定位";
@@ -118,6 +144,10 @@ public final class SpkError {
 
     private static String shortFormRaw(String raw) {
         if (isPermissionFailure(raw)) return "[E-1304] 照片权限已失效，请重新导入";
+        if (isParamsRejection(raw)) {
+            final int pc = codeOf(raw);
+            return "[E-" + (pc == 0 ? 1106 : pc) + "] 引擎没能读入这组参数（程序的问题，不是照片）· 请把这条发给我";
+        }
         int code = codeOf(raw);
         if (code == 0) code = 9000;
         if (code == 9000 && isNativeLoadFailure(raw)) return "[E-9000] 引擎库没有加载成功";
