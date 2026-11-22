@@ -3357,65 +3357,35 @@ public class MainActivity extends Activity {
 
 
     private LinearLayout buildViewPanel() {
-        final LinearLayout panel = new LinearLayout(this);
-        viewRoot = panel;
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead(tr("optics.optics"), this::resetViewPanel),
-                new LinearLayout.LayoutParams(-1, dp(38)));
-        // **Say why, instead of letting a live page do nothing.**
-        //
-        // The optics layer is applied to the engine's *output* -- `grade_result`
-        // on export, `copyArgbRange` on the canvas -- so with no film there is
-        // nothing for it to sit on: the sliders moved and the picture did not.
-        // A dead page with no explanation is what made a user ask for a "no
-        // film mode"; he read the silence as a missing feature. This line is the
-        // cheap half of that answer.
-        viewLockNote = label(tr("optics.choose_a_film_first_these"),
-                8.5f, UiPalette.MUTED, tfHan);
-        viewLockNote.setPadding(dp(2), dp(4), dp(2), dp(8));
-        panel.addView(viewLockNote, new LinearLayout.LayoutParams(-1, -2));
-
-        final String[] cats = {tr("optics.light"), tr("optics.color"), tr("optics.effects"), tr("optics.curves"), tr("optics.grading")};
-        final LinearLayout catRow = new LinearLayout(this);
-        catRow.setOrientation(LinearLayout.HORIZONTAL);
-        viewCatChips = new TextView[cats.length];
-        for (int i = 0; i < cats.length; ++i) {
-            final int page = i;
-            final TextView chip = label(cats[i], 8, i == 0 ? UiPalette.BLUE : UiPalette.MUTED, tfBody);
-            chip.setGravity(android.view.Gravity.CENTER);
-            chip.setOnClickListener(v -> showViewPage(page));
-            catRow.addView(chip, new LinearLayout.LayoutParams(0, dp(26), 1f));
-            viewCatChips[i] = chip;
-        }
-        panel.addView(catRow, new LinearLayout.LayoutParams(-1, dp(28)));
-
-        for (int i = 0; i < viewPages.length; ++i) {
-            viewPages[i] = new LinearLayout(this);
-            viewPages[i].setOrientation(LinearLayout.VERTICAL);
-            viewPages[i].setVisibility(i == 0 ? View.VISIBLE : View.GONE);
-            final CappedScroll scroll = new CappedScroll(this, dp(280));
-            scroll.addView(viewPages[i], new android.widget.FrameLayout.LayoutParams(-1, -2));
-            panel.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
-            // The scroll has to hide with its page, so the page list is the
-            // one that gets toggled and the scroll is kept beside it.
-            viewScrolls[i] = scroll;
-        }
-        buildTonePage(viewPages[0]);
-        buildColourPage(viewPages[1]);
-        buildEffectsPage(viewPages[2]);
-        buildCurvesPage(viewPages[3]);
-        buildGradingPage(viewPages[4]);
-
-        for (int i = 0; i < curvePoints.length; ++i) {
-            curvePoints[i] = new java.util.ArrayList<>();
-            curvePoints[i].add(new float[]{0f, 0f});
-            curvePoints[i].add(new float[]{1f, 1f});
-        }
-        // **Locked from the first frame.** An import lands with no film, so the
-        // page has nothing to act on; leaving it bright until the first render
-        // would teach the opposite of what the note says.
-        refreshViewLock();
-        return panel;
+        final app.spektralab.ui.ViewPanel built = app.spektralab.ui.ViewPanel.build(
+                this, new app.spektralab.ui.ViewPanel.Host() {
+                    @Override public String text(String key) { return tr(key); }
+                    @Override public TextView label(String text, float sp, int color,
+                                                     android.graphics.Typeface tf) {
+                        return MainActivity.this.label(text, sp, color, tf);
+                    }
+                    @Override public LinearLayout sectionHead(String title, Runnable reset) {
+                        return MainActivity.this.sectionHead(title, reset);
+                    }
+                    @Override public void onCategory(int page) { showViewPage(page); }
+                    @Override public void buildPage(int page, LinearLayout container) {
+                        switch (page) {
+                            case 0: buildTonePage(container); break;
+                            case 1: buildColourPage(container); break;
+                            case 2: buildEffectsPage(container); break;
+                            case 3: buildCurvesPage(container); break;
+                            case 4: buildGradingPage(container); break;
+                            default: break;
+                        }
+                    }
+                    @Override public void onReset() { resetViewPanel(); }
+                    @Override public void onReady() { refreshViewLock(); }
+                }, tfHan, tfBody, getResources().getDisplayMetrics().density,
+                viewPages, viewScrolls, curvePoints);
+        viewRoot = built.root;
+        viewLockNote = built.lockNote;
+        viewCatChips = built.categoryChips;
+        return built.root;
     }
 
     private final CappedScroll[] viewScrolls = new CappedScroll[5];
