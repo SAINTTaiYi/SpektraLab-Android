@@ -20,6 +20,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
 import app.spektralab.ui.UiPalette;
+import app.spektralab.ui.ScrubBar;
 import app.spektralab.domain.JsonFields;
 import app.spektralab.domain.JsonQuote;
 import app.spektralab.domain.ExportPlan;
@@ -679,103 +680,7 @@ public class MainActivity extends Activity {
      * from its own gesture, and the app's rows send their delta from there
      * (one JNI call per gesture rather than one per hundredth of a stop).
      */
-    private static final class ScrubBar extends SeekBar {
-        private SeekBar.OnSeekBarChangeListener listener;
-        private final int thumbSlop;
-        private float downX;
-        private boolean tracking;
-        private boolean dragging;
-        private long lastUpMs;
-        private int resetProgress = -1;
-        private Runnable onReset;
 
-        ScrubBar(android.content.Context c) {
-            super(c);
-            thumbSlop = (int) (26 * c.getResources().getDisplayMetrics().density);
-        }
-
-        @Override public void setOnSeekBarChangeListener(SeekBar.OnSeekBarChangeListener l) {
-            listener = l;
-            super.setOnSeekBarChangeListener(l);
-        }
-
-        /** Double-tap on the thumb returns the value here. */
-        void setResetTarget(int progress, Runnable action) {
-            resetProgress = progress;
-            onReset = action;
-        }
-
-        private float thumbX() {
-            final int span = Math.max(1, getWidth() - getPaddingLeft() - getPaddingRight());
-            return getPaddingLeft() + span * (getProgress() / (float) Math.max(1, getMax()));
-        }
-
-        @Override public boolean onTouchEvent(android.view.MotionEvent ev) {
-            if (!isEnabled()) return false;
-            switch (ev.getActionMasked()) {
-                case android.view.MotionEvent.ACTION_DOWN: {
-                    // **Only the thumb moves.** A tap on the track does nothing,
-                    // and a gesture that starts away from the thumb belongs to
-                    // the list underneath -- which is how Lightroom and
-                    // LightCraft both behave. Dragging from anywhere (what this
-                    // used to do) fights every scroll.
-                    downX = ev.getX();
-                    if (Math.abs(downX - thumbX()) > thumbSlop) return false;
-                    final long now = android.os.SystemClock.uptimeMillis();
-                    if (resetProgress >= 0 && now - lastUpMs < 300) {
-                        setProgress(resetProgress);
-                        if (onReset != null) onReset.run();
-                        lastUpMs = 0;
-                        return true;
-                    }
-                    tracking = true;
-                    dragging = false;
-                    setPressed(true);
-                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
-                    return true;
-                }
-                case android.view.MotionEvent.ACTION_MOVE: {
-                    if (!tracking) return false;
-                    if (!dragging) {
-                        dragging = true;
-                        if (listener != null) listener.onStartTrackingTouch(this);
-                    }
-                    return seekTo(ev.getX());
-                }
-                case android.view.MotionEvent.ACTION_UP:
-                case android.view.MotionEvent.ACTION_CANCEL: {
-                    if (!tracking) return false;
-                    tracking = false;
-                    setPressed(false);
-                    lastUpMs = android.os.SystemClock.uptimeMillis();
-                    if (dragging) {
-                        dragging = false;
-                        if (listener != null) listener.onStopTrackingTouch(this);
-                    }
-                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
-                    return true;
-                }
-                default:
-                    return true;
-            }
-        }
-
-        /** **`onProgressChanged`'s `fromUser` is always false here.** The bar
-         *  drives itself through `setProgress`, which `AbsSeekBar` forwards with
-         *  `fromUser = false`; the flag only means "the framework's own track
-         *  touch ran", and this bar overrides that. Dragging the thumb is the
-         *  real question a preview needs answered, so it is asked directly. */
-        boolean isDragging() { return dragging; }
-
-        private boolean seekTo(float x) {
-            final int usable = getWidth() - getPaddingLeft() - getPaddingRight();
-            if (usable <= 0) return false;
-            float t = (x - getPaddingLeft()) / usable;
-            t = Math.max(0f, Math.min(1f, t));
-            setProgress(Math.round(t * getMax()));
-            return true;
-        }
-    }
 
     /**
      * The strip survives the process.
@@ -3956,95 +3861,47 @@ public class MainActivity extends Activity {
     
 
     private LinearLayout buildOpticsPanel() {
-        LinearLayout panel = new LinearLayout(this);
-        // **The field the lock reads.** Without this line `setOpticsUnlocked`
-        // hit `if (opticsPanel == null) return;` every single time and the page
-        // was never dimmed -- which is why "原图状态下冲印还是亮的" survived a
-        // version that was supposed to fix it.
-        opticsPanel = panel;
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.addView(sectionHead(tr("print.print_settings"), this::resetOpticsPanel),
-                new LinearLayout.LayoutParams(-1, dp(38)));
-
-        // The readout: which slider this is, and what it is set to.
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        knobTitle = label("", 9, UiPalette.INK, tfHan);
-        head.addView(knobTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        knobValue = label("", 9, UiPalette.BLUE, tfBody);
-        head.addView(knobValue);
-        panel.addView(head, new LinearLayout.LayoutParams(-1, dp(20)));
-        // What the knob does, in one line: twenty-two parameter names are a
-        // vocabulary, not an explanation, and the engine's own names ("层间抑制")
-        // are the least self-evident of them.
-        knobHintView = label("", 7.5f, UiPalette.MUTED, tfHan);
-        knobHintView.setMaxLines(1);
-        knobHintView.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        panel.addView(knobHintView, new LinearLayout.LayoutParams(-1, dp(15)));
-        knobCost = label("", 7.5f, UiPalette.MUTED, tfHan);
-        knobCost.setGravity(android.view.Gravity.END);
-        panel.addView(knobCost, new LinearLayout.LayoutParams(-1, dp(14)));
-
-        knobBar = new ScrubBar(this);
-        knobBar.setMax(1000);
-        styleRange(knobBar);
-        knobBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-                if (knobs.isEmpty()) return;
-                final Knob k = knobs.get(activeKnob);
-                final float v = knobValue(k, progress);
-                k.set.accept(v);
-                knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
-                if (knobBar instanceof ScrubBar && ((ScrubBar) knobBar).isDragging()) {
-                    requestLivePreview();
-                } else {
-                    liveLog("knob progress without drag");
-                }
-            }
-            @Override public void onStartTrackingTouch(SeekBar sb) { }
-            @Override public void onStopTrackingTouch(SeekBar sb) {
-                // One delta per gesture, sent from the render thread under the
-                // engine lock -- never from here (see `adjustRow`).
-                if (uiReady && session != null) {
-                    showingOriginal = false;
-                    setOriginalVisual(false);
-                    renderImage();
-                }
-            }
-        });
-        // **32 dp, the same as every other slider in the app.** It was 44 here
-        // and 44 in `rangeRow`, against 32 in `adjustRow` -- and because the
-        // track's thickness came from the row height, those two drew a track
-        // four times thicker than the optics page.
-        panel.addView(knobBar, new LinearLayout.LayoutParams(-1, dp(32)));
-
-        // The strip: one chip per adjustable, the selection under the thumb.
-        HorizontalScrollView stripScroll = new HorizontalScrollView(this);
-        stripScroll.setHorizontalScrollBarEnabled(false);
-        stripScroll.setClipToPadding(false);
-        knobStrip = new LinearLayout(this);
-        knobStrip.setOrientation(LinearLayout.HORIZONTAL);
-        knobStrip.setPadding(0, dp(6), 0, 0);
-        stripScroll.addView(knobStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
-        // A fixed height, not `weight = 1`: the optics panel is the shortest
-        // one, and letting its chip strip eat the leftover space is what left
-        // a blank band under it while the canvas stayed small.
-        panel.addView(stripScroll, new LinearLayout.LayoutParams(-1, dp(78)));
-        // **A switch, not a 0..1 knob.** `edr_enabled` is a boolean at both ends
-        // of the wire: the knob could only mean "on" by being past half, so the
-        // same field had two controls and the slider's position silently decided
-        // the checkbox. It also read as one more thing to tune rather than the
-        // one bit it is.
-
-        // **A switch, not a 0..1 knob**, for the same reason as EDR above: the
-        // field has two meaningful values and a slider would invent 98 others
-        // that all render the same. On = the stock's own hues (the 1.6.7 look);
-        // off = the green-window correction.
-
-        // **Log travel.** 0.25 / 1.0 / 4.0 are equal stops, and 1.0 is the
-        // neutral: on a linear bar it sat at 20 %, which is the "越右越暗" half
-        // only. With a ratio scale the default is the middle of the track.
+        final app.spektralab.ui.OpticsPanel.Result built =
+                app.spektralab.ui.OpticsPanel.build(this,
+                        new app.spektralab.ui.OpticsPanel.Host() {
+                            @Override public String text(String key) { return tr(key); }
+                            @Override public TextView label(String text, float sp, int color,
+                                                             android.graphics.Typeface tf) {
+                                return MainActivity.this.label(text, sp, color, tf);
+                            }
+                            @Override public LinearLayout sectionHead(String title, Runnable reset) {
+                                return MainActivity.this.sectionHead(title, reset);
+                            }
+                            @Override public void styleBar(ScrubBar bar) { styleRange(bar); }
+                            @Override public void onKnobProgress(int progress) {
+                                if (knobs.isEmpty()) return;
+                                final Knob k = knobs.get(activeKnob);
+                                final float v = knobValue(k, progress);
+                                k.set.accept(v);
+                                knobValue.setText(String.format(java.util.Locale.US, "%.2f", v));
+                                if (knobBar instanceof ScrubBar && ((ScrubBar) knobBar).isDragging()) {
+                                    requestLivePreview();
+                                } else {
+                                    liveLog("knob progress without drag");
+                                }
+                            }
+                            @Override public void onKnobCommit() {
+                                if (uiReady && session != null) {
+                                    showingOriginal = false;
+                                    setOriginalVisual(false);
+                                    renderImage();
+                                }
+                            }
+                            @Override public void onReset() { resetOpticsPanel(); }
+                        }, tfHan, tfBody, getResources().getDisplayMetrics().density);
+        opticsPanel = built.root;
+        knobTitle = built.title;
+        knobValue = built.value;
+        knobHintView = built.hint;
+        knobCost = built.cost;
+        knobBar = built.bar;
+        knobStrip = built.strip;
+        app.spektralab.ui.OpticsPanel.populate(built.root, panel -> {
         knob("print.knob.enlarger_exposure_right_is_darker", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure, false, true);
         knob("print.knob.highlight_protection",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true);
         knob("print.knob.shadow_protection",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true);
@@ -4160,9 +4017,9 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams gridBottomLp = new LinearLayout.LayoutParams(-1, dp(46));
         gridBottomLp.topMargin = dp(6);
         panel.addView(gridBottom, gridBottomLp);
-
+        });
         selectKnob(0);
-        return panel;
+        return built.root;
     }
 
     /** One chip in the strip, plus the entry that makes it live. */
