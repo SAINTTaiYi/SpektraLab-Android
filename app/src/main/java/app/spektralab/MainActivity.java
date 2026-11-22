@@ -707,7 +707,7 @@ public class MainActivity extends Activity {
     // Thumbnail and scratch-file handling is file I/O, not UI; see ThumbCache.
     private void pruneDiagnosticFiles() { ThumbCache.pruneDiagnostics(this); }
     private void pruneThumbFiles() { ThumbCache.prune(this, frames); }
-    private void persistThumb(Frame frame) { ThumbCache.persist(this, frame); }
+    void persistThumb(Frame frame) { ThumbCache.persist(this, frame); }
 
     void saveSessionState() {
         try {
@@ -885,7 +885,7 @@ public class MainActivity extends Activity {
     /** Reused scratch for `copyArgbRange`: a 0.43 MP frame is 1.7 MB a tick. */
     private int[] livePixels = null;
     /** How much of the meter's EV the decoded frame is shown at. */
-    private static final double SOURCE_VIEW_EV_SCALE = 0.85;
+    static final double SOURCE_VIEW_EV_SCALE = 0.85;
 
     // **The view layer.** These run on the finished print -- screen and every
     // exported file -- and are skipped entirely while all of them are zero, so
@@ -1085,7 +1085,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private int dp(float v) {
+    int dp(float v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
@@ -8041,7 +8041,7 @@ public class MainActivity extends Activity {
      * question is asked while the memory is still unspent -- which is the whole
      * difference between this and the old post-decode notice.
      */
-    private void showRawBudgetDialog(final Uri uri, final int w, final int h, final int capPixels) {
+    void showRawBudgetDialog(final Uri uri, final int w, final int h, final int capPixels) {
         final double fit = importScale(w, h, capPixels);
         final int sw = Math.max(1, (int) Math.round(w * fit));
         final int sh = Math.max(1, (int) Math.round(h * fit));
@@ -8111,7 +8111,7 @@ public class MainActivity extends Activity {
                 + String.format(java.util.Locale.US, "%.1f", suggest / 1e6) + tr("import.mp_rendering_will_be_slower");
     }
 
-    private static String megapixels(int w, int h) {
+    static String megapixels(int w, int h) {
         return String.format(java.util.Locale.US, "%.1f", (double) w * (double) h / 1e6);
     }
 
@@ -8941,7 +8941,7 @@ new ImportWorker(this).run(uri);
         return null;          // sRGB is what an untagged ARGB_8888 already is
     }
 
-    private Bitmap exportSourceBitmap(SpektraLabEngine.Session source, double ev) {
+    Bitmap exportSourceBitmap(SpektraLabEngine.Session source, double ev) {
         Bitmap bitmap = null;
         // **`g_result` is one process-wide buffer, shared by every entry point
         // that fills it and every one that copies out of it.**
@@ -9053,393 +9053,7 @@ new ImportWorker(this).run(uri);
     }
 
     void loadRawImage(Uri uri) {
-        // Read once, on the UI thread, before the decode starts: the worker
-        // below cannot be allowed to see a flag that a later tap already moved.
-        final boolean stayOnOriginal = reopenToOriginal;
-        reopenToOriginal = false;
-        // **A different import is a different frame.** The cache keys on path +
-        // mtime, and every import is copied to `files/import/<same name>`; two
-        // copies inside one second share an mtime, so the second import could
-        // be handed the first one's decoded pixels. Clearing here costs one
-        // unpack and buys the guarantee that the pixels belong to this file.
-        try { SpektraLabEngine.clearRawCache(); } catch (Throwable spkIgnored) { Diagnostics.ignored("loadRawImage:11898", spkIgnored); }
-        CrashTrail.mark(this, "import:raw " + uri);
-        try {
-            String filePath = getFilePathFromUri(uri);
-            rawFilePath = filePath;
-            // **The phone's own idea of how this raw should look.** OnePlus and
-            // OPPO ship a 128/140-point `ProfileToneCurve` plus a
-            // `BaselineExposure`; LibRaw parses neither, which is the whole of
-            // "our canvas is flat and Lightroom's is not". Read once here, a
-            // 6 KB seek, and handed to the canvas only.
-            sourceToneCurve = SpektraLabEngine.sourceDisplayProfile(filePath);
-            final int curvePts = sourceToneCurve == null ? 0 : (sourceToneCurve.length - 1) / 2;
-            DebugSink.text("raw-view", "display profile: "
-                    + (sourceToneCurve == null ? "none"
-                       : curvePts + " points, baseline "
-                         + String.format(java.util.Locale.US, "%.2f", sourceToneCurve[0]) + " EV"));
-            // **Which half of the import we got to.** Until now the RAW path
-            // filed one mark (`import:raw`) and then nothing until the decode
-            // had already finished, so a report of the form "crashed importing
-            // a RAW" could not be narrowed past "somewhere in the next four
-            // seconds" -- the file copy, `open_file`, the decode, `spk_open`,
-            // the meter or the source view. The JPEG path has had these marks
-            // for a while; this one had not.
-            CrashTrail.markNow(this, "import:path " + (filePath == null ? "(null)" : "ok"));
-            if (filePath == null) {
-                showInAppToast(tr("import.could_not_get_the_raw"));
-                return;
-            }
-
-            // **Ask before the decode.** `open_file` reads the container header
-            // in milliseconds; the decode that follows commits 12 bytes per
-            // pixel before anyone is consulted, and at 50 MP that is 600 MB. A
-            // sheet that appears after that memory is spent is a post-mortem,
-            // not a choice.
-            if (!suppressBudgetDialog && !importAtNativeSize && pendingCapPixels <= 0) {
-                final int[] dims = SpektraLabEngine.rawDimensions(filePath);
-                if (dims != null && dims[0] > 0 && dims[1] > 0) {
-                    final long area = (long) dims[0] * (long) dims[1];
-                    final int cap = maxImportPixels();
-                    if (area > cap || Math.max(dims[0], dims[1]) > IMPORT_LONG_EDGE) {
-                        statusText.setText(tr("import.choose_import_size_2"));
-                        showRawBudgetDialog(uri, dims[0], dims[1], cap);
-                        return;
-                    }
-                }
-            }
-
-            statusText.setText(tr("import.decoding_raw"));
-            // **The same three things the JPEG path does, for the same three
-            // reasons** — and this path had none of them, which is why a RAW
-            // import kept the previous photograph everywhere except the little
-            // source thumbnail:
-            //   · stopPrefetch() retires the shelf queue, whose generation is
-            //     what stops last frame's cards being filed under this frame;
-            //   · compare.clear() drops `CompareView.after`, the previous
-            //     render, which nothing else ever clears;
-            //   · filmThumbs.clear() is the shelf's own cache, keyed by film
-            //     id with no frame identity in the key.
-            stopPrefetch();
-            if (compare != null) compare.clear();
-            filmThumbs.clear();
-            lastRenderedBitmap = null;
-            refreshPanelLocks();
-            clearBusyPlate();
-            dateText = null;
-            setStage(2, getFileName(uri));
-
-            new Thread(() -> {
-                try {
-                    String resourcesDir = getResourcesDir();
-                    if (engine == null) {
-                        vkLogFile().delete();
-                        engine = SpektraLabEngine.create(resourcesDir, vkLogFile().getAbsolutePath());
-                        uploadCapabilities();
-                    }
-                    // Under the render lock: the shelf queue can still be
-                    // inside `renderBegin` when this thread gets here, and
-                    // closing a session out from under it is a native crash,
-                    // not an exception.
-                    synchronized (renderMutex) {
-                        if (session != null) { session.close(); session = null; }
-                    }
-                    Probe.log("import", "pre avail=" + Probe.mb(availableMemoryBytes())
-                            + " cap=" + maxImportPixels() + " native=" + importAtNativeSize
-                            + " pool=" + Probe.pool(engine));
-                    Probe.step(this, "import:pre");
-                    // **Same trim as the JPEG path.** A 50 MP frame needs
-                    // ~76 B/px of planes (3.8 GB); the previous session's pool
-                    // is freed here rather than left for the allocator to run
-                    // out against.
-                    try { if (engine != null) engine.trimPool(); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:11988", spkIgnored); }
-                    Probe.log("import", "trimmed pool=" + Probe.pool(engine));
-                    
-                    // `film_stock` names a profile file: "" and "null" both make
-                    // `load_profile` fail ("bad stock name"), so an unchosen film
-                    // omits the key and the engine keeps its own default. The UI
-                    // still shows 原图 and renders nothing until a card is tapped.
-                    final String filmField = filmStock == null ? ""
-                            : String.format("\"film_stock\":\"%s\",", filmStock);
-                    String params = String.format(
-                        "{%s\"print_stock\":\"%s\",\"input_color_space\":\"ProPhoto RGB\",\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\",\"print_exposure\":%.2f,\"preview_long_edge\":2048}",
-                        filmField, printStock, printExposure
-                    );
-                    
-                    try { DebugSink.text("open-params", "path=" + filePath + "\n" + params); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:12002", spkIgnored); }
-                    // The cap comes from the device, not from a constant: a
-                    // plane is 12 B/px and a binding may not exceed the GPU's
-                    // maxStorageBufferRange. Two limits apply, whichever is
-                    // lower -- that range, and the 65 535-workgroup dispatch
-                    // limit (16,776,960 px) this driver still loses blocks over.
-                    final boolean nativeSize = importAtNativeSize;
-                    importAtNativeSize = false;                   // one import only
-                    if (nativeSize) {
-                        try { DebugSink.text("import-mode", "native size, no cap"); } catch (Throwable spkIgnored) { Diagnostics.ignored("maxImportPixels:12011", spkIgnored); }
-                    }
-                    rawFilePath = filePath;
-                    importCapPixels = nativeSize ? 0 : maxImportPixels();
-                    // **The frame's own balance, if it had one.** A frame
-                    // reopened from the strip restores `wbUserMul` through
-                    // `applyLook`; without passing it here the reopen decodes
-                    // as-shot while the sliders still show the saved Kelvin.
-                    final float[] wbMul = wbUserMul;
-                    CrashTrail.markNow(this, "import:opening cap=" + importCapPixels);
-                    session = wbMul != null
-                            ? engine.openRawSessionTuned(filePath, params,
-                                    importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE, wbMul)
-                            : engine.openRawSession(filePath, params,
-                                    importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE);
-                    Probe.log("import", "opened=" + (session != null)
-                            + " cap=" + importCapPixels
-                            + " edge=" + (nativeSize ? 0 : IMPORT_LONG_EDGE)
-                            + " mul=" + Probe.mul(wbMul)
-                            + " pool=" + Probe.pool(engine));
-                    lastImportError = null;
-                    {
-                        // The size the engine actually opened, which is not
-                        // always the one `rawDimensions` promised: `half_size`
-                        // and the budget can both change it.
-                        final int[] sd = session == null ? null : session.getDimensions();
-                        CrashTrail.markNow(this, "import:opened "
-                                + (sd == null || sd.length < 2 ? "none" : sd[0] + "x" + sd[1]));
-                    }
-                    // **The session's own parameters, which this path never sent.**
-                    // `openRawSession` carries the film, the paper and the decode
-                    // colour space; it does not carry grain, halation, glare, the
-                    // format or the rebate, and those live in `applyParams()`. The
-                    // bitmap path has always called this pair; the raw path did
-                    // not, so a raw kept the engine's defaults for every optical
-                    // control until the user moved a slider -- and a rebate or a
-                    // date back chosen before the import never reached the render
-                    // at all.
-                    applySessionParams();
-
-                    // **Meter before the source view.** `spk_export_source`
-                    // materialises the live tier, and a meter taken after it
-                    // has come back -11 EV on a frame whose own export read a
-                    // perfectly normal mean -- the second RAW opened from a
-                    // batch metered black, rendered black, and ignored every
-                    // metering mode. Measuring first makes the `solve` below a
-                    // cache hit (`meter_key` does not change in between).
-                    // **Under the same lock `close()` takes.** These two solves
-                    // ran outside `renderMutex`, so a close from another path
-                    // could release the session between the null check and the
-                    // call -- which is exactly the dangling handle that killed
-                    // the process in the meter (SL-261110-F858). The session
-                    // field is also re-read inside the lock, so a swap that
-                    // lands in between simply skips the solve.
-                    try {
-                        synchronized (renderMutex) {
-                            if (session != null) session.solve("exposure");
-                        }
-                    } catch (Throwable spkIgnored) { Diagnostics.ignored("getDimensions:12069", spkIgnored); }
-                    // **The raw itself**, which is the "before" side of every
-                    // comparison and the only honest thing to show on import:
-                    // the decoded frame in working space, packed with no
-                    // transfer function, so a display reads it the way it reads
-                    // a raw -- flat, and dark. The camera's own JPEG is **not**
-                    // a stand-in for it: a preview is the camera's rendering,
-                    // not this frame, and showing it as "原图" is the same lie
-                    // as importing it would be. No frame, no picture.
-                    Bitmap rawView = exportSourceBitmap(session, 0.0);
-                    final Bitmap preview = rawView;
-                    CrashTrail.markNow(this, "import:source " + (preview == null ? "none"
-                            : preview.getWidth() + "x" + preview.getHeight()));
-                    final boolean hasPreview = preview != null;
-                    if (!hasPreview) {
-                        // The canvas is not allowed to be blank for no reason.
-                        // A session that opened but produced no source frame is
-                        // a bug, and it has to say so rather than look like a
-                        // photo that failed to load.
-                        try { DebugSink.text("raw-view", "no source frame for the canvas"); }
-                        catch (Throwable spkIgnored) { Diagnostics.ignored("getDimensions:12089", spkIgnored); }
-                        UiDispatcher.post(() -> statusText.setText(tr("import.raw_loaded_but_the_original")));
-                    }
-                    if (hasPreview) {
-                        UiDispatcher.post(() -> {
-                            beforeBitmap = preview;
-                            compare.setBefore(preview);
-                            setStage(1, getFileName(uri));
-                            rememberFrame(uri);
-                            rebuildFilmCards();
-                            setStep(1);
-                             statusText.setText(tr("import.raw_preview"));
-                        });
-                    }
-
-                    // "Process" (配光): without a solved print exposure and
-                    // filter pack the print runs on defaults and blows the
-                    // highlights. The mac app makes the user press Process;
-                    // this build does it once on open.
-                    String solvedJson = null;
-                    try {
-                        synchronized (renderMutex) {
-                            solvedJson = session == null ? null : session.solve("both");
-                        }
-                        DebugSink.text("solve", solvedJson == null ? "(null)" : solvedJson);
-                        CrashTrail.markNow(this, "import:print " + (solvedJson == null ? "none" : "ok"));
-                    } catch (Throwable se) {
-                        DebugSink.text("solve-failed", String.valueOf(se));
-                    }
-                    // **The meter's EV, applied to what the screen shows.** The
-                    // developed side gets it; leaving the decoded side at 0 EV
-                    // is what made a night frame look like a black rectangle
-                    // next to a correctly exposed print.
-                    if (solvedJson != null) {
-                        // The applied value, for the export. See `meteredEv`.
-                        try {
-                            final org.json.JSONObject root = new org.json.JSONObject(solvedJson);
-                            final org.json.JSONObject sp = root.optJSONObject("solved_params");
-                            meteredEv = sp == null ? 0.0 : sp.optDouble("exposure_compensation_ev", 0.0);
-                            Probe.log("meter", "applied ev=" + meteredEv);
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("optJSONObject:12129", spkIgnored); }
-                    }
-                    if (hasPreview && solvedJson != null) {
-                        double solvedEv = 0.0;
-                        try {
-                            solvedEv = new org.json.JSONObject(solvedJson)
-                                    .getJSONObject("exposure_ev_by_method")
-                                    .optDouble("balanced", 0.0);
-                        } catch (Throwable spkIgnored) { Diagnostics.ignored("optJSONObject:12137", spkIgnored); }
-                        // **Shown a little under the meter, on purpose.** At the
-                        // full metered EV the decoded side reads brighter than
-                        // the developed one, and the film's own contrast stops
-                        // showing. 85 % is the same exposure a "before" frame is
-                        // expected to have.
-                        solvedEv *= SOURCE_VIEW_EV_SCALE;
-                        if (Math.abs(solvedEv) > 0.02) {
-                            final Bitmap lifted = exportSourceBitmap(session, solvedEv);
-                            if (lifted != null) {
-                                final double shownEv = solvedEv;
-                                UiDispatcher.post(() -> {
-                                    beforeBitmap = lifted;
-                                    if (compare != null) compare.setBefore(lifted);
-                                    if (currentFrame >= 0 && currentFrame < frames.size()) {
-                                        final Frame frame = frames.get(currentFrame);
-                                        try {
-                                            final int tw = Math.max(1, dp(42));
-                                            final int th = Math.max(1, Math.round(
-                                                    tw * lifted.getHeight() / (float) lifted.getWidth()));
-                                            frame.thumb = Bitmap.createScaledBitmap(lifted, tw, th, true);
-                                            persistThumb(frame);
-                                        } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12159", spkIgnored); }
-                                        rebuildFrameChips();
-                                    }
-                                    try {
-                                        DebugSink.text("raw-view", "display ev=" + shownEv);
-                                    } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12164", spkIgnored); }
-                                });
-                            }
-                        }
-                    }
-                    UiDispatcher.post(() -> {
-                        if (session == null) return;
-                        showingOriginal = true;
-                        lastRenderedBitmap = null;
-                        setOriginalVisual(true);
-                        rebuildFilmCards();
-                        if (filmStock == null) statusText.setText(tr("import.not_rendered_choose_a_film"));
-                        // **No render from here.** `sourceWidth/Height` are
-                        // still the previous frame's and `refreshEdgeFormats`
-                        // has not run, so a render now used the old shape and
-                        // the old gate: that is E-1305 the moment the user
-                        // switches between a landscape and a portrait frame.
-                        // The block after `dims` renders once this frame's own
-                        // numbers are in.
-                    });
-
-                    // Get dimensions from session
-                    int[] dims = session == null ? null : session.getDimensions();
-                    if (dims == null || dims.length < 2 || dims[0] <= 0 || dims[1] <= 0) {
-                        // **A session that will not say how big it is failed
-                        // quietly.** Seen while switching back and forth between
-                        // two photographs: the previous import's close raced
-                        // this one's open, and the handle that came back had no
-                        // size. One clean reopen is worth trying before asking
-                        // the user to start again -- and if it fails the same
-                        // way, that is a decode problem and the message below is
-                        // the honest one.
-                        try { if (session != null) session.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12196", spkIgnored); }
-                        session = wbMul != null
-                                ? engine.openRawSessionTuned(filePath, params,
-                                        importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE, wbMul)
-                                : engine.openRawSession(filePath, params,
-                                        importCapPixels, nativeSize ? 0 : IMPORT_LONG_EDGE);
-                        dims = session == null ? null : session.getDimensions();
-                    }
-                    if (dims == null || dims.length < 2 || dims[0] <= 0 || dims[1] <= 0) {
-                        // A zero here used to travel silently: the canvas laid
-                        // itself out for nothing, every later size was wrong,
-                        // and the reason was never on screen.
-                        throw new IllegalStateException(
-                                "session reported no size: " + java.util.Arrays.toString(dims));
-                    }
-                    importedWidth = dims[0];
-                    importedHeight = dims[1];
-                    int w = dims[0];
-                    int h = dims[1];
-                    sourceWidth = w;
-                    sourceHeight = h;
-                    try { DebugSink.text("raw-dims", "w=" + w + " h=" + h); } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12217", spkIgnored); }
-
-                    // **The session's own size, not `rawSourceSize()`.** That
-                    // legacy query answers {0,0} on purpose -- its comment says
-                    // callers must ask the session -- and reading it put
-                    // "RAW 0×0 · 0.0 MP" on the status bar.
-                    final boolean capped = importCapPixels > 0;
-                    try {
-                        DebugSink.text("raw-cap", (capped ? "capped at " + importCapPixels : "native")
-                                + " -> session " + w + "x" + h);
-                    } catch (Throwable spkIgnored) { Diagnostics.ignored("round:12227", spkIgnored); }
-
-                    UiDispatcher.post(() -> {
-                        refreshEdgeFormats();
-                        setStep(1);
-                        // **No sheet.** The raw arrives at the size it was
-                        // imported at; the suggestion is a line in the status
-                        // bar, not a gate.
-                        statusText.setText("RAW " + w + "×" + h
-                                + " · " + megapixels(w, h) + " MP"
-                                + importSizeNote(w, h));
-                        refreshViewPanel();
-                        // **Render only now.** The frame's real size and the
-                        // gates that fit it are both known, so the render the
-                        // chip's Look asks for uses this picture's shape.
-                        if (filmStock != null && stayOnOriginal) {
-                            showingOriginal = true;
-                            setOriginalVisual(true);
-                            updateFilmSelection();
-                            statusText.setText(tr("film.original_ungraded_raw_preview_choose"));
-                            if (!batchExportRunning) startPrefetch();
-                        } else if (filmStock != null) {
-                            showingOriginal = false;
-                            updateFilmSelection();
-                            if (!batchExportRunning) renderImage();
-                        } else if (!batchExportRunning) {
-                            startPrefetch();
-                        }
-                    });
-                } catch (Throwable t) {
-                    DebugSink.text("failure", AppFailure.of(AppFailure.Stage.IMPORT, t).stage
-                            + ": " + describe(t));
-                    final String said = describeImportFailure(t);
-                    lastImportError = said;
-                    // A High-Efficiency NEF is not a preview job. Say what it
-                    // is (E-1108, a compression this build has no decoder for)
-                    // and what to change, and leave the file alone.
-                    UiDispatcher.post(() -> {
-                        statusText.setText(tr("import.raw_load_failed") + SpkError.shortForm(said));
-                        showErrorDialog(tr("import.raw_load_failed_2"), said);
-                    });
-                }
-            }).start();
-        } catch (Throwable t) {
-            DebugSink.text("failure", AppFailure.of(AppFailure.Stage.IMPORT, t).stage
-                    + ": " + describe(t));
-            lastImportError = describeImportFailure(t);
-            showErrorDialog(tr("import.raw_load_failed_2"), lastImportError);
-        }
+new RawImportWorker(this).run(uri);
     }
     
     /**
@@ -11366,7 +10980,7 @@ new BatchExportWorker(this).run(format, tier);
         } catch (Throwable spkIgnored) { Diagnostics.ignored("uploadStaleExportProgress:14439", spkIgnored); }
     }
 
-    private java.io.File vkLogFile() {
+    java.io.File vkLogFile() {
         return new java.io.File(getCacheDir(), "vk.log");
     }
 
@@ -11394,7 +11008,7 @@ new BatchExportWorker(this).run(format, tier);
         }
     }
 
-    private void uploadCapabilities() {
+    void uploadCapabilities() {
         try {
             String caps = engine != null ? engine.capabilities() : null;
             if (caps != null) DebugSink.text("capabilities", caps);
@@ -11699,7 +11313,7 @@ new ExportWorker(this).run(format, tier, onDone);
      * upgrade still refreshes a stale .spv (which would otherwise show up as a
      * wrong-sized picture rather than an error).
      */
-    private String getResourcesDir() throws java.io.IOException {
+    String getResourcesDir() throws java.io.IOException {
         java.io.File dir = new java.io.File(getFilesDir(), "resources");
         java.io.File marker = new java.io.File(dir, ".bundle");
         final String want = bundleVersion();
