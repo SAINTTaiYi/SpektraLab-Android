@@ -2,6 +2,8 @@ package app.spektralab.testing;
 
 import app.spektralab.domain.AppPreferences;
 import app.spektralab.domain.EdgeVerdict;
+import app.spektralab.domain.ExportController;
+import app.spektralab.domain.ImportController;
 import app.spektralab.domain.ExportPlan;
 import app.spektralab.domain.ExportSessionPlan;
 import app.spektralab.domain.EditorState;
@@ -9,6 +11,7 @@ import app.spektralab.domain.JsonFields;
 import app.spektralab.domain.EngineApi;
 import app.spektralab.domain.ImportPlanner;
 import app.spektralab.domain.RenderLookUseCase;
+import app.spektralab.domain.RenderController;
 import app.spektralab.domain.RenderPreviewUseCase;
 import app.spektralab.domain.PixelHash;
 import app.spektralab.domain.SessionApi;
@@ -153,6 +156,29 @@ public final class DomainTest {
                 "a suspended preview is kept when memory is plentiful");
         check(ExportSessionPlan.closePreview(true, false, true, need, need),
                 "a suspended preview is closed when memory is tight");
+
+        ExportController exports = new ExportController();
+        FakeSession exportSession = new FakeSession();
+        exports.export(exportSession, "jpeg", "preview", "/tmp/out.jpg", 95);
+        check(exportSession.calls.contains("exportJpeg"), "JPEG export dispatched");
+        FakeSession tiffSession = new FakeSession();
+        exports.export(tiffSession, "tiff", "full", "/tmp/out.tif", 95);
+        check(tiffSession.calls.contains("exportTiff"), "TIFF export dispatched");
+        FakeSession dngSession = new FakeSession();
+        exports.export(dngSession, "dng", "full", "/tmp/out.dng", 95);
+        check(dngSession.calls.contains("exportDng"), "DNG export dispatched");
+
+        ImportController imports = new ImportController(new FakePhotoRepository());
+        String saved = imports.prepare("content://pick/1");
+        check(saved != null && saved.startsWith("file:///copies/"), "import copies a picked URI");
+        check(imports.plan(4000, 2000, 1_000_000, 1000).width <= 1000,
+                "import plan honours the controller caps");
+
+        FakeSession renderSession2 = new FakeSession();
+        int[] dims2 = new RenderController().begin(renderSession2, state, "live", 800, true,
+                (s, st, e) -> s.setParams("{}"));
+        check(dims2[0] == 640 && renderSession2.calls.contains("renderBegin:live:true"),
+                "render controller applies params then reprints");
 
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");

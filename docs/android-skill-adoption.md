@@ -81,6 +81,11 @@ The pure string/hash helpers (`JsonFields`, `PixelHash`, `EdgeVerdict`,
 hand-rolled `indexOf` parsing and duplicated export-open JSON in `MainActivity`
 delegate to them.
 
+Thin controllers now exist in `domain`: `ExportController` dispatches JPEG/TIFF/DNG
+export, `ImportController` coordinates `PhotoRepository` + `ImportPlanner`, and
+`RenderController` wraps the render use cases. A real JPEG export was performed
+on the Orca emulator through `ExportController` ("Exported 600x600 · 0.3 MB").
+
 Phase D started: `app/build/check-package-rules.py` rejects forbidden imports
 between `app`, `ui`, `domain` and `data`, and runs in CI.
 

@@ -243,6 +243,7 @@ work and its device measurement and regression plan.
 | Pure JSON/hash/edge helpers to domain | `93881e8` | DomainTest + golden |
 | ExportPlan + JsonQuote to domain | `fb87c59` | DomainTest + golden |
 | ExportSessionPlan decision extracted | `25b0277` | DomainTest + golden |
+| Export/Import/Render controllers assembled | pending | DomainTest + on-device JPEG export |
 
 ## Updating this plan
 

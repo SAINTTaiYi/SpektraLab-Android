@@ -114,6 +114,11 @@ public class MainActivity extends Activity {
     private app.spektralab.data.PresetRepository presetRepository;
     private app.spektralab.data.StockCatalogRepository stockCatalogRepository;
     private app.spektralab.domain.AppPreferences appPreferences;
+    private app.spektralab.domain.ImportController importController;
+    private final app.spektralab.domain.ExportController exportController =
+            new app.spektralab.domain.ExportController();
+    private final app.spektralab.domain.RenderController renderController =
+            new app.spektralab.domain.RenderController();
 
     private Bitmap sourceBitmap;
     private Uri sourceUri;
@@ -411,6 +416,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         photoRepository = new app.spektralab.data.AndroidPhotoRepository(this);
+        importController = new app.spektralab.domain.ImportController(photoRepository);
         presetRepository = new app.spektralab.data.SharedPreferencesPresetRepository(this);
         appPreferences = new app.spektralab.data.SharedPreferencesAppPreferences(this, "ui");
         stockCatalogRepository = new app.spektralab.data.AssetStockCatalogRepository();
@@ -9025,7 +9031,8 @@ public class MainActivity extends Activity {
 
         showInAppToast(tr("import.copying_photos_into_app_storage"));
         new Thread(() -> {
-            final Uri copy = privateCopy(uri);
+            final String copied = importController.prepare(uri.toString());
+            final Uri copy = copied == null ? null : Uri.parse(copied);
             UiDispatcher.post(() -> {
                 if (copy == null) {
                     showErrorDialog(tr("import.import_failed"), tr("import.could_not_read_or_copy"));
@@ -11432,7 +11439,7 @@ public class MainActivity extends Activity {
                 // full develop -- correct, just slow, and only on the sliders
                 // that genuinely need it (grain, halation, geometry, rebate).
                 final long liveStart = System.currentTimeMillis();
-                final int[] dims = new app.spektralab.domain.RenderLookUseCase().render(
+                final int[] dims = renderController.begin(
                         s, liveState, "live", LIVE_LONG_EDGE, true,
                         (target, state, edge) -> applyParams(state.filmStock, (int) edge));
                 final int w = dims[0], h = dims[1];
@@ -11659,7 +11666,7 @@ public class MainActivity extends Activity {
                 CrashTrail.markNow(MainActivity.this, "render:call");
                 int[] dims;
                 try {
-                    dims = new app.spektralab.domain.RenderLookUseCase().render(
+                    dims = renderController.begin(
                             session, editorState, "live", longEdge, false,
                             (target, state, edge) -> {
                                 applyParams(state.filmStock, (int) edge);
@@ -13185,11 +13192,8 @@ public class MainActivity extends Activity {
                             CrashTrail.markNow(this, "export:write " + tier + " " + format);
                             Thread wtick = startTick("export", exportSession);
                             try {
-                                info = dng
-                                        ? exportSession.exportDng(tmp.getAbsolutePath(), tier)
-                                        : tiff
-                                        ? exportSession.exportTiff(tmp.getAbsolutePath(), tier)
-                                        : exportSession.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
+                                info = exportController.export(exportSession, format, tier,
+                                        tmp.getAbsolutePath(), 95);
                             } finally {
                                 stopTick(wtick);
                             }
