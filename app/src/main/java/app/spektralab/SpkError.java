@@ -46,7 +46,7 @@ public final class SpkError {
         return tr("error.the_photo_rendered_successfully_but");
     }
 
-    static final String ALBUM_WRITE_PREFIX = "Could not save to the photo library";
+    public static final String ALBUM_WRITE_PREFIX = "Could not save to the photo library";
 
     static boolean isAlbumWriteFailure(String raw) {
         if (raw == null) return false;

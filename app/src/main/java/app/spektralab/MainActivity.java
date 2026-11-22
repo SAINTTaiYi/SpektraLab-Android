@@ -115,6 +115,7 @@ public class MainActivity extends Activity {
     private app.spektralab.data.StockCatalogRepository stockCatalogRepository;
     private app.spektralab.domain.AppPreferences appPreferences;
     private app.spektralab.domain.ImportController importController;
+    private app.spektralab.data.MediaStoreExport exportStore;
     private final app.spektralab.domain.ExportController exportController =
             new app.spektralab.domain.ExportController();
     private final app.spektralab.domain.RenderController renderController =
@@ -417,6 +418,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         photoRepository = new app.spektralab.data.AndroidPhotoRepository(this);
         importController = new app.spektralab.domain.ImportController(photoRepository);
+        exportStore = new app.spektralab.data.MediaStoreExport(this);
         presetRepository = new app.spektralab.data.SharedPreferencesPresetRepository(this);
         appPreferences = new app.spektralab.data.SharedPreferencesAppPreferences(this, "ui");
         stockCatalogRepository = new app.spektralab.data.AssetStockCatalogRepository();
@@ -1087,9 +1089,7 @@ public class MainActivity extends Activity {
     // index i is EDGE_IDS[i], which is what `applyGate` needs.
     private String[] FORMAT_NAMES;
     private static final float[] FORMAT_MM = EDGE_MM;
-    private final View[] tabCells = new View[6];
-    private final View[] tabBars = new View[6];
-    private final TextView[] tabLabels = new TextView[6];
+    private app.spektralab.ui.TabBar tabBar;
     private android.widget.FrameLayout uiRoot;
     private TextView inAppToast;
     private final Runnable hideUiToast = () -> {
@@ -6063,29 +6063,18 @@ public class MainActivity extends Activity {
     }
 
     private View buildTabs() {
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setOrientation(LinearLayout.HORIZONTAL);
-        tabs.setBackgroundColor(UiPalette.PAPER);
-        final String[] names = {tr("navigation.film"), tr("navigation.print"), tr("navigation.optics"), tr("navigation.scale"), tr("navigation.compose"), tr("navigation.border")};
-        for (int i = 0; i < names.length; ++i) {
-            final int index = i;
-            android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            TextView name = mixedLabel(names[i], 12, UiPalette.MUTED);
-            if (i == 4) name.setContentDescription(tr("navigation.composition"));
-            name.setGravity(android.view.Gravity.CENTER);
-            cell.addView(name, new android.widget.FrameLayout.LayoutParams(-1, -1));
-            View bar = new View(this);
-            bar.setBackgroundColor(UiPalette.BLUE);
-            bar.setVisibility(View.INVISIBLE);
-            cell.addView(bar, new android.widget.FrameLayout.LayoutParams(
-                    dp(26), dp(3), android.view.Gravity.BOTTOM | android.view.Gravity.CENTER_HORIZONTAL));
-            cell.setOnClickListener(v -> onTabClicked(index));
-            tabs.addView(cell, new LinearLayout.LayoutParams(0, dp(58), 1f));
-            tabCells[i] = cell;
-            tabBars[i] = bar;
-            tabLabels[i] = name;
-        }
-        return tabs;
+        final String[] names = {
+                tr("navigation.film"), tr("navigation.print"), tr("navigation.optics"),
+                tr("navigation.scale"), tr("navigation.compose"), tr("navigation.border")};
+        tabBar = new app.spektralab.ui.TabBar(this, new app.spektralab.ui.TabBar.Host() {
+            @Override public String label(int index) { return names[index]; }
+            @Override public String compositionDescription() { return tr("navigation.composition"); }
+            @Override public void onClick(int index) { onTabClicked(index); }
+            @Override public TextView createLabel(String text, int color) {
+                return mixedLabel(text, 12, color);
+            }
+        }, names.length, getResources().getDisplayMetrics().density);
+        return tabBar.root;
     }
 
     private void onTabClicked(int index) {
@@ -7959,9 +7948,8 @@ public class MainActivity extends Activity {
         syncRotateGrid();
         for (int i = 0; i < panels.length; ++i) {
             panels[i].setVisibility(i == active ? View.VISIBLE : View.GONE);
-            tabBars[i].setVisibility(i == active ? View.VISIBLE : View.INVISIBLE);
-            if (tabLabels[i] != null) tabLabels[i].setTextColor(i == active ? UiPalette.BLUE : UiPalette.MUTED);
         }
+        if (tabBar != null) tabBar.select(active);
     }
 
     /**
@@ -11916,72 +11904,7 @@ public class MainActivity extends Activity {
      * then try Downloads, which is a different collection and is served by a
      * different code path on every ROM met so far.
      */
-    private Uri writeExportFile(java.io.File tmp, String baseName, String ext, String mime)
-            throws java.io.IOException {
-        final android.content.ContentResolver resolver = getContentResolver();
-        Throwable lastError = null;
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            final String name = attempt == 0 ? baseName
-                    : "SpektraLab_" + System.currentTimeMillis() + "_r" + ext;
-            final android.content.ContentValues v = new android.content.ContentValues();
-            v.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name);
-            v.put(android.provider.MediaStore.Images.Media.MIME_TYPE, mime);
-            v.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH,
-                    android.os.Environment.DIRECTORY_PICTURES + "/SpektraLab");
-            v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
-            Uri uri = null;
-            try { uri = resolver.insert(
-                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v); }
-            catch (Throwable t) { lastError = t; }
-            if (uri == null) continue;
-            try {
-                copyInto(resolver, tmp, uri);
-                v.clear();
-                v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0);
-                resolver.update(uri, v, null, null);
-                return uri;
-            } catch (Throwable t) {
-                lastError = t;
-                try { resolver.delete(uri, null, null); } catch (Throwable spkIgnored) { Diagnostics.ignored("ContentValues:14028", spkIgnored); }
-            }
-        }
-        if (android.os.Build.VERSION.SDK_INT >= 29) {
-            Uri uri = null;
-            try {
-                final android.content.ContentValues v = new android.content.ContentValues();
-                v.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
-                        "SpektraLab_" + System.currentTimeMillis() + ext);
-                v.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
-                v.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                        android.os.Environment.DIRECTORY_DOWNLOADS + "/SpektraLab");
-                v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
-                uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
-                if (uri != null) {
-                    copyInto(resolver, tmp, uri);
-                    v.clear();
-                    v.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-                    resolver.update(uri, v, null, null);
-                    return uri;
-                }
-            } catch (Throwable t) {
-                lastError = t;
-                if (uri != null) { try { resolver.delete(uri, null, null); } catch (Throwable spkIgnored) { Diagnostics.ignored("ContentValues:14051", spkIgnored); } }
-            }
-        }
-        throw new java.io.IOException(SpkError.ALBUM_WRITE_PREFIX, lastError);
-    }
 
-    /** Stream `tmp` into an already-inserted MediaStore row. */
-    private static void copyInto(android.content.ContentResolver resolver,
-                                 java.io.File tmp, Uri uri) throws java.io.IOException {
-        try (java.io.InputStream in = new java.io.FileInputStream(tmp);
-             java.io.OutputStream out = resolver.openOutputStream(uri)) {
-            if (out == null) throw new java.io.IOException("openOutputStream returned null");
-            final byte[] buf = new byte[262144];
-            int len;
-            while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
-        }
-    }
 
     /**
      * Ask the engine to analyse this frame again: exposure and the three
@@ -13271,7 +13194,7 @@ public class MainActivity extends Activity {
                 final int fw = w, fh = h;
                 UiDispatcher.post(() -> statusText.setText(tr("export.exporting_saving_to_the_photo") + fw + "x" + fh + "..."));
                 String fileName = "SpektraLab_" + System.currentTimeMillis() + ext;
-                final Uri outUri = writeExportFile(tmp, fileName, ext, mime);
+                final Uri outUri = exportStore.write(tmp, fileName, ext, mime);
                 // **Does the file look like the picture we think we wrote?**
                 // Two measurements of the smoothed result: the mean difference
                 // between neighbouring rows and between neighbouring columns.
