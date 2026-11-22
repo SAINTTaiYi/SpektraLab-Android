@@ -2921,72 +2921,27 @@ public class MainActivity extends Activity {
     }
 
     private View buildFilmPanel() {
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        final LinearLayout filmHead = sectionHead(tr("film.film_paper"), this::resetFilmPanel);
-        // **The "As Shot" switch, where the original app puts the same choice.**
-        // On: the meter decides the film exposure. Off: the frame keeps the
-        // exposure the camera recorded, which is the only way a lamp in a dark
-        // room comes back dark instead of being lifted five stops onto Dmax.
-        final TextView meterLabel = label(tr("film.metering"), 8.5f, UiPalette.MUTED, tfHan);
-        meterChip = label("", 8.5f, UiPalette.INK, tfHan);
-        meterChip.setGravity(android.view.Gravity.CENTER);
-        // **48dp, not 40x20.** The old chip was smaller than the minimum touch
-        // target, so a tap that landed two pixels off did nothing -- which is
-        // what "点了没反应" was.
-        meterChip.setPadding(dp(10), dp(6), dp(10), dp(6));
-        meterChip.setMinWidth(dp(48));
-        meterChip.setMinHeight(dp(30));
-        meterChip.setOnClickListener(v -> showMeterPicker());
-        final LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(-2, -2);
-        labelLp.rightMargin = dp(6);
-        filmHead.addView(meterLabel, 1, labelLp);
-        final LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(-2, -2);
-        chipLp.rightMargin = dp(10);
-        filmHead.addView(meterChip, 2, chipLp);
+        final app.spektralab.ui.FilmPanel built = app.spektralab.ui.FilmPanel.build(
+                this, new app.spektralab.ui.FilmPanel.Host() {
+                    @Override public String text(String key) { return tr(key); }
+                    @Override public TextView label(String text, float sp, int color,
+                                                     android.graphics.Typeface tf) {
+                        return MainActivity.this.label(text, sp, color, tf);
+                    }
+                    @Override public LinearLayout sectionHead(String title, Runnable reset) {
+                        return MainActivity.this.sectionHead(title, reset);
+                    }
+                    @Override public void onMeterClick() { showMeterPicker(); }
+                    @Override public void onPaperClick() { showPaperPicker(); }
+                    @Override public void onReset() { resetFilmPanel(); }
+                }, tfHan, tfBody, getResources().getDisplayMetrics().density);
+        meterChip = built.meterChip;
+        brandRow = built.brandRow;
+        filmScroll = built.filmScroll;
+        filmCardStrip = built.filmCardStrip;
+        paperValue = built.paperValue;
         refreshMeterChip();
-        panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
-
-        HorizontalScrollView brandScroll = new HorizontalScrollView(this);
-        brandScroll.setHorizontalScrollBarEnabled(false);
-        brandScroll.setFillViewport(false);
-        brandRow = new LinearLayout(this);
-        brandRow.setOrientation(LinearLayout.HORIZONTAL);
-        brandRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        brandScroll.addView(brandRow, new android.widget.FrameLayout.LayoutParams(-2, dp(38)));
-        panel.addView(brandScroll, new LinearLayout.LayoutParams(-1, dp(38)));
-
-        filmScroll = new HorizontalScrollView(this);
-        filmScroll.setHorizontalScrollBarEnabled(false);
-        filmScroll.setClipToPadding(false);
-        filmScroll.setFillViewport(false);
-        filmCardStrip = new LinearLayout(this);
-        filmCardStrip.setOrientation(LinearLayout.HORIZONTAL);
-        filmCardStrip.setGravity(android.view.Gravity.TOP);
-        filmCardStrip.setPadding(0, dp(9), 0, dp(8));
-        filmScroll.addView(filmCardStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
-        panel.addView(filmScroll, new LinearLayout.LayoutParams(-1, dp(111)));
-
-        LinearLayout paperRow = new LinearLayout(this);
-        paperRow.setOrientation(LinearLayout.HORIZONTAL);
-        paperRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        paperRow.addView(label(tr("film.paper_print_film"), 9, UiPalette.MUTED, tfHan));
-        LinearLayout paperChoice = new LinearLayout(this);
-        paperChoice.setOrientation(LinearLayout.HORIZONTAL);
-        paperChoice.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
-        paperChoice.setOnClickListener(v -> showPaperPicker());
-        paperValue = label("Kodak Portra Endura", 10, UiPalette.INK, tfHan);
-        paperValue.setSingleLine(true);
-        paperValue.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        paperValue.setGravity(android.view.Gravity.END);
-        paperChoice.addView(paperValue, new LinearLayout.LayoutParams(0, -2, 1f));
-        TextView paperArrow = label("↓", 10, UiPalette.BLUE, tfBody);
-        LinearLayout.LayoutParams paperArrowLp = new LinearLayout.LayoutParams(-2, -2);
-        paperArrowLp.leftMargin = dp(7);
-        paperChoice.addView(paperArrow, paperArrowLp);
-        paperRow.addView(paperChoice, new LinearLayout.LayoutParams(0, dp(35), 1f));
-        panel.addView(paperRow, new LinearLayout.LayoutParams(-1, dp(35)));
-        return panel;
+        return built.root;
     }
 
     private String brandOf(String id) {
