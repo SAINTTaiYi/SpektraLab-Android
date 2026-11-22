@@ -242,6 +242,7 @@ work and its device measurement and regression plan.
 | All stateful Views extracted + onNewIntent test-hook fix | `09e7505` | emulator Optics/Compose + golden |
 | Pure JSON/hash/edge helpers to domain | `93881e8` | DomainTest + golden |
 | ExportPlan + JsonQuote to domain | `fb87c59` | DomainTest + golden |
+| ExportSessionPlan decision extracted | pending | DomainTest + golden |
 
 ## Updating this plan
 

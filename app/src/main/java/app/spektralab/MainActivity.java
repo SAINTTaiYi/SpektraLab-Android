@@ -13001,16 +13001,16 @@ public class MainActivity extends Activity {
                             final boolean wasSuspended = keepSuspended;
                             // 5.1 planes of 12 B/px plus the encoder's tables,
                             // measured on the host at 20.9 MP (`mem_export`).
-                            final long needBytes = (long) sourceWidth * sourceHeight * 12L * 51L / 10L
-                                    + (160L << 20);
+                            final long needBytes = app.spektralab.domain.ExportSessionPlan
+                                    .workingSetBytes(sourceWidth, sourceHeight);
                             // **More than half of what is left is more than the
                             // two of them can share.** `avail` is MemAvailable,
                             // so it already excludes the preview's own arena;
                             // this asks whether one export working set still
                             // fits in what remains after it.
                             final long avail = availableMemoryBytes();
-                            final boolean tight = avail > 0 && needBytes > avail * 55L / 100L;
-                            if (!wasSuspended || tight) {
+                            if (app.spektralab.domain.ExportSessionPlan.closePreview(
+                                    true, batchExportRunning, wasSuspended, needBytes, avail)) {
                                 try { keep.close(); } catch (Throwable spkIgnored) { Diagnostics.ignored("availableMemoryBytes:15192", spkIgnored); }
                                 if (session == keep) session = null;
                                 keepSuspended = false;

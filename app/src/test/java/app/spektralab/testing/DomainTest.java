@@ -3,6 +3,7 @@ package app.spektralab.testing;
 import app.spektralab.domain.AppPreferences;
 import app.spektralab.domain.EdgeVerdict;
 import app.spektralab.domain.ExportPlan;
+import app.spektralab.domain.ExportSessionPlan;
 import app.spektralab.domain.EditorState;
 import app.spektralab.domain.JsonFields;
 import app.spektralab.domain.EngineApi;
@@ -139,6 +140,19 @@ public final class DomainTest {
                 "export open params carry the canvas exposure");
         check(ExportPlan.openParams("a\"b", true, 0, 1).contains("\"print_stock\":\"a\\\"b\""),
                 "paper name is JSON escaped");
+
+        long need = ExportSessionPlan.workingSetBytes(2000, 1000);
+        check(need > 0 && need > (long) 2000 * 1000 * 12, "export working set includes planes");
+        check(!ExportSessionPlan.closePreview(false, false, false, need, 0),
+                "no fresh session keeps the preview");
+        check(!ExportSessionPlan.closePreview(true, true, false, need, 0),
+                "batch export keeps the preview for its next reopen");
+        check(ExportSessionPlan.closePreview(true, false, false, need, Long.MAX_VALUE),
+                "a failed suspension closes the preview");
+        check(!ExportSessionPlan.closePreview(true, false, true, need, Long.MAX_VALUE),
+                "a suspended preview is kept when memory is plentiful");
+        check(ExportSessionPlan.closePreview(true, false, true, need, need),
+                "a suspended preview is closed when memory is tight");
 
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");

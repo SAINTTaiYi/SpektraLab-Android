@@ -86,6 +86,7 @@ $domainSources = @(
     "$root\app\src\main\java\app\spektralab\domain\PixelHash.java",
     "$root\app\src\main\java\app\spektralab\domain\EdgeVerdict.java",
     "$root\app\src\main\java\app\spektralab\domain\ExportPlan.java",
+    "$root\app\src\main\java\app\spektralab\domain\ExportSessionPlan.java",
     "$root\app\src\main\java\app\spektralab\domain\JsonQuote.java",
     "$root\app\src\test\java\app\spektralab\testing\FakeSession.java",
     "$root\app\src\test\java\app\spektralab\testing\FakeAppPreferences.java",
