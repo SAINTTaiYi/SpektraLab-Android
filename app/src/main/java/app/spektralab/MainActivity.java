@@ -5152,6 +5152,10 @@ public class MainActivity extends Activity {
         s = Lang.t(s);                     // the tables live in Lang (assets/i18n)
         TextView t = new TransText(this);
         if (hasCjk(s)) {
+            // The runs carry both faces; the base is what a *later* string with
+            // no spans of its own is drawn in, so it is never left on the
+            // platform default.
+            t.setTypeface(tfBody);
             t.setText(mixedText(s));       // Latin on Inter, Chinese on OPPO, run by run
         } else {
             t.setText(s);
@@ -5201,6 +5205,9 @@ public class MainActivity extends Activity {
     private TextView mixedLabel(String text, float sp, int color) {
         text = Lang.t(text);
         TextView t = new TransText(this);
+        // The runs carry both faces; the base is what a *later* string with no
+        // spans of its own is drawn in (see `TransText.setText`).
+        t.setTypeface(tfBody);
         t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, snapSp(sp));
         t.setTextColor(color);
         t.setText(mixedText(text));
@@ -5217,13 +5224,35 @@ public class MainActivity extends Activity {
      * call sites need no edit at all — and a message that arrives later is
      * translated too, which a one-off pass over the view tree could not do.
      */
-    private static final class TransText extends TextView {
+    private final class TransText extends TextView {
         TransText(android.content.Context c) { super(c); }
 
         @Override public void setText(CharSequence text, BufferType type) {
             // A Spanned came from `mixedText`, which has already been through
             // `Lang`; running it again would flatten the runs into one face.
-            if (text != null && !(text instanceof android.text.Spanned)) text = Lang.t(text);
+            if (text != null && !(text instanceof android.text.Spanned)) {
+                text = Lang.t(text);
+                // **The face follows the text, not the constructor.** These
+                // views are built once and re-used -- the status line under the
+                // canvas, the toast -- and `label` could only face the *first*
+                // string it saw. One built with Chinese left its base on the
+                // platform default (only the runs were faced), so the next
+                // Latin message came out in the ROM's font; one built with
+                // Latin kept Inter, so the next Chinese message fell back to
+                // the ROM's CJK. Both are "there is still a system font in the
+                // app" (761).
+                if (hasCjk(text)) {
+                    setTypeface(tfBody);        // the base under the runs
+                    text = mixedText(text.toString());   // OPPO per CJK run, Inter per Latin run
+                } else {
+                    final Typeface cur = getTypeface();
+                    // `tfDisplay` / `tfBold` are deliberate choices; the
+                    // untouched default, the platform's own default and OPPO's
+                    // Latin all have to become Inter.
+                    if (cur == null || cur == tfHan || cur == Typeface.DEFAULT
+                            || cur == Typeface.DEFAULT_BOLD) setTypeface(tfBody);
+                }
+            }
             super.setText(text, type);
         }
     }
@@ -15747,10 +15776,15 @@ public class MainActivity extends Activity {
         engineFotuCell = label("FOTU", 7.5f, UI_BLUE, tfBody);
         engineSpkCell.setGravity(android.view.Gravity.CENTER);
         engineFotuCell.setGravity(android.view.Gravity.CENTER);
-        engineSpkCell.setMinWidth(dp(30));
-        engineSpkCell.setPadding(dp(6), 0, dp(6), 0);
-        engineFotuCell.setMinWidth(dp(34));
-        engineFotuCell.setPadding(dp(6), 0, dp(6), 0);
+        // **The same width, because they are one control.** At 30 and 34 the
+        // pair read as two chips of different sizes with the live one bolted
+        // on (the owner's word: 看着很难受); equal halves read as a switch. 40 dp
+        // holds FOTU with room to breathe and still leaves the title 124 dp on
+        // a 320 dp screen.
+        engineSpkCell.setMinWidth(dp(40));
+        engineFotuCell.setMinWidth(dp(40));
+        engineSpkCell.setPadding(dp(4), 0, dp(4), 0);
+        engineFotuCell.setPadding(dp(4), 0, dp(4), 0);
         engineSpkCell.setClickable(true);
         engineFotuCell.setClickable(true);
         engineSpkCell.setOnClickListener(v -> setShelfEngine("spk"));
@@ -24612,6 +24646,26 @@ public class MainActivity extends Activity {
         setBarProgress(pairShadowKneeBar, -6f, 6f, pairShadowKnee);
         setBarProgress(pairShadowRoomBar, 0f, 8f, pairShadowRoom);
         refreshPairRows();
+        // **A print frame is part of the frame, and the reset owns it.** These
+        // three were left alone, so a Super 8 / 4×5 / Instax gauge kept being
+        // drawn with `overscanOn` off (`pfByGauge` reads `pfChosen`), kept
+        // naming itself on the gate row, and kept the window it had cut the
+        // picture to -- "重置也还是那个片边，切换片边也还是". A reset puts the
+        // frame page back on the rebate's own ten and gives the picture its own
+        // shape back; a window a *rebate* gate cut is a composition and stays.
+        if (isPrintFrameGauge(overscanFormat)) {
+            pfChosen = false;
+            pfKind = "none";
+            overscanFormat = "135";
+            formatIndex = 0;
+            filmFormatMm = EDGE_MM[0];
+            refreshPfRows();
+            final float own = originalAspect();
+            if (own > 0f) cropToRatio(own);
+            refreshEdgeFormats();
+            rebuildFormatCards();
+            if (edgeValue != null) edgeValue.setText(EDGE_LABELS[0]);
+        }
         setBarProgress(edgeFogBar, 0f, 4f, edgeFog);
         setBarProgress(edgeLeaksBar, 0f, 4f, edgeLeaks);
         setBarProgress(frameNoBar, 0f, 99f, frameNumber);
@@ -25176,7 +25230,15 @@ public class MainActivity extends Activity {
 
     /** One fotufilm card: its own chain, its own medium, scaled to the card. */
     private Bitmap renderFotuCardThumb(String cardId) {
-        final String fid = FotuFilm.idOf(cardId);
+        // **A card's key is not an engine's id.** A merged card carries the
+        // first engine's id, so asking fotufilm for `fujifilm_c200` looked up a
+        // skeleton that does not exist and threw on the spot: every one of the
+        // eighteen films both engines ship stayed on its loader for ever while
+        // the second engine's own cards filled in ("切到 fotu 卡片一直在渲染",
+        // 761). The id to develop is the one `engineIdOf` answers with.
+        final String target = engineIdOf(cardId);
+        if (target == null) return null;
+        final String fid = FotuFilm.idOf(target);
         final String medium = fotuMediumFor(fid);
         java.io.File file = null;
         try {
