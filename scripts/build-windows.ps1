@@ -7,6 +7,9 @@ param(
     [switch]$UsePrebuiltNative,
     [switch]$SideBySide,
     [string]$EngineCheckout,
+    [string]$ReleaseKeystore,
+    [string]$ReleaseStorePass,
+    [string]$ReleaseKeyAlias,
     [ValidateRange(1, 64)][int]$Jobs = 8
 )
 $ErrorActionPreference = 'Stop'
@@ -174,17 +177,37 @@ try {
     & $python $apkContents pack $stage "$stage\resources.apk"
     & "$tools\zipalign.exe" -P 16 -f 4 "$stage\unsigned.apk" "$stage\aligned.apk"
 
-    $key = "$BuildHome\debug.keystore"
-    if (!(Test-Path $key)) {
-        & "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -keystore $key -alias androiddebugkey `
-            -storepass android -keypass android -dname 'CN=Android Debug,O=Android,C=US' `
-            -keyalg RSA -keysize 2048 -validity 10000
+    $releaseSigning = !([string]::IsNullOrEmpty($ReleaseKeystore))
+    if ($releaseSigning) {
+        if (!(Test-Path $ReleaseKeystore)) { throw "Release keystore not found: $ReleaseKeystore" }
+        if ([string]::IsNullOrEmpty($ReleaseStorePass) -or [string]::IsNullOrEmpty($ReleaseKeyAlias)) {
+            throw 'Release signing needs -ReleaseStorePass and -ReleaseKeyAlias.'
+        }
+        $key = $ReleaseKeystore
+        $storePass = $ReleaseStorePass
+        $alias = $ReleaseKeyAlias
+    } else {
+        $key = "$BuildHome\debug.keystore"
+        if (!(Test-Path $key)) {
+            & "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -keystore $key -alias androiddebugkey `
+                -storepass android -keypass android -dname 'CN=Android Debug,O=Android,C=US' `
+                -keyalg RSA -keysize 2048 -validity 10000
+        }
+        $storePass = 'android'
+        $alias = 'androiddebugkey'
     }
-    & "$tools\apksigner.bat" sign --ks $key --ks-pass pass:android --key-pass pass:android `
-        --ks-key-alias androiddebugkey --v1-signing-enabled true "$stage\aligned.apk"
+    & "$tools\apksigner.bat" sign --ks $key --ks-pass "pass:$storePass" --key-pass "pass:$storePass" `
+        --ks-key-alias $alias --v1-signing-enabled true "$stage\aligned.apk"
     & "$tools\apksigner.bat" verify --verbose "$stage\aligned.apk"
+    if ($env:EXPECTED_SIGNER_SHA256) {
+        $certs = & "$tools\apksigner.bat" verify --print-certs "$stage\aligned.apk" | Out-String
+        if ($certs -notmatch [regex]::Escape($env:EXPECTED_SIGNER_SHA256)) {
+            throw "APK signer does not match EXPECTED_SIGNER_SHA256"
+        }
+    }
     & "$tools\zipalign.exe" -c -P 16 4 "$stage\aligned.apk"
-    $suffix = if ($UseReleaseNative) { 'release-native-debug' }
+    $suffix = if ($releaseSigning) { 'release-signed' }
+              elseif ($UseReleaseNative) { 'release-native-debug' }
               elseif ($UsePrebuiltNative) { 'prebuilt-native-debug' }
               else { 'windows-debug' }
     if ($SideBySide) { $suffix += '-side-by-side' }

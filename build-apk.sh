@@ -40,8 +40,12 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as
 PY
 # v1 as well as v2/v3: apksigner skips JAR signing at minSdk 24 by default,
 # and a few OEM installers still refuse a v2-only package.
-apksigner sign --ks "$ROOT/debug.keystore" --ks-pass pass:android --key-pass pass:android \
-  --ks-key-alias androiddebugkey --v1-signing-enabled true "$TMP"
+# Release signing is opt-in via env: RELEASE_KEYSTORE / RELEASE_STOREPASS / RELEASE_KEYALIAS.
+KEY="${RELEASE_KEYSTORE:-$ROOT/debug.keystore}"
+STOREPASS="${RELEASE_STOREPASS:-android}"
+ALIAS="${RELEASE_KEYALIAS:-androiddebugkey}"
+apksigner sign --ks "$KEY" --ks-pass "pass:$STOREPASS" --key-pass "pass:$STOREPASS" \
+  --ks-key-alias "$ALIAS" --v1-signing-enabled true "$TMP"
 # A library that cannot load is E-9000 on every device, and it is invisible in
 # the build log: the .so is present, its DT_NEEDED just names a file the APK
 # does not carry. Check the closure before the file is allowed to leave.

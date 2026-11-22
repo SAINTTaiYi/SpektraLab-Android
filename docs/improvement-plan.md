@@ -167,12 +167,15 @@ work and its device measurement and regression plan.
 
 ## Phase 3 — release engineering and polish
 
-### [ ] P3.1 — Release signing
+### [ ] P3.1 — Release signing (partially done)
 
-- **Problem:** `build-apk.sh:40-41` and `announce.sh` publish debug-signed APKs.
-- **Change:** release keystore in CI secrets; verify signer identity.
-- **Verification:** `apksigner verify --print-certs` shows the release signer.
-- **Effort / risk:** 1 day; medium (key management).
+- **Done:** both Windows and Termux build scripts accept an opt-in release
+  keystore (`-ReleaseKeystore` / `-ReleaseStorePass` / `-ReleaseKeyAlias`, or
+  `RELEASE_KEYSTORE` / `RELEASE_STOREPASS` / `RELEASE_KEYALIAS`). Windows builds
+  also verify `EXPECTED_SIGNER_SHA256` when provided, and name the output
+  `release-signed`.
+- **Still open:** obtaining/custoding the actual release key and wiring it into
+  the release workflow — requires the maintainer's secrets.
 
 ### [ ] P3.2 — Build convergence (partially done)
 
