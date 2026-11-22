@@ -2689,6 +2689,27 @@ public class MainActivity extends Activity {
     /** The folded strip: a short stack of prints in the canvas's lower-left. */
     private View shelfHandle;
     private ImageView shelfHandleImage;
+    /** The strip's own height, and the one value the fold animates. */
+    private static final float SHELF_H_DP = 62f;
+    /** The two controls that get out of the way first, and what the stack shows. */
+    private TextView shelfAddBtn, shelfFoldBtn, shelfChevron;
+    /** The two cards peeking out behind the folded picture (4 dp and 8 dp). */
+    private View shelfEdgeMid, shelfEdgeBack;
+    /**
+     * **0 = the strip is out, 1 = it is the stack at the canvas's lower left.**
+     *
+     * <p>Every part of the transition -- the container's height, the ＋ / ‹
+     * hand-off, the other chips gathering, the two card edges, the flyer's
+     * rect, corner radius, border and shadow -- is a pure function of this one
+     * number, which is driven by a damped spring. That is what makes a tap
+     * halfway through reversible: the target flips, the position and the
+     * velocity carry over, and nothing is reset.
+     */
+    private float shelfFold, shelfFoldVel, shelfFoldTarget;
+    private boolean shelfFoldAnimating;
+    private long shelfFoldClockNs;
+    private ShelfFlyer shelfFlyer;
+    private android.graphics.Bitmap shelfFlyBmp;
     private HorizontalScrollView thumbScroll;
     private boolean shelfCollapsed = false;
     /** Set while a chip is re-opening a frame, so the import does not append a
@@ -13469,7 +13490,7 @@ public class MainActivity extends Activity {
         app.addView(leftColumn, new LinearLayout.LayoutParams(-1, 0, 1f));
         leftColumn.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1f));
         editorSourceBar = buildSourceBar();
-        leftColumn.addView(editorSourceBar, new LinearLayout.LayoutParams(-1, dp(62)));
+        leftColumn.addView(editorSourceBar, new LinearLayout.LayoutParams(-1, dp(SHELF_H_DP)));
 
         controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
@@ -13593,7 +13614,9 @@ public class MainActivity extends Activity {
         }
 
         leftColumn.addView(canvasStage, new LinearLayout.LayoutParams(-1, 0, 1f));
-        leftColumn.addView(editorSourceBar, new LinearLayout.LayoutParams(-1, dp(62)));
+        leftColumn.addView(editorSourceBar, new LinearLayout.LayoutParams(-1,
+                dp(SHELF_H_DP * (1f - shelfFold))));
+        editorSourceBar.setVisibility(frames.isEmpty() || shelfCollapsed ? View.GONE : View.VISIBLE);
 
         if (land) {
             app.setOrientation(LinearLayout.HORIZONTAL);
@@ -14700,9 +14723,10 @@ public class MainActivity extends Activity {
         row.setPadding(dp(10), 0, dp(4), 0);
         sourceRow = row;
 
-        TextView add = label("\uff0b", 17, UI_BLUE, tfDisplay);
+        final TextView add = label("\uff0b", 17, UI_BLUE, tfDisplay);
         add.setGravity(android.view.Gravity.CENTER);
         add.setOnClickListener(v -> showImportMenu());
+        shelfAddBtn = add;
         row.addView(add, new LinearLayout.LayoutParams(dp(40), dp(48)));
 
         // The strip. Empty until a photograph is opened: no placeholder tile,
@@ -14716,9 +14740,11 @@ public class MainActivity extends Activity {
         thumbScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
         row.addView(thumbScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        TextView fold = label("\u2039", 15, UI_MUTED, tfHan);
+        final TextView fold = label("\u2039", 15, UI_MUTED, tfHan);
         fold.setGravity(android.view.Gravity.CENTER);
         fold.setOnClickListener(v -> setShelfCollapsed(true));
+        shelfFoldBtn = fold;
+        pressFeedback(fold);
         row.addView(fold, new LinearLayout.LayoutParams(dp(28), dp(48)));
 
         bar.addView(row, new LinearLayout.LayoutParams(-1, dp(62)));
@@ -14734,7 +14760,8 @@ public class MainActivity extends Activity {
         handle.setVisibility(View.GONE);
 
         for (int i = 2; i >= 1; --i) {
-            View edge = new View(this);
+            final View edge = new View(this);
+            if (i == 2) shelfEdgeBack = edge; else shelfEdgeMid = edge;
             android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
             bg.setColor(i == 2 ? 0xFFD9D9D3 : 0xFFECECE7);
             bg.setCornerRadius(dp(7));
@@ -14758,6 +14785,7 @@ public class MainActivity extends Activity {
         handle.addView(shelfHandleImage, new android.widget.FrameLayout.LayoutParams(card, card));
 
         TextView chevron = label("\u203a", 14, uiOnCanvas(), tfDisplay);
+        shelfChevron = chevron;
         chevron.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
         chevron.setPadding(0, 0, dp(5), 0);
         chevron.setShadowLayer(dp(2), 0, 0, 0xCC000000);
@@ -15374,35 +15402,516 @@ public class MainActivity extends Activity {
         shelfHandleImage.setImageBitmap(thumb);
     }
 
-    /** Fold or unfold the photograph strip. Unfolded it costs 62 dp above the
-     *  panels; folded it costs 20, and the canvas takes the difference -- the
-     *  stage is the weighted child of the column, so nothing else has to move. */
+    /** Fold or unfold the photograph strip -- one spring, both directions.
+     *
+     * <p>The strip costs 62 dp above the panels; the stack at the canvas's
+     * lower left costs nothing. What used to be a switch of three visibilities
+     * and one `LayoutParams.height` is now a single animated number (`shelfFold`)
+     * that the container's height, the two controls, every chip, the two card
+     * edges and the flying picture are all read from -- see
+     * {@link #applyShelfFold(float)}. That is also what makes it interruptible:
+     * a second tap only moves the target.
+     */
     private void setShelfCollapsed(boolean collapsed) {
-        if (shelfCollapsed == collapsed) return;
         // Nothing to fold into: with no photographs the handle would not be
         // drawn, and ＋ would go with the row -- a one-way trip.
         if (collapsed && frames.isEmpty()) return;
+        final float target = collapsed ? 1f : 0f;
+        if (shelfCollapsed == collapsed && Math.abs(shelfFoldTarget - target) < 0.001f
+                && !shelfFoldAnimating) return;
         shelfCollapsed = collapsed;
-        updateShelfVisibility();
+        if (frames.isEmpty() || Math.abs(shelfFold - target) < 0.001f) {
+            // Restore, or the first layout: no animation, just the end state.
+            updateShelfVisibility();
+            return;
+        }
+        // **The strip has to exist while it moves.** A GONE view has no rect,
+        // and its chips are what the flyer lifts off from.
+        if (sourceBar != null) sourceBar.setVisibility(View.VISIBLE);
+        if (shelfHandle != null) {
+            shelfHandle.setVisibility(View.VISIBLE);
+            // No second tap until it lands: the handle is under the pointer
+            // while its own picture is still in the air.
+            shelfHandle.setClickable(!collapsed);
+        }
         if (collapsed) updateShelfHandle();
+        beginShelfFold(target);
     }
 
     /** The strip is furniture: it exists only when there is something on it.
      *  Before the first import it is not folded, it is absent -- the canvas's
      *  own 选择照片 button is the way in, and a 62 dp row of nothing above the
-     *  panels is just a gap. */
+     *  panels is just a gap.
+     *
+     * <p>While a fold is running this is a no-op: the animation owns the strip's
+     * height and the handle's visibility, and a chip arriving mid-flight must
+     * not reset either. `finishShelfFold` reconciles them when it lands.
+     */
     private void updateShelfVisibility() {
         if (sourceBar == null) return;
+        if (shelfFoldAnimating) return;
+        shelfFold = shelfCollapsed ? 1f : 0f;
+        shelfFoldTarget = shelfFold;
+        shelfFoldVel = 0f;
         final boolean show = !frames.isEmpty() && !shelfCollapsed;
         sourceBar.setVisibility(show ? View.VISIBLE : View.GONE);
         android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
         if (lp != null) {
-            lp.height = dp(show ? 62 : 0);
+            lp.height = dp(show ? SHELF_H_DP : 0);
             sourceBar.setLayoutParams(lp);
         }
         if (shelfHandle != null) {
             shelfHandle.setVisibility(shelfCollapsed && !frames.isEmpty()
                     ? View.VISIBLE : View.GONE);
+            shelfHandle.setClickable(shelfCollapsed && !frames.isEmpty());
+        }
+        if (shelfHandleImage != null) shelfHandleImage.setAlpha(1f);
+        resetShelfControls();
+        resetFrameChips();
+        applyShelfCorner(shelfCollapsed ? 1f : 0f);
+        dropShelfFlyer();
+    }
+
+    /** A control that says it was hit: 0.88 on the way down, eased back on release. */
+    private void pressFeedback(final View v) {
+        v.setOnTouchListener((view, ev) -> {
+            switch (ev.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    view.animate().cancel();
+                    view.animate().scaleX(0.88f).scaleY(0.88f)
+                            .setDuration(90).setInterpolator(EASE_OUT).start();
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                    return false;
+                case android.view.MotionEvent.ACTION_UP:
+                case android.view.MotionEvent.ACTION_CANCEL:
+                    view.animate().cancel();
+                    view.animate().scaleX(1f).scaleY(1f)
+                            .setDuration(160).setInterpolator(EASE_OUT).start();
+                    return false;
+                default:
+                    return false;
+            }
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // 照片栏 ⇄ 左下角的照片叠
+    // -----------------------------------------------------------------------
+
+    /** Start (or re-aim) the spring. The position and the velocity are kept. */
+    private void beginShelfFold(float target) {
+        if (uiRoot == null) {
+            shelfFold = shelfFoldTarget = target;
+            applyShelfFold(target);
+            finishShelfFold();
+            return;
+        }
+        if (shelfFlyer == null) buildShelfFlyer();
+        shelfFlyBmp = primaryFrameThumb();
+        // **A re-aim is not a new flight.** Only a fresh one lifts the picture
+        // off a real view; a reversal keeps the rect, the corner, the border and
+        // the shadow it has at this instant, and the spring carries them back.
+        if (!shelfFoldAnimating && shelfFlyer != null && shelfFlyBmp != null) {
+            shelfFlyer.setBitmap(shelfFlyBmp);
+            final boolean toHandle = target > 0.5f;
+            final android.graphics.RectF start = globalRect(toHandle ? primaryChip() : shelfHandleImage);
+            if (start != null) {
+                moveShelfFlyer(start.left, start.top, start.width(), start.height());
+                shelfFlyer.setCorner(dp(toHandle ? 4f : 11f));
+                shelfFlyer.setBorder(toHandle ? 1f : 0f);
+                shelfFlyer.setShadow(toHandle ? 0f : 1f);
+                shelfFlyer.setVisibility(View.VISIBLE);
+                // The destination must not hold a second copy while the picture
+                // is still in the air.
+                if (shelfHandleImage != null) shelfHandleImage.setAlpha(0f);
+            }
+        }
+        shelfFoldTarget = target;
+        if (!shelfFoldAnimating) {
+            shelfFoldAnimating = true;
+            shelfFoldClockNs = 0L;
+            shelfFoldPost();
+        }
+    }
+
+    private void shelfFoldPost() {
+        if (uiRoot == null) return;
+        uiRoot.postOnAnimation(shelfFoldStep);
+    }
+
+    /** The spring, integrated twice per frame so a stiff one cannot overshoot. */
+    private final Runnable shelfFoldStep = new Runnable() {
+        @Override public void run() {
+            if (!shelfFoldAnimating) return;
+            final long now = System.nanoTime();
+            float dt = shelfFoldClockNs == 0L ? 0.016f : (now - shelfFoldClockNs) / 1e9f;
+            shelfFoldClockNs = now;
+            dt = Math.max(0.001f, Math.min(dt, 1f / 30f));
+            // 0.86 / 420 folding, 0.85 / 400 unfolding: crisp off the mark, soft
+            // into the stop, and no rubber band at the end of either.
+            final boolean folding = shelfFoldTarget > shelfFold;
+            final float k = folding ? 420f : 400f;
+            final float zeta = folding ? 0.86f : 0.85f;
+            final float c = 2f * zeta * (float) Math.sqrt(k);
+            for (int i = 0; i < 2; ++i) {
+                final float acc = -k * (shelfFold - shelfFoldTarget) - c * shelfFoldVel;
+                shelfFoldVel += acc * dt * 0.5f;
+                shelfFold += shelfFoldVel * dt * 0.5f;
+            }
+            applyShelfFold(shelfFold);
+            if (Math.abs(shelfFold - shelfFoldTarget) < 0.0025f
+                    && Math.abs(shelfFoldVel) < 0.03f) {
+                shelfFold = shelfFoldTarget;
+                applyShelfFold(shelfFold);
+                finishShelfFold();
+                return;
+            }
+            shelfFoldPost();
+        }
+    };
+
+    /**
+     * One frame of the transition, read off `p` (0 = strip out, 1 = folded).
+     *
+     * <p>Every window below is a range of `p`, not of time, which is what makes
+     * the whole thing reversible: reverse the spring and each part unwinds in
+     * the order it wound up, at the speed it is actually moving.
+     */
+    private void applyShelfFold(float pRaw) {
+        final float p = clamp01(pRaw);
+        // 1. The container's height. The stage is the weighted child above it,
+        //    so the canvas takes exactly what the strip gives up and the panels
+        //    under it go down by the same amount -- three edges, one value.
+        if (sourceBar != null) {
+            final android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
+            if (lp != null) {
+                final int h = Math.round(dp(SHELF_H_DP) * (1f - p));
+                if (lp.height != h) {
+                    lp.height = h;
+                    sourceBar.setLayoutParams(lp);
+                }
+            }
+        }
+        // 2. ＋ and ‹ are out of the way inside the first third, each towards
+        //    the middle so the row visibly closes rather than empties.
+        final float ctl = clamp01(p / 0.30f);
+        if (shelfAddBtn != null) {
+            shelfAddBtn.setAlpha(1f - ctl);
+            shelfAddBtn.setTranslationX(-dp(7f) * ctl);
+        }
+        if (shelfFoldBtn != null) {
+            shelfFoldBtn.setAlpha(1f - ctl);
+            shelfFoldBtn.setTranslationX(dp(7f) * ctl);
+        }
+        // 3. The other photographs gather in behind the primary one.
+        gatherFrameChips(p);
+        // 4. The stack: its two card edges slide out from behind the picture in
+        //    the last third, and the chevron comes with them.
+        final float out = clamp01((p - 0.62f) / 0.38f);
+        if (shelfEdgeBack != null) {
+            shelfEdgeBack.setTranslationX(-dp(8f) * (1f - out));
+            shelfEdgeBack.setTranslationY(-dp(8f) * (1f - out));
+        }
+        if (shelfEdgeMid != null) {
+            shelfEdgeMid.setTranslationX(-dp(4f) * (1f - out));
+            shelfEdgeMid.setTranslationY(-dp(4f) * (1f - out));
+        }
+        if (shelfChevron != null) shelfChevron.setAlpha(out);
+        // 5. The picture itself, on the overlay above everything.
+        applyShelfFlyer(p);
+        if ((shelfFlyer == null || shelfFlyBmp == null) && shelfHandleImage != null) {
+            shelfHandleImage.setAlpha(p * p);
+        }
+    }
+
+    /** The chips travel to the primary one's X, shrink a tenth and fade. */
+    private void gatherFrameChips(float p) {
+        if (thumbStrip == null) return;
+        final View primary = primaryChip();
+        if (primary == null) return;
+        // Coming apart, each of the first five leaves 20 ms after the one before
+        // it; going together they all gather at once. A shelf of thirty must not
+        // end in a ripple.
+        final boolean expanding = shelfFoldTarget < 0.5f;
+        final float spread = 1f - p;
+        for (int i = 0; i < thumbStrip.getChildCount(); ++i) {
+            final View chip = thumbStrip.getChildAt(i);
+            final float lag = expanding ? Math.min(i, 5) * 0.05f : 0f;
+            final float t = clamp01((spread - lag) / Math.max(0.4f, 1f - lag));
+            final float k = 1f - t;
+            if (chip == primary) {
+                // The flyer carries this one; its own copy only has to be gone
+                // before the container starts cutting it in half.
+                chip.setAlpha(clamp01((t - 0.45f) / 0.55f));
+                continue;
+            }
+            chip.setTranslationX((primary.getLeft() - chip.getLeft()) * k);
+            final float sc = 1f - 0.10f * k;
+            chip.setScaleX(sc);
+            chip.setScaleY(sc);
+            chip.setAlpha(t);
+        }
+    }
+
+    /** The flying picture: a rect between the two live ends, morphing as it goes. */
+    private void applyShelfFlyer(float p) {
+        if (shelfFlyer == null || shelfFlyBmp == null) return;
+        if (shelfFlyer.getVisibility() != View.VISIBLE) return;
+        final android.graphics.RectF from = globalRect(primaryChip());
+        final android.graphics.RectF to = globalRect(shelfHandleImage);
+        if (from == null || to == null) return;
+        final float t = clamp01((p - 0.05f) / 0.95f);
+        moveShelfFlyer(from.left + (to.left - from.left) * t,
+                from.top + (to.top - from.top) * t,
+                from.width() + (to.width() - from.width()) * t,
+                from.height() + (to.height() - from.height()) * t);
+        // The shelf's 4 dp box becomes the stack's 11 dp card.
+        shelfFlyer.setCorner(dp(4f) + dp(7f) * clamp01((p - 0.35f) / 0.65f));
+        // The blue selection border goes almost at once; the drop shadow that
+        // says "this is on top of the canvas" arrives behind it.
+        shelfFlyer.setBorder(1f - clamp01(p / 0.35f));
+        shelfFlyer.setShadow(clamp01((p - 0.30f) / 0.55f));
+    }
+
+    private void moveShelfFlyer(float x, float y, float w, float h) {
+        if (shelfFlyer == null) return;
+        final android.view.ViewGroup.LayoutParams lp = shelfFlyer.getLayoutParams();
+        if (lp == null) return;
+        final int iw = Math.max(1, Math.round(w));
+        final int ih = Math.max(1, Math.round(h));
+        if (lp.width != iw || lp.height != ih) {
+            lp.width = iw;
+            lp.height = ih;
+            shelfFlyer.setLayoutParams(lp);
+        }
+        shelfFlyer.setX(x);
+        shelfFlyer.setY(y);
+    }
+
+    /** Where a view really is, in the overlay's own coordinate space.
+     *
+     *  <p>The size falls back to the view's own `LayoutParams` when it has not
+     *  been measured yet -- which is exactly the case at the start of an
+     *  *expand*, where the strip was `GONE` (and 0 dp tall) a frame ago. Reading
+     *  `getWidth()` there gives zero and the flight would have no start.
+     */
+    private android.graphics.RectF globalRect(View v) {
+        if (v == null || uiRoot == null) return null;
+        int w = v.getWidth(), h = v.getHeight();
+        final android.view.ViewGroup.LayoutParams lp = v.getLayoutParams();
+        if (lp != null) {
+            if (w <= 0) w = lp.width;
+            if (h <= 0) h = lp.height;
+        }
+        if (w <= 0 || h <= 0) return null;
+        final int[] at = new int[2];
+        final int[] rootAt = new int[2];
+        v.getLocationInWindow(at);
+        uiRoot.getLocationInWindow(rootAt);
+        final float x = at[0] - rootAt[0], y = at[1] - rootAt[1];
+        return new android.graphics.RectF(x, y, x + w, y + h);
+    }
+
+    /** The photograph that stands for the strip: the selected frame, else the first. */
+    private View primaryChip() {
+        if (thumbStrip == null || thumbStrip.getChildCount() == 0) return null;
+        final int at = (currentFrame >= 0 && currentFrame < thumbStrip.getChildCount())
+                ? currentFrame : 0;
+        return thumbStrip.getChildAt(at);
+    }
+
+    private android.graphics.Bitmap primaryFrameThumb() {
+        if (frames.isEmpty()) return null;
+        final int at = (currentFrame >= 0 && currentFrame < frames.size()) ? currentFrame : 0;
+        return frames.get(at).thumb;
+    }
+
+    private void buildShelfFlyer() {
+        if (uiRoot == null) return;
+        try {
+            shelfFlyer = new ShelfFlyer(this);
+            shelfFlyer.setVisibility(View.GONE);
+            final android.widget.FrameLayout.LayoutParams lp =
+                    new android.widget.FrameLayout.LayoutParams(dp(52), dp(52));
+            uiRoot.addView(shelfFlyer, lp);
+        } catch (Throwable t) {
+            shelfFlyer = null;
+            DebugSink.text("shelf", "flyer failed: " + t);
+        }
+    }
+
+    private void dropShelfFlyer() {
+        if (shelfFlyer == null) return;
+        shelfFlyer.setVisibility(View.GONE);
+        shelfFlyer.setBitmap(null);
+        shelfFlyBmp = null;
+    }
+
+    private void resetShelfControls() {
+        if (shelfAddBtn != null) {
+            shelfAddBtn.setAlpha(1f);
+            shelfAddBtn.setTranslationX(0f);
+            shelfAddBtn.setScaleX(1f);
+            shelfAddBtn.setScaleY(1f);
+        }
+        if (shelfFoldBtn != null) {
+            shelfFoldBtn.setAlpha(1f);
+            shelfFoldBtn.setTranslationX(0f);
+            shelfFoldBtn.setScaleX(1f);
+            shelfFoldBtn.setScaleY(1f);
+        }
+        if (shelfChevron != null) shelfChevron.setAlpha(1f);
+        if (shelfEdgeMid != null) { shelfEdgeMid.setTranslationX(0f); shelfEdgeMid.setTranslationY(0f); }
+        if (shelfEdgeBack != null) { shelfEdgeBack.setTranslationX(0f); shelfEdgeBack.setTranslationY(0f); }
+    }
+
+    private void resetFrameChips() {
+        if (thumbStrip == null) return;
+        for (int i = 0; i < thumbStrip.getChildCount(); ++i) {
+            final View chip = thumbStrip.getChildAt(i);
+            chip.setTranslationX(0f);
+            chip.setScaleX(1f);
+            chip.setScaleY(1f);
+            chip.setAlpha(1f);
+        }
+    }
+
+    /** The handle's own rounded corners follow the fold (7 dp inside, 11 dp out). */
+    private void applyShelfCorner(float p) {
+        if (shelfHandleImage == null) return;
+        final float r = dp(7f) + dp(4f) * p;
+        shelfHandleImage.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), r);
+            }
+        });
+        shelfHandleImage.invalidateOutline();
+    }
+
+    /** Land on the real components in the same frame the proxy goes away. */
+    private void finishShelfFold() {
+        shelfFoldAnimating = false;
+        shelfFoldVel = 0f;
+        shelfFoldClockNs = 0L;
+        final boolean folded = shelfFoldTarget > 0.5f;
+        shelfFold = folded ? 1f : 0f;
+        if (shelfHandle != null) {
+            final boolean show = folded && !frames.isEmpty();
+            shelfHandle.setVisibility(show ? View.VISIBLE : View.GONE);
+            shelfHandle.setClickable(show);
+        }
+        if (sourceBar != null) {
+            final boolean show = !folded && !frames.isEmpty();
+            sourceBar.setVisibility(show ? View.VISIBLE : View.GONE);
+            final android.view.ViewGroup.LayoutParams lp = sourceBar.getLayoutParams();
+            if (lp != null) {
+                lp.height = dp(show ? SHELF_H_DP : 0);
+                sourceBar.setLayoutParams(lp);
+            }
+        }
+        if (shelfHandleImage != null) shelfHandleImage.setAlpha(1f);
+        applyShelfCorner(folded ? 1f : 0f);
+        if (folded) {
+            resetShelfControls();
+        } else {
+            resetShelfControls();
+            resetFrameChips();
+        }
+        // **The proxy goes away after the real views have been laid out.** One
+        // frame later, so the handoff cannot be caught mid-measure.
+        final ShelfFlyer flyer = shelfFlyer;
+        if (flyer != null) {
+            flyer.post(() -> {
+                if (shelfFoldAnimating) return;      // another fold has already begun
+                dropShelfFlyer();
+            });
+        }
+        Probe.log("shelf", "fold=" + (folded ? 1 : 0) + " frames=" + frames.size());
+    }
+
+    /**
+     * The picture while it is in the air.
+     *
+     * <p>It has to leave the strip, which is being cut down to nothing, so it
+     * lives on the root as a real view: the bitmap, a round-rect clip whose
+     * radius is set per frame, and a stroke that fades the selection border out.
+     * The shadow is the platform's -- an elevation with a rounded outline --
+     * because a hand-blurred shadow per frame is a software layer and a cliff.
+     */
+    private final class ShelfFlyer extends View {
+        private android.graphics.Bitmap bmp;
+        private float radius;
+        private int strokeColor = UI_BLUE;
+        private float strokeAlpha = 1f;
+        private float shadow;
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG
+                        | android.graphics.Paint.FILTER_BITMAP_FLAG);
+        private final android.graphics.Path clip = new android.graphics.Path();
+        private final android.graphics.RectF box = new android.graphics.RectF();
+        private final android.graphics.RectF dst = new android.graphics.RectF();
+
+        ShelfFlyer(android.content.Context c) {
+            super(c);
+            setClipToOutline(false);
+            setOutlineProvider(new android.view.ViewOutlineProvider() {
+                @Override public void getOutline(View v, android.graphics.Outline o) {
+                    o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), radius);
+                }
+            });
+        }
+
+        void setBitmap(android.graphics.Bitmap b) { bmp = b; invalidate(); }
+
+        void setCorner(float r) {
+            if (Math.abs(r - radius) < 0.01f) return;
+            radius = r;
+            invalidateOutline();
+            invalidate();
+        }
+
+        void setBorder(float a) {
+            if (Math.abs(a - strokeAlpha) < 0.01f) return;
+            strokeAlpha = a;
+            invalidate();
+        }
+
+        void setShadow(float v) {
+            if (Math.abs(v - shadow) < 0.01f) return;
+            shadow = v;
+            setElevation(dp(7f) * v);
+            setTranslationZ(dp(1f) * v);
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas c) {
+            final float w = getWidth(), h = getHeight();
+            if (w <= 0f || h <= 0f) return;
+            box.set(0f, 0f, w, h);
+            clip.reset();
+            clip.addRoundRect(box, radius, radius, android.graphics.Path.Direction.CW);
+            c.save();
+            c.clipPath(clip);
+            c.drawColor(UI_GROUND);
+            if (bmp != null && !bmp.isRecycled()) {
+                // CENTER_CROP: the same framing the strip's ImageView uses, so
+                // the first frame of the flight is the picture as it was.
+                final float s = Math.max(w / bmp.getWidth(), h / bmp.getHeight());
+                final float dw = bmp.getWidth() * s, dh = bmp.getHeight() * s;
+                dst.set((w - dw) * 0.5f, (h - dh) * 0.5f, (w + dw) * 0.5f, (h + dh) * 0.5f);
+                c.drawBitmap(bmp, null, dst, paint);
+            }
+            c.restore();
+            if (strokeAlpha > 0.01f) {
+                final float sw = dp(2f);
+                paint.setStyle(android.graphics.Paint.Style.STROKE);
+                paint.setStrokeWidth(sw);
+                paint.setColor(strokeColor);
+                paint.setAlpha((int) (255 * clamp01(strokeAlpha)));
+                box.inset(sw * 0.5f, sw * 0.5f);
+                c.drawRoundRect(box, radius, radius, paint);
+                paint.setStyle(android.graphics.Paint.Style.FILL);
+                paint.setAlpha(255);
+            }
         }
     }
 
