@@ -24164,7 +24164,10 @@ public class MainActivity extends Activity {
         // strategy draws its own mark and takes the accent colour, so the head
         // still says "something is set" without a word.
         meterGlyph.setMode(on ? meterMethod : "");
-        meterGlyph.setTint(on ? UI_BLUE : UI_MUTED);
+        // **Ink, not the accent.** What is set is said by the gold inside the
+        // frame; the frame itself stays the page's ink, and the empty one (the
+        // engine's own metering) stays quiet.
+        meterGlyph.setTint(on ? UI_INK : UI_MUTED);
         meterGlyph.setOnClickListener(v -> showMeterPicker());
         meterGlyph.setClickable(true);
     }
@@ -28315,36 +28318,46 @@ public class MainActivity extends Activity {
      * 页那支笔、跟按钮的描边都是同一种画法。
      */
     /**
-     * **The head's two buttons are drawn, not typed.**
+     * **The head's two buttons, in the language the two reference sheets use.**
      *
-     * <p>`重置当前页` and the metering chip were 8.5 sp text in a head whose
-     * title is 8.5 sp: the same weight, the same size, the same colour family,
-     * so the controls read as more title. Both are one 24 dp glyph now, drawn
-     * here so the whole set shares a single stroke weight and optical size --
-     * a font character or a platform drawable would each have brought their
-     * own.
+     * <p>Both are drawn here: ink at two weights plus a single gold fill
+     * (#FECB0E, sampled from the sheets), which is all they have in common.
+     * Nothing is typed -- a glyph, not a word, on a page whose title is
+     * already the same 8.5 sp.
      *
-     * <p>The metering glyph is one frame with a different mark inside it, and
-     * the mark's *position* is the mode: struck through for the engine's own
-     * metering, a chord across the middle for 平衡, a dot in the upper half for
-     * 亮部重点, a heavy bar under the top edge for 保护高光 (and under the
-     * bottom for 保留暗部), a ring at the centre for 中心, the same ring filled
-     * for 中心加权, four dots for 平均's grid, a meridian for 中位数. At 24 dp
-     * that is legible at a glance; long-press says the name for the one case
-     * where it is not.
+     * <p>The metering set is nine marks in three families:
+     *
+     * <ul>
+     *   <li><b>a viewfinder frame</b> -- empty for the engine's own metering, a
+     *       disc for 平衡, a ringed dot up high for 亮部重点, a band along the
+     *       top edge for 保护高光 and along the bottom for 保留暗部;</li>
+     *   <li><b>a pair of circles</b> -- 中心 is a ring with its disc, 中心加权
+     *       the same ring with only the upper half filled;</li>
+     *   <li><b>a plinth</b> -- 平均's dome and 中位数's block resting on it.</li>
+     * </ul>
+     *
+     * <p>Every proportion is measured off the sheets (frame 257 x 196, stroke
+     * 15.5, arm 69, 平衡's disc 120, the frame's aspect 0.763, the plinth's bar
+     * 209 with 12 ticks and a 48 stem, ...) and expressed as a fraction of the
+     * view, so the same drawing scales from 24 dp to a poster.
      */
     private static final class MiniIcon extends View {
+        /** The one accent both sheets share. */
+        private static final int GOLD = 0xFFFECB0E;
         private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final float d;
+        private final Paint brush = new Paint(Paint.ANTI_ALIAS_FLAG);
         private String mode;
-        private int tint = UI_MUTED;
+        private int tint = UI_INK;
         /** Pressed, kept here rather than in the view's alpha. */
         private boolean down;
 
         MiniIcon(android.content.Context c, String mode) {
             super(c);
             this.mode = mode == null ? "" : mode;
-            this.d = c.getResources().getDisplayMetrics().density;
+            pen.setStyle(Paint.Style.STROKE);
+            pen.setStrokeCap(Paint.Cap.ROUND);
+            pen.setStrokeJoin(Paint.Join.ROUND);
+            brush.setStyle(Paint.Style.FILL);
             setClickable(true);
             setFocusable(false);
         }
@@ -28366,83 +28379,138 @@ public class MainActivity extends Activity {
             final float s = Math.min(w, h);
             if (s <= 0f) return;
             final float cx = w / 2f, cy = h / 2f;
-            final float r = s * 0.30f;
-            final float sw = Math.max(1.55f * d, s * 0.046f);
-            pen.setStyle(Paint.Style.STROKE);
-            pen.setStrokeCap(Paint.Cap.ROUND);
-            pen.setStrokeJoin(Paint.Join.ROUND);
-            pen.setStrokeWidth(sw);
             pen.setColor(tint);
+            brush.setColor(GOLD);
             pen.setAlpha(down ? 0x8C : 0xFF);
+            brush.setAlpha(down ? 0x8C : 0xFF);
 
             if ("reset".equals(mode)) {
-                // Three quarters of a turn with a filled head at its start: the
-                // universal "start this over", and not the top bar's undo.
-                final android.graphics.RectF box =
-                        new android.graphics.RectF(cx - r, cy - r, cx + r, cy + r);
-                final float start = -64f;
-                c.drawArc(box, start, 288f, false, pen);
-                final double a = Math.toRadians(start);
-                final float px = cx + r * (float) Math.cos(a);
-                final float py = cy + r * (float) Math.sin(a);
-                final double t = Math.atan2(Math.cos(a), -Math.sin(a));   // clockwise
-                final float tx = (float) Math.cos(t), ty = (float) Math.sin(t);
-                final float nx = -ty, ny = tx;                            // outward
-                final float len = r * 0.66f, half = r * 0.34f;
-                final android.graphics.Path head = new android.graphics.Path();
-                head.moveTo(px + tx * len, py + ty * len);
-                head.lineTo(px - tx * len * 0.35f + nx * half, py - ty * len * 0.35f + ny * half);
-                head.lineTo(px - tx * len * 0.35f - nx * half, py - ty * len * 0.35f - ny * half);
-                head.close();
-                pen.setStyle(Paint.Style.FILL);
-                c.drawPath(head, pen);
-                pen.setStyle(Paint.Style.STROKE);
+                reset(c, cx, cy, s);
+                return;
+            }
+            // **The frame family's own box**: 257 x 196 on the sheet.
+            final float fw = s * 0.86f;
+            final float fh = fw * 0.7626f;
+            final float st = fw * 0.0603f;
+
+            if ("center".equals(mode) || "center_weighted".equals(mode)) {
+                final float r = fw * 0.3055f;                  // 157 / 257
+                pen.setStrokeWidth(fw * 0.0525f);
+                c.drawCircle(cx, cy, r, pen);
+                if ("center".equals(mode)) {
+                    c.drawCircle(cx, cy, fw * 0.185f, brush);   // 95 / 257
+                } else {
+                    final float rr = fw * 0.253f;               // 130 / 257, upper half
+                    c.drawArc(new android.graphics.RectF(cx - rr, cy - rr, cx + rr, cy + rr),
+                            180f, 180f, true, brush);
+                }
+                return;
+            }
+            if ("average".equals(mode) || "median".equals(mode)) {
+                plinth(c, cx, cy, fw, "average".equals(mode));
                 return;
             }
 
-            c.drawCircle(cx, cy, r, pen);
-            if (mode.isEmpty()) {
-                final float k = r * 0.66f;   // 0.66 * sqrt(2) = 0.93 r: inside the ring
-                c.drawLine(cx - k, cy + k, cx + k, cy - k, pen);
-            } else if ("balanced".equals(mode)) {
-                c.drawLine(cx - r, cy, cx + r, cy, pen);
+            final float x0 = cx - fw / 2f + st / 2f, x1 = cx + fw / 2f - st / 2f;
+            final float y0 = cy - fh / 2f + st / 2f, y1 = cy + fh / 2f - st / 2f;
+            pen.setStrokeWidth(st);
+            bracket(c, x0, y0, x1, y1, fw * 0.268f);
+            if (mode.isEmpty()) return;      // the frame alone: the engine's own metering
+
+            if ("balanced".equals(mode)) {
+                c.drawCircle(cx, cy, fw * 0.2335f, brush);               // 120 / 257
             } else if ("highlight_weighted".equals(mode)) {
-                dot(c, cx, cy - r * 0.46f, r * 0.26f);
+                // 点测光's ringed dot, where the sheet puts it: up and right.
+                final float px = cx + fw * 0.21f, py = cy - fh * 0.16f;
+                pen.setStrokeWidth(fw * 0.0545f);
+                c.drawCircle(px, py, fw * 0.144f, pen);                  // outer 74 / 257
+                c.drawCircle(px, py, fw * 0.0915f, brush);               // disc 47 / 257
             } else if ("protect_highlights".equals(mode) || "protect_shadows".equals(mode)) {
-                final boolean top = mode.startsWith("protect_high");
-                final float y = top ? cy - r * 0.50f : cy + r * 0.50f;
-                pen.setStrokeWidth(sw * 1.6f);
-                c.drawLine(cx - r * 0.44f, y, cx + r * 0.44f, y, pen);
-                pen.setStrokeWidth(sw);
-            } else if ("center".equals(mode)) {
-                c.drawCircle(cx, cy, r * 0.36f, pen);
-            } else if ("center_weighted".equals(mode)) {
-                c.drawCircle(cx, cy, r * 0.36f, pen);
-                dot(c, cx, cy, r * 0.15f);
-            } else if ("average".equals(mode)) {
-                final float k = r * 0.42f, q = r * 0.17f;
-                dot(c, cx - k, cy - k, q);
-                dot(c, cx + k, cy - k, q);
-                dot(c, cx - k, cy + k, q);
-                dot(c, cx + k, cy + k, q);
-            } else if ("median".equals(mode)) {
-                c.drawLine(cx, cy - r, cx, cy + r, pen);
+                // 中央偏重's band, moved to the edge it protects.
+                final float bh = fh * 0.485f;                            // 95 / 196
+                final boolean top = "protect_highlights".equals(mode);
+                final float lo = top ? y0 + st / 2f : y1 - st / 2f - bh;
+                c.drawRect(x0 + st / 2f, lo, x1 - st / 2f, lo + bh, brush);
             }
         }
 
-        private void dot(android.graphics.Canvas c, float x, float y, float radius) {
-            pen.setStyle(Paint.Style.FILL);
-            c.drawCircle(x, y, radius, pen);
-            pen.setStyle(Paint.Style.STROKE);
+        /** Four rounded L corners: the viewfinder the sheet opens with. */
+        private void bracket(android.graphics.Canvas c, float x0, float y0,
+                             float x1, float y1, float arm) {
+            final android.graphics.Path p = new android.graphics.Path();
+            p.moveTo(x0, y0 + arm); p.lineTo(x0, y0); p.lineTo(x0 + arm, y0);
+            p.moveTo(x1 - arm, y0); p.lineTo(x1, y0); p.lineTo(x1, y0 + arm);
+            p.moveTo(x1, y1 - arm); p.lineTo(x1, y1); p.lineTo(x1 - arm, y1);
+            p.moveTo(x0 + arm, y1); p.lineTo(x0, y1); p.lineTo(x0, y1 - arm);
+            c.drawPath(p, pen);
+        }
+
+        /**
+         * 平均 and 中位数: a bar with a tick at each end and a stem under the
+         * middle, carrying a dome or a block. Off the sheet: bar 209 of 257,
+         * stroke 12, ticks 21, stem 48, dome 139, block 57.
+         */
+        private void plinth(android.graphics.Canvas c, float cx, float cy,
+                            float fw, boolean dome) {
+            final float th = fw * 0.0467f;
+            final float barW = fw * (dome ? 0.813f : 0.778f);
+            final float half = fw * (dome ? 0.2705f : 0.111f);
+            final float headH = dome ? half : half * 2f;
+            final float tickH = fw * 0.0817f;
+            final float stemH = fw * 0.187f;
+            final float top = cy - (headH + th + stemH) / 2f;
+            final float barMid = top + headH + th / 2f;
+            pen.setStrokeWidth(th);
+            c.drawLine(cx - barW / 2f, barMid, cx + barW / 2f, barMid, pen);
+            c.drawLine(cx - barW / 2f, barMid, cx - barW / 2f, barMid - th / 2f - tickH, pen);
+            c.drawLine(cx + barW / 2f, barMid, cx + barW / 2f, barMid - th / 2f - tickH, pen);
+            c.drawLine(cx, barMid + th / 2f, cx, barMid + th / 2f + stemH, pen);
+            if (dome) {
+                c.drawArc(new android.graphics.RectF(cx - half, barMid - th / 2f - headH,
+                                cx + half, barMid - th / 2f + headH),
+                        180f, 180f, true, brush);
+            } else {
+                c.drawRect(cx - half, barMid - th / 2f - headH,
+                        cx + half, barMid - th / 2f, brush);
+            }
+        }
+
+        /**
+         * 重置: a heavy open ring with the sheet's gold core and a head cut into
+         * the ring's own end -- a 10 % ring, a 47 % core, and a gap of 42 deg.
+         */
+        private void reset(android.graphics.Canvas c, float cx, float cy, float s) {
+            final float R = s * 0.385f, sw = s * 0.10f;
+            final float head = -46f, gap = 42f;
+            pen.setStrokeWidth(sw);
+            // **The head is where the arc ends, not a sticker beside it.** The
+            // first cut drew -46..246 and put the head at -46, so the gap landed
+            // opposite the arrow and the glyph read as a "C" with a flag.
+            c.drawArc(new android.graphics.RectF(cx - R, cy - R, cx + R, cy + R),
+                    head + gap, 360f - gap, false, pen);
+            // A radial base on the arc's end with its point inside the gap: the
+            // ring looks chamfered rather than decorated, which is what the
+            // sheet's bevel does at 600 px and what still reads at 24 dp.
+            final double a0 = Math.toRadians(head), a1 = Math.toRadians(head + gap * 0.68f);
+            final float ox = (float) Math.cos(a0), oy = (float) Math.sin(a0);
+            final float ix = (float) Math.cos(a1), iy = (float) Math.sin(a1);
+            final android.graphics.Path headPath = new android.graphics.Path();
+            headPath.moveTo(cx + (R + sw * 0.62f) * ox, cy + (R + sw * 0.62f) * oy);
+            headPath.lineTo(cx + R * ix, cy + R * iy);
+            headPath.lineTo(cx + (R - sw * 0.62f) * ox, cy + (R - sw * 0.62f) * oy);
+            headPath.close();
+            brush.setColor(tint);
+            c.drawPath(headPath, brush);
+            brush.setColor(GOLD);
+            c.drawCircle(cx, cy, s * 0.235f, brush);
         }
 
         @Override public void setPressed(boolean pressed) {
             super.setPressed(pressed);
             // **The feedback is the pen's alpha, not the view's.** `setEnabledDeep`
-            // dims a locked page by writing `setAlpha` on every child; a view that
-            // owned its alpha here would light straight back up the moment the
-            // framework changed its pressed state, and the head would say "live"
-            // on a page whose sliders are dead (1.7.1d's bug, one layer up).
+            // dims a locked page by writing `setAlpha` on every child; a view
+            // that owned its alpha would light straight back up the moment the
+            // framework changed its pressed state (1.7.1d's bug, one layer up).
             if (down != pressed) {
                 down = pressed;
                 invalidate();
