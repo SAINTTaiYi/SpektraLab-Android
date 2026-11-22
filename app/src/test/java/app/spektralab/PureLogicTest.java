@@ -1,5 +1,7 @@
 package app.spektralab;
 
+import app.spektralab.domain.JsonQuote;
+
 /** Runnable on a plain JVM: no Android classes are referenced. */
 public final class PureLogicTest {
     private static int failures = 0;

@@ -21,6 +21,8 @@ import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
 import app.spektralab.ui.UiPalette;
 import app.spektralab.domain.JsonFields;
+import app.spektralab.domain.JsonQuote;
+import app.spektralab.domain.ExportPlan;
 import app.spektralab.domain.PixelHash;
 import app.spektralab.domain.EdgeVerdict;
 import app.spektralab.ui.CompareView;
@@ -12658,10 +12660,12 @@ public class MainActivity extends Activity {
         // A live frame is 800 px and this is about to build a 4175 px one;
         // letting the two queue behind the same lock buys nothing.
         cancelLivePreview();
-        final boolean tiff = "tiff".equals(format);
-        final boolean dng = "dng".equals(format);
-        final String ext = dng ? ".dng" : tiff ? ".tif" : ".jpg";
-        final String mime = dng ? "image/x-adobe-dng" : tiff ? "image/tiff" : "image/jpeg";
+        final app.spektralab.domain.ExportPlan exportPlan =
+                app.spektralab.domain.ExportPlan.forFormat(format);
+        final boolean dng = ".dng".equals(exportPlan.extension);
+        final boolean tiff = ".tif".equals(exportPlan.extension);
+        final String ext = exportPlan.extension;
+        final String mime = exportPlan.mime;
         if (sharePill != null) sharePill.setVisibility(View.GONE);
         if (engine == null || session == null) {
             showInAppToast(tr("export.import_a_photo_first"));
@@ -12959,70 +12963,12 @@ public class MainActivity extends Activity {
                                             + " offset=" + f("%.4f", cameraEv)
                                             + " paper=" + printStock + " raw=" + rawFilePath);
                                 } catch (Throwable spkIgnored) { Diagnostics.ignored("getHeight:15085", spkIgnored); }
+                                final String openJson = app.spektralab.domain.ExportPlan.openParams(
+                                        printStock, exportAutoExposure, cameraEv, printExposure);
                                 fresh = wbMul != null
-                                        ? engine.openRawSessionTuned(rawFilePath,
-                                                "{\"print_stock\":\"" + (printStock == null ? "kodak_portra_endura" : printStock)
-                                                        + "\",\"input_color_space\":\"ProPhoto RGB\","
-                                                        + "\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\","
-                                                        // **The meter travels with the export.** This
-                                                        // string used to name five fields, so the
-                                                        // fresh session fell back to the engine's
-                                                        // own defaults: `auto_exposure` true. On a
-                                                        // frame whose meter clamps (it read +12 EV
-                                                        // here) that put the whole picture at white
-                                                        // -- and the rebate, painted afterwards,
-                                                        // survived it. The export is the picture on
-                                                        // screen, so it has to be told the same
-                                                        // thing the preview was told.
-                                                        // **Never meter again on export.** The
-                                                        // preview's own value, measured once at
-                                                        // import; letting the fresh session run
-                                                        // the meter a second time is what turned
-                                                        // 0.0756 into a clamped +12 and pushed
-                                                        // the picture to white.
-                                                        + "\"auto_exposure\":" + b(exportAutoExposure) + ","
-                                                        + "\"exposure_compensation_ev\":" + f("%.6f", cameraEv) + ","
-                                                        // **Open with the enlarger exposure too.** It is
-                                                        // a live PRINT field: sent as a delta the engine
-                                                        // updates the session's copy while the render
-                                                        // keeps the pipeline's, so the file came back as
-                                                        // if the slider had never moved (6/6 exports at
-                                                        // 0.41, `export-params` in D1). Opening with it
-                                                        // puts it on the pipeline from the first frame.
-                                                        + "\"print_exposure\":" + f("%.6f", printExposure) + ","
-                                                        + "\"preview_long_edge\":2048}",
+                                        ? engine.openRawSessionTuned(rawFilePath, openJson,
                                                 exportPixels, exportEdge, wbMul)
-                                        : engine.openRawSession(rawFilePath,
-                                                "{\"print_stock\":\"" + (printStock == null ? "kodak_portra_endura" : printStock)
-                                                        + "\",\"input_color_space\":\"ProPhoto RGB\","
-                                                        + "\"input_cctf_decoding\":false,\"output_color_space\":\"sRGB\","
-                                                        // **The meter travels with the export.** This
-                                                        // string used to name five fields, so the
-                                                        // fresh session fell back to the engine's
-                                                        // own defaults: `auto_exposure` true. On a
-                                                        // frame whose meter clamps (it read +12 EV
-                                                        // here) that put the whole picture at white
-                                                        // -- and the rebate, painted afterwards,
-                                                        // survived it. The export is the picture on
-                                                        // screen, so it has to be told the same
-                                                        // thing the preview was told.
-                                                        // **Never meter again on export.** The
-                                                        // preview's own value, measured once at
-                                                        // import; letting the fresh session run
-                                                        // the meter a second time is what turned
-                                                        // 0.0756 into a clamped +12 and pushed
-                                                        // the picture to white.
-                                                        + "\"auto_exposure\":" + b(exportAutoExposure) + ","
-                                                        + "\"exposure_compensation_ev\":" + f("%.6f", cameraEv) + ","
-                                                        // **Open with the enlarger exposure too.** It is
-                                                        // a live PRINT field: sent as a delta the engine
-                                                        // updates the session's copy while the render
-                                                        // keeps the pipeline's, so the file came back as
-                                                        // if the slider had never moved (6/6 exports at
-                                                        // 0.41, `export-params` in D1). Opening with it
-                                                        // puts it on the pipeline from the first frame.
-                                                        + "\"print_exposure\":" + f("%.6f", printExposure) + ","
-                                                        + "\"preview_long_edge\":2048}",
+                                        : engine.openRawSession(rawFilePath, openJson,
                                                 exportPixels, exportEdge);
                             } catch (Throwable ignored) { fresh = null; }
                             CrashTrail.markNow(MainActivity.this,

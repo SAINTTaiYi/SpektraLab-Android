@@ -1,10 +1,10 @@
-package app.spektralab;
+package app.spektralab.domain;
 
 /** JSON string quoting for the hand-built parameter deltas. Pure Java. */
-final class JsonQuote {
+public final class JsonQuote {
     private JsonQuote() {}
 
-    static String quote(String v) {
+    public static String quote(String v) {
         if (v == null) return "\"\"";
         final StringBuilder out = new StringBuilder(v.length() + 2).append('"');
         for (int i = 0; i < v.length(); ++i) {

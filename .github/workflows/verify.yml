@@ -43,7 +43,7 @@ jobs:
           New-Item -ItemType Directory -Path $out -Force | Out-Null
           $sources = @(
             'app/src/main/java/app/spektralab/PixelBudget.java',
-            'app/src/main/java/app/spektralab/JsonQuote.java',
+            'app/src/main/java/app/spektralab/domain/JsonQuote.java',
             'app/src/main/java/app/spektralab/AppFailure.java',
             'app/src/test/java/app/spektralab/PureLogicTest.java')
           & javac $sources -d $out
@@ -65,6 +65,8 @@ jobs:
             'app/src/main/java/app/spektralab/domain/JsonFields.java',
             'app/src/main/java/app/spektralab/domain/PixelHash.java',
             'app/src/main/java/app/spektralab/domain/EdgeVerdict.java',
+            'app/src/main/java/app/spektralab/domain/ExportPlan.java',
+            'app/src/main/java/app/spektralab/domain/JsonQuote.java',
             'app/src/test/java/app/spektralab/testing/FakeSession.java',
             'app/src/test/java/app/spektralab/testing/FakeAppPreferences.java',
             'app/src/test/java/app/spektralab/testing/FakePhotoRepository.java',

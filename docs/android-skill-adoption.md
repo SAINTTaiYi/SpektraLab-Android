@@ -76,9 +76,10 @@ geometry state in the Activity. The Optics and Compose pages open correctly on
 the Orca emulator after the extraction. MainActivity is now 13,045 lines. The app renders identically on
 the Orca emulator and golden hashes are unchanged.
 
-The pure string/hash helpers (`JsonFields`, `PixelHash`, `EdgeVerdict`) also
-moved to `domain` and now have JVM tests; the hand-rolled `indexOf` parsing in
-`MainActivity` delegates to them.
+The pure string/hash helpers (`JsonFields`, `PixelHash`, `EdgeVerdict`,
+`JsonQuote`, `ExportPlan`) also moved to `domain` and now have JVM tests; the
+hand-rolled `indexOf` parsing and duplicated export-open JSON in `MainActivity`
+delegate to them.
 
 Phase D started: `app/build/check-package-rules.py` rejects forbidden imports
 between `app`, `ui`, `domain` and `data`, and runs in CI.

@@ -60,7 +60,7 @@ Remove-Item -LiteralPath $logicOut -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $logicOut | Out-Null
 $logicSources = @(
     "$root\app\src\main\java\app\spektralab\PixelBudget.java",
-    "$root\app\src\main\java\app\spektralab\JsonQuote.java",
+    "$root\app\src\main\java\app\spektralab\domain\JsonQuote.java",
     "$root\app\src\main\java\app\spektralab\AppFailure.java",
     "$root\app\src\test\java\app\spektralab\PureLogicTest.java")
 & "$jdk\bin\javac.exe" @logicSources -d $logicOut
@@ -85,6 +85,8 @@ $domainSources = @(
     "$root\app\src\main\java\app\spektralab\domain\JsonFields.java",
     "$root\app\src\main\java\app\spektralab\domain\PixelHash.java",
     "$root\app\src\main\java\app\spektralab\domain\EdgeVerdict.java",
+    "$root\app\src\main\java\app\spektralab\domain\ExportPlan.java",
+    "$root\app\src\main\java\app\spektralab\domain\JsonQuote.java",
     "$root\app\src\test\java\app\spektralab\testing\FakeSession.java",
     "$root\app\src\test\java\app\spektralab\testing\FakeAppPreferences.java",
     "$root\app\src\test\java\app\spektralab\testing\FakePhotoRepository.java",

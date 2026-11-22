@@ -2,6 +2,7 @@ package app.spektralab.testing;
 
 import app.spektralab.domain.AppPreferences;
 import app.spektralab.domain.EdgeVerdict;
+import app.spektralab.domain.ExportPlan;
 import app.spektralab.domain.EditorState;
 import app.spektralab.domain.JsonFields;
 import app.spektralab.domain.EngineApi;
@@ -123,6 +124,21 @@ public final class DomainTest {
                 && "1524".equals(vertical.first), "vertical-line verdict");
         check(EdgeVerdict.fromLine("edge 4000x3000 Lrow=3@0 n0 Wrow=2@0 n0") == null,
                 "clean edge line has no verdict");
+
+        ExportPlan jpeg = ExportPlan.forFormat("jpeg");
+        ExportPlan tiff = ExportPlan.forFormat("tiff");
+        ExportPlan dng = ExportPlan.forFormat("dng");
+        check(".jpg".equals(jpeg.extension) && "image/jpeg".equals(jpeg.mime), "JPEG plan");
+        check(".tif".equals(tiff.extension) && "image/tiff".equals(tiff.mime), "TIFF plan");
+        check(".dng".equals(dng.extension) && "image/x-adobe-dng".equals(dng.mime), "DNG plan");
+        String params = ExportPlan.openParams("kodak_portra_400", false, 0.0756, 0.41);
+        check(params.contains("\"auto_exposure\":false")
+                && params.contains("\"exposure_compensation_ev\":0.075600")
+                && params.contains("\"print_exposure\":0.410000")
+                && params.contains("\"print_stock\":\"kodak_portra_400\""),
+                "export open params carry the canvas exposure");
+        check(ExportPlan.openParams("a\"b", true, 0, 1).contains("\"print_stock\":\"a\\\"b\""),
+                "paper name is JSON escaped");
 
         if (failures != 0) {
             System.err.println(failures + " domain check(s) failed");
