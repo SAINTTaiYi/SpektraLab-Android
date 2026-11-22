@@ -866,11 +866,21 @@ public class MainActivity extends Activity {
          * whose default is zero has no ratio to divide by.
          */
         final boolean logScale;
+        /**
+         * **What a double tap on the pointer puts back.**
+         *
+         * <p>`lo`, `0` and `5500` are all wrong answers for most of these: 高光保护
+         * starts at 1 and would reset to "off", 放大曝光 at 1 and would reset to
+         * 0.25, 局部 · 曝光 at -0.6 and would reset to 0. This is the value a fresh
+         * import starts from -- the one `defaultLook()` writes.
+         */
+        final float def;
         Knob(String label, String glyph, float lo, float hi,
              java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
-             boolean heavy, boolean logScale) {
+             boolean heavy, boolean logScale, float def) {
             this.label = label; this.glyph = glyph; this.lo = lo; this.hi = hi;
             this.set = set; this.get = get; this.heavy = heavy; this.logScale = logScale;
+            this.def = def;
         }
     }
     private final java.util.List<Knob> knobs = new java.util.ArrayList<>();
@@ -1558,8 +1568,16 @@ public class MainActivity extends Activity {
                     // letting it fire anywhere would turn a quick second drag
                     // from the edge into a silent reset.
                     if (onPointer && resetProgress >= 0 && now - lastUpMs < 300) {
+                        // **Move first, and commit only if it moved.** The action
+                        // is the work -- a render, a re-develop, a re-decode --
+                        // so asking for one when the row is already home buys
+                        // nothing: a double tap on 解码色温 that changes no
+                        // number must not re-read the RAW file. `moved` has to
+                        // be read *before* `setProgress`, because the action
+                        // runs after the thumb has already gone home.
+                        final boolean moved = getProgress() != resetProgress;
                         setProgress(resetProgress);
-                        if (onReset != null) onReset.run();
+                        if (moved && onReset != null) onReset.run();
                         lastUpMs = 0;
                         return true;
                     }
@@ -18072,20 +18090,26 @@ public class MainActivity extends Activity {
                 + " h=" + (viewScrolls[page] == null ? -1 : viewScrolls[page].getHeight()));
     }
 
-    /** One slider: name and value on a line, the track under it. */
+    /**
+     * One slider: name and value on a line, the track under it.
+     *
+     * <p>`def` is where a double tap on the pointer puts the row back. It is the
+     * value the field starts with on a fresh import -- not a guess from the
+     * range, which is what made 高光保护 reset to "off" and 半径 to 0.5.
+     */
     private LinearLayout adjustRow(LinearLayout parent, String title, float lo, float hi,
                                    java.util.function.Supplier<Float> get,
                                    java.util.function.Consumer<Float> set,
-                                   boolean redecode) {
-        return adjustRow(parent, title, lo, hi, get, set, redecode, null);
+                                   boolean redecode, float def) {
+        return adjustRow(parent, title, lo, hi, get, set, redecode, null, def);
     }
 
     private LinearLayout adjustRow(LinearLayout parent, String title, float lo, float hi,
                                    java.util.function.Supplier<Float> get,
                                    java.util.function.Consumer<Float> set,
-                                   boolean redecode, String hint) {
+                                   boolean redecode, String hint, float def) {
         return adjustRow(parent, title, lo, hi, get, set, redecode, hint,
-                viewRefreshers, false);
+                viewRefreshers, false, def);
     }
 
     /** Progress 0..1000 for a ratio control: 0.25 / 1.0 / 4.0 are equal stops. */
@@ -18110,7 +18134,7 @@ public class MainActivity extends Activity {
                                    java.util.function.Supplier<Float> get,
                                    java.util.function.Consumer<Float> set,
                                    boolean redecode, String hint,
-                                   java.util.List<Runnable> sink, boolean log) {
+                                   java.util.List<Runnable> sink, boolean log, float def) {
         final LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         final LinearLayout line = new LinearLayout(this);
@@ -18142,12 +18166,19 @@ public class MainActivity extends Activity {
         };
         sink.add(refresh);
         refresh.run();
-        // Double-tapping the thumb puts the row back where it started.
-        final float def = lo <= 0f && hi >= 0f ? 0f : (lo >= 2000f && hi <= 12000f ? 5500f : lo);
+        // Double-tapping the pointer puts the row back to `def` and commits it
+        // the way a release does -- a decode row has to read the file again,
+        // not just repaint (the number would say 5500 K while the negative was
+        // still demosaiced at 4000).
         bar.setResetTarget(ratio ? logProgress(lo, hi, def)
                 : Math.round((def - lo) / (hi - lo) * 1000f), () -> {
             set.accept(def);
             refresh.run();
+            if (redecode) {
+                wbPreset = 6;
+                redecodeWithWhiteBalance();
+                return;
+            }
             // **The UI thread does not send the delta.** `spk_set_params` takes
             // `session->lock`, which `render_tier` holds for the whole render:
             // sent from here while a render is in flight it blocks the main
@@ -18252,9 +18283,9 @@ public class MainActivity extends Activity {
         wbDecodeNote.setMaxLines(2);
         wbDecodeBox.addView(wbDecodeNote, new LinearLayout.LayoutParams(-1, dp(32)));
         adjustRow(wbDecodeBox, "解码色温", 2000f, 12000f, () -> wbKelvin, v -> wbKelvin = v, true,
-                "光源的色温。3200K 钨丝、5500K 日光；数值越低画面越暖");
+                "光源的色温。3200K 钨丝、5500K 日光；数值越低画面越暖", 5500f);
         adjustRow(wbDecodeBox, "解码色调", -150f, 150f, () -> wbTint, v -> wbTint = v, true,
-                "绿-品红轴。日光灯发绿就往正值拖");
+                "绿-品红轴。日光灯发绿就往正值拖", 0f);
     }
 
     private void buildTonePage(LinearLayout page) {
@@ -18297,26 +18328,26 @@ public class MainActivity extends Activity {
         // has no slot for (and greys out there). 亮度 is not a Lightroom slider
         // either; it stays at the end, because the engine has it and taking a
         // control away is not an improvement.
-        viewCameraEvBox = adjustRow(page, "相机曝光", -4f, 4f, () -> cameraEv, v -> cameraEv = v, false);
+        viewCameraEvBox = adjustRow(page, "相机曝光", -4f, 4f, () -> cameraEv, v -> cameraEv = v, false, 0f);
         viewCameraEvNote = label("", 7.5f, UI_MUTED, tfHan);
         viewCameraEvNote.setMaxLines(2);
         attachBang(viewCameraEvBox, () -> viewCameraEvNote == null
                 ? "" : viewCameraEvNote.getText().toString());
         final LinearLayout expBox = adjustRow(page, "曝光度", -3f, 3f,
-                () -> viewExposure, v -> viewExposure = v, false);
+                () -> viewExposure, v -> viewExposure = v, false, 0f);
         viewExposureNote = label("", 7.5f, UI_MUTED, tfHan);
         viewExposureNote.setMaxLines(2);
         attachBang(expBox, () -> viewExposureNote == null
                 ? "" : viewExposureNote.getText().toString());
-        adjustRow(page, "对比度", -100f, 100f, () -> viewContrast, v -> viewContrast = v, false);
-        adjustRow(page, "高光", -100f, 100f, () -> viewHighlights, v -> viewHighlights = v, false);
-        adjustRow(page, "阴影", -100f, 100f, () -> viewShadows, v -> viewShadows = v, false);
+        adjustRow(page, "对比度", -100f, 100f, () -> viewContrast, v -> viewContrast = v, false, 0f);
+        adjustRow(page, "高光", -100f, 100f, () -> viewHighlights, v -> viewHighlights = v, false, 0f);
+        adjustRow(page, "阴影", -100f, 100f, () -> viewShadows, v -> viewShadows = v, false, 0f);
         adjustRow(page, "白色色阶", 0f, 50f, () -> viewWhite, v -> viewWhite = v, false,
-                "白点往哪收；和 Lightroom 的白色色阶同一个意思");
+                "白点往哪收；和 Lightroom 的白色色阶同一个意思", 0f);
         adjustRow(page, "黑色色阶", 0f, 50f, () -> viewBlack, v -> viewBlack = v, false,
-                "黑点往哪收；和 Lightroom 的黑色色阶同一个意思");
+                "黑点往哪收；和 Lightroom 的黑色色阶同一个意思", 0f);
         adjustRow(page, "亮度", -100f, 100f, () -> viewBrightness, v -> viewBrightness = v, false,
-                "Lightroom 没有这一项：它抬的是中间调，两端几乎不动");
+                "Lightroom 没有这一项：它抬的是中间调，两端几乎不动", 0f);
     }
 
     private void buildColourPage(LinearLayout page) {
@@ -18344,12 +18375,12 @@ public class MainActivity extends Activity {
         wbNote.setMaxLines(2);
         page.addView(wbNote, new LinearLayout.LayoutParams(-1, dp(32)));
         adjustRow(page, "色温", -100f, 100f, () -> viewTemperature, v -> viewTemperature = v, false,
-                "冲印完成后的整体偏暖偏冷。不动解码，改的是这张照片");
+                "冲印完成后的整体偏暖偏冷。不动解码，改的是这张照片", 0f);
         adjustRow(page, "色调", -100f, 100f, () -> viewTint, v -> viewTint = v, false,
-                "冲印完成后的绿-品红，同上，只影响已经出好的图");
+                "冲印完成后的绿-品红，同上，只影响已经出好的图", 0f);
         adjustRow(page, "自然饱和度", -100f, 100f, () -> viewVibrance, v -> viewVibrance = v, false,
-                "只提暗中带色的部分，已经很艳的不动");
-        adjustRow(page, "饱和度", -100f, 100f, () -> viewSaturation, v -> viewSaturation = v, false);
+                "只提暗中带色的部分，已经很艳的不动", 0f);
+        adjustRow(page, "饱和度", -100f, 100f, () -> viewSaturation, v -> viewSaturation = v, false, 0f);
 }
 
     /**
@@ -18371,12 +18402,12 @@ public class MainActivity extends Activity {
         page.addView(label("锐化 / SHARPEN", 8, UI_INK, tfHan),
                 new LinearLayout.LayoutParams(-1, dp(24)));
         adjustRow(page, "数量", 0f, 150f, () -> viewSharpen, v -> viewSharpen = v, false,
-                "像素级的清晰度。0 就是关");
+                "像素级的清晰度。0 就是关", 0f);
         adjustRow(page, "半径", 0.5f, 3f, () -> viewSharpenRadius,
                 v -> viewSharpenRadius = v, false,
-                "以 2048 像素的画面为准，导出时按原尺寸等比放大");
+                "以 2048 像素的画面为准，导出时按原尺寸等比放大", 1.0f);
         adjustRow(page, "蒙版", 0f, 100f, () -> viewSharpenMask, v -> viewSharpenMask = v, false,
-                "往右只锐真正的边缘；天空、皮肤不会被锐出颗粒");
+                "往右只锐真正的边缘；天空、皮肤不会被锐出颗粒", 0f);
         page.addView(label("这一组吃的是成片的像素：预览按预览尺寸算，导出按原尺寸算。"
                 + "预览里看到的是「大概」，导出的才是最终。",
                 7.5f, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, dp(44)));
@@ -18423,7 +18454,7 @@ public class MainActivity extends Activity {
         refreshCbReadout();
 
         adjustRow(page, "明亮度", -1f, 1f, () -> cbLum[cbZone], v -> cbLum[cbZone] = v, false,
-                "这个明暗区间整体提亮或压暗");
+                "这个明暗区间整体提亮或压暗", 0f);
     }
 
     private int cbZone = 0;
@@ -18653,9 +18684,9 @@ public class MainActivity extends Activity {
             effectPages[i] = body;
         }
         adjustRow(effectPages[0], "纹理", -100f, 100f, () -> viewTexture, v -> viewTexture = v, false,
-                "中等尺度的明暗对比：皮肤、布料、树叶的「肉感」，边缘不动");
+                "中等尺度的明暗对比：皮肤、布料、树叶的「肉感」，边缘不动", 0f);
         adjustRow(effectPages[0], "晕影", -100f, 100f, () -> viewVignette, v -> viewVignette = v, false,
-                "四角压暗或提亮；0 是均匀的");
+                "四角压暗或提亮；0 是均匀的", 0f);
         fillGlowControls(effectPages[1]);
         showEffectTab(0);
     }
@@ -18723,11 +18754,11 @@ public class MainActivity extends Activity {
         page.addView(label("选一个色相圈，下面三行就作用于它；两段之间是渐变的，灰色不动",
                 7.5f, UI_MUTED, tfHan), new LinearLayout.LayoutParams(-1, dp(26)));
         adjustRow(page, "色相", -40f, 40f, () -> hslHue[hslBand], v -> hslHue[hslBand] = v, false,
-                "把这一段色相往旁边拧，最多 40 度");
+                "把这一段色相往旁边拧，最多 40 度", 0f);
         adjustRow(page, "饱和度", -100f, 100f, () -> hslSat[hslBand], v -> hslSat[hslBand] = v, false,
-                "只改这一段色相的浓度；-100 就是把这一段变成灰");
+                "只改这一段色相的浓度；-100 就是把这一段变成灰", 0f);
         adjustRow(page, "明度", -100f, 100f, () -> hslLum[hslBand], v -> hslLum[hslBand] = v, false,
-                "只改这一段色相的明暗");
+                "只改这一段色相的明暗", 0f);
         viewRefreshers.add(this::refreshHslSwatches);
         refreshHslSwatches();
     }
@@ -19385,64 +19416,64 @@ public class MainActivity extends Activity {
         // **Log travel.** 0.25 / 1.0 / 4.0 are equal stops, and 1.0 is the
         // neutral: on a linear bar it sat at 20 %, which is the "越右越暗" half
         // only. With a ratio scale the default is the middle of the track.
-        knob("放大曝光 越右越暗", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure, false, true);
-        knob("高光保护",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true);
-        knob("暗部保护",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true);
+        knob("放大曝光 越右越暗", "E",  0.25f, 4.0f,   v -> printExposure = v,   () -> printExposure, false, true, 1.0f);
+        knob("高光保护",   "H",  0.0f,  3.0f,   v -> highlightRoom = v,   () -> highlightRoom, true, 1.0f);
+        knob("暗部保护",   "S",  0.0f,  3.0f,   v -> shadowRoom = v,      () -> shadowRoom, true, 0f);
         // **The same shoulder, by hand.** These are not a new curve -- they are
         // the three numbers the fit solves (`latitude_fit`), exposed so a frame
         // the histogram reads badly can be told where the highlights are. The
         // competitor's 「高光提升」 trio is exactly this: threshold, range,
         // strength. Ours acts before the film, so the halo follows it too.
-        knob("高光曲线 · 手动", "M", 0.0f, 1.0f, v -> hlManual = v > 0.5f, () -> hlManual ? 1f : 0f, true);
+        knob("高光曲线 · 手动", "M", 0.0f, 1.0f, v -> hlManual = v > 0.5f, () -> hlManual ? 1f : 0f, true, 0f);
         // **Touching one takes the curve over.** A slider that reads a number
         // the renderer is ignoring is a lie; these three flip the mode the
         // moment they are moved, and the switch above is the way back to auto.
-        knob("高光提升阈值", "T", 0.0f,  6.0f,   v -> { hlKnee = v; hlManual = true; },    () -> hlKnee, true);
-        knob("高光提升范围", "R", 1.0f,  4.0f,   v -> { hlRolloff = v; hlManual = true; }, () -> hlRolloff, true);
-        knob("高光提升强度", "K", 0.0f,  6.0f,   v -> { hlRoom = v; hlManual = true; },    () -> hlRoom, true);
+        knob("高光提升阈值", "T", 0.0f,  6.0f,   v -> { hlKnee = v; hlManual = true; },    () -> hlKnee, true, 2.0f);
+        knob("高光提升范围", "R", 1.0f,  4.0f,   v -> { hlRolloff = v; hlManual = true; }, () -> hlRolloff, true, 2.0f);
+        knob("高光提升强度", "K", 0.0f,  6.0f,   v -> { hlRoom = v; hlManual = true; },    () -> hlRoom, true, 2.4f);
                 // The darkroom's own two moves, as numbers: where on the print,
                 // how big, and how many stops. They live in the view layer, so
                 // they cost a re-read of the frame, not a re-develop.
-                knob("局部 · 位置 X", "LX", 0.0f, 1.0f, v -> spotX = v, () -> spotX, false);
-                knob("局部 · 位置 Y", "LY", 0.0f, 1.0f, v -> spotY = v, () -> spotY, false);
-                knob("局部 · 大小",   "LR", 0.05f, 0.60f, v -> spotR = v, () -> spotR, false);
-                knob("局部 · 曝光",   "LE", -2.0f, 2.0f, v -> spotEv = v, () -> spotEv, false);
-        knob("颗粒",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount, true);
-        knob("光晕",       "○",  0.0f,  4.0f,   v -> halationAmount = v,  () -> halationAmount, true);
-        knob("光晕增强",   "+",  0.0f,  8.0f,   v -> halationBoost = v,   () -> halationBoost, true);
-        knob("乳剂散射",   "~",  0.0f,  1.0f,   v -> halationScatter = v, () -> halationScatter, true);
-        knob("散射半径",   "◍",  0.0f,  1.0f,   v -> scatterRadius = v,  () -> scatterRadius, true);
-        knob("眩光",       "✳",  0.0f,  30.0f,  v -> glareAmount = v,     () -> glareAmount);
-        knob("镜头模糊",   "◌",  0.0f,  200.0f, v -> lensBlur = v,        () -> lensBlur, true);
-        knob("黄滤镜",     "Y",  -1.0f, 1.0f,   v -> yFilter = v,         () -> yFilter);
-        knob("品红滤镜",   "M",  -1.0f, 1.0f,   v -> mFilter = v,         () -> mFilter);
-        knob("滤镜强度",   "C",  1.0f,  60.0f,  v -> filterScale = v,     () -> filterScale);
+                knob("局部 · 位置 X", "LX", 0.0f, 1.0f, v -> spotX = v, () -> spotX, false, 0.5f);
+                knob("局部 · 位置 Y", "LY", 0.0f, 1.0f, v -> spotY = v, () -> spotY, false, 0.5f);
+                knob("局部 · 大小",   "LR", 0.05f, 0.60f, v -> spotR = v, () -> spotR, false, 0.25f);
+                knob("局部 · 曝光",   "LE", -2.0f, 2.0f, v -> spotEv = v, () -> spotEv, false, -0.6f);
+        knob("颗粒",       "G",  0.0f,  2.0f,   v -> grainAmount = v,     () -> grainAmount, true, 1.0f);
+        knob("光晕",       "○",  0.0f,  4.0f,   v -> halationAmount = v,  () -> halationAmount, true, 1.0f);
+        knob("光晕增强",   "+",  0.0f,  8.0f,   v -> halationBoost = v,   () -> halationBoost, true, 0f);
+        knob("乳剂散射",   "~",  0.0f,  1.0f,   v -> halationScatter = v, () -> halationScatter, true, 1.0f);
+        knob("散射半径",   "◍",  0.0f,  1.0f,   v -> scatterRadius = v,  () -> scatterRadius, true, 0f);
+        knob("眩光",       "✳",  0.0f,  30.0f,  v -> glareAmount = v,     () -> glareAmount, 1.0f);
+        knob("镜头模糊",   "◌",  0.0f,  200.0f, v -> lensBlur = v,        () -> lensBlur, true, 0f);
+        knob("黄滤镜",     "Y",  -1.0f, 1.0f,   v -> yFilter = v,         () -> yFilter, 0f);
+        knob("品红滤镜",   "M",  -1.0f, 1.0f,   v -> mFilter = v,         () -> mFilter, 0f);
+        knob("滤镜强度",   "C",  1.0f,  60.0f,  v -> filterScale = v,     () -> filterScale, 1.0f);
 
-        knob("预闪",       "⚡", 0.0f,  1.0f,   v -> preflash = v,        () -> preflash);
-        knob("曲线柔度",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff, true);
-        knob("提升上限",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift, true);
+        knob("预闪",       "⚡", 0.0f,  1.0f,   v -> preflash = v,        () -> preflash, 0f);
+        knob("曲线柔度",   "∿",  1.0f,  4.0f,   v -> shadowRolloff = v,   () -> shadowRolloff, true, 2.0f);
+        knob("提升上限",   "L",  0.25f, 12.0f,  v -> maxLift = v,         () -> maxLift, true, 4.0f);
         // The switches, on a 0/1 slider: the panel has one slider by design,
         // and a second kind of control would be a second thing to explain.
-        knob("光晕开关",   "◐",  0.0f,  1.0f,   v -> halationOn = v,       () -> halationOn, true);
-        knob("去抗光晕",   "⊘",  0.0f,  1.0f,   v -> antihalationRemoved = v, () -> antihalationRemoved, true);
-        knob("颗粒开关",   "g",  0.0f,  1.0f,   v -> grainOn = v,          () -> grainOn, true);
-        knob("层间抑制",   "⧉",  0.0f,  2.0f,   v -> couplersOn = v,       () -> couplersOn, true);
-        knob("扫描白",     "W",  0.0f,  1.0f,   v -> scannerWhite = v,     () -> scannerWhite);
-        knob("扫描黑",     "B",  0.0f,  1.0f,   v -> scannerBlack = v,     () -> scannerBlack);
+        knob("光晕开关",   "◐",  0.0f,  1.0f,   v -> halationOn = v,       () -> halationOn, true, 1f);
+        knob("去抗光晕",   "⊘",  0.0f,  1.0f,   v -> antihalationRemoved = v, () -> antihalationRemoved, true, 0f);
+        knob("颗粒开关",   "g",  0.0f,  1.0f,   v -> grainOn = v,          () -> grainOn, true, 1f);
+        knob("层间抑制",   "⧉",  0.0f,  2.0f,   v -> couplersOn = v,       () -> couplersOn, true, 1.0f);
+        knob("扫描白",     "W",  0.0f,  1.0f,   v -> scannerWhite = v,     () -> scannerWhite, 0f);
+        knob("扫描黑",     "B",  0.0f,  1.0f,   v -> scannerBlack = v,     () -> scannerBlack, 0f);
         // Six more that the schema has had all along and the panel never
         // showed. Booleans ride a 0..1 knob because the knob is the panel's
         // one control; the readout says "0.00" / "1.00" and the hint says
         // which end is which.
-        knob("眩光开关",   "☀",  0.0f,  1.0f,   v -> glareActive = v,      () -> glareActive);
-        knob("扫描仪模糊", "S",  0.0f, 20.0f,   v -> scannerLensBlur = v,  () -> scannerLensBlur);
-        knob("光晕余量",   "R",  0.0f,  8.0f,   v -> halationHeadroom = v, () -> halationHeadroom, true);
-        knob("浓度曲线",   "γ",  0.2f,  4.0f,   v -> densityGamma = v,     () -> densityGamma, true);
+        knob("眩光开关",   "☀",  0.0f,  1.0f,   v -> glareActive = v,      () -> glareActive, 1f);
+        knob("扫描仪模糊", "S",  0.0f, 20.0f,   v -> scannerLensBlur = v,  () -> scannerLensBlur, 0f);
+        knob("光晕余量",   "R",  0.0f,  8.0f,   v -> halationHeadroom = v, () -> halationHeadroom, true, 4f);
+        knob("浓度曲线",   "γ",  0.2f,  4.0f,   v -> densityGamma = v,     () -> densityGamma, true, 1.0f);
         knob("DI 蓝补偿", "I", 0.0f, 1.0f, v -> diBlueComp = v > 0.5f,
-             () -> diBlueComp ? 1f : 0f, true);
+             () -> diBlueComp ? 1f : 0f, true, 0f);
         knob("数字中间片", "I",  0.0f,  1.0f,   v -> digitalIntermediate = v > 0.5f,
-                                                                    () -> digitalIntermediate ? 1f : 0f);
+                                                                    () -> digitalIntermediate ? 1f : 0f, 0f);
         knob("输出编码",   "E",  0.0f,  1.0f,   v -> outputCctf = v > 0.5f,
-                                                                    () -> outputCctf ? 1f : 0f);
+                                                                    () -> outputCctf ? 1f : 0f, 1f);
 
 
         // The six controls that are not knobs are rows on the page they belong
@@ -19703,7 +19734,7 @@ public class MainActivity extends Activity {
         final java.util.List<View> made = new java.util.ArrayList<>(1);
         final int before = printBody.getChildCount();
         adjustRow(printBody, label, k.lo, k.hi, k.get, k.set, false,
-                knobHint(label), printRefreshers, k.logScale);
+                knobHint(label), printRefreshers, k.logScale, k.def);
         for (int i = before; i < printBody.getChildCount(); ++i) made.add(printBody.getChildAt(i));
         // **A gated row is born gated.** The tier is already known when the
         // page is built, so the row never has to be looked up afterwards --
@@ -19722,21 +19753,22 @@ public class MainActivity extends Activity {
     }
     /** One chip in the strip, plus the entry that makes it live. */
     private void knob(String label, String glyph, float lo, float hi,
-                      java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get) {
-        knob(label, glyph, lo, hi, set, get, false);
+                      java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
+                      float def) {
+        knob(label, glyph, lo, hi, set, get, false, def);
     }
 
     /** `heavy` marks a shoot-layer field: dragging it re-develops the film. */
     private void knob(String label, String glyph, float lo, float hi,
                       java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
-                      boolean heavy) {
-        knob(label, glyph, lo, hi, set, get, heavy, false);
+                      boolean heavy, float def) {
+        knob(label, glyph, lo, hi, set, get, heavy, false, def);
     }
 
     private void knob(String label, String glyph, float lo, float hi,
                       java.util.function.Consumer<Float> set, java.util.function.Supplier<Float> get,
-                      boolean heavy, boolean logScale) {
-        knobs.add(new Knob(label, glyph, lo, hi, set, get, heavy, logScale));
+                      boolean heavy, boolean logScale, float def) {
+        knobs.add(new Knob(label, glyph, lo, hi, set, get, heavy, logScale, def));
     }
 
     private void selectKnob(int index) {
@@ -21184,27 +21216,27 @@ public class MainActivity extends Activity {
 
         glowAmountBar = rangeRow(body, "数量", "光晕混进来的强度。0 = 关闭；100 是 LR 的 100。光华最克制（真机上约 3 级/255），要先看见就用 动感 / 拖影", 0f, 100f, glowAmount, v -> {
             glowAmount = v; pushGlow();
-        });
+        }, 80f);
         glowRangeBar = rangeRow(body, "范围", "多亮的像素才发光。0 = 只剩极亮点（几乎看不出效果），30 = 高光，100 = 整幅", 0f, 100f, glowRange, v -> {
             glowRange = v; pushGlow();
-        });
+        }, 30f);
         glowSpreadBar = rangeRow(body, "扩散", "光能铺多远。0 = 紧贴高光，50 = 基准，100 = 漫到远处", 0f, 100f, glowSpread, v -> {
             glowSpread = v; pushGlow();
-        });
+        }, 50f);
         glowWarmthBar = rangeRow(body, "暖色", "负 = 偏蓝，0 = 中性，正 = 偏琥珀", -100f, 100f, glowWarmth, v -> {
             glowWarmth = v; pushGlow();
-        });
+        }, 0f);
         // **The two dials LR's 发光 page has and ours did not.** 方向 is its own
         // -100..100 slider (not degrees) and only steers 动感 / 拖影; 软化度
         // softens the kernel.
         glowDirectionBar = rangeRow(body, "方向", "光往哪边扫。0 = 向右，+100 = 向下，−100 = 向上（和 LR 同一套滑杆与方向）",
                 -100f, 100f, glowDirection, v -> {
                     glowDirection = v; pushGlow();
-                });
+                }, 0f);
         glowSoftnessBar = rangeRow(body, "软化度", "光的边缘有多柔。0 = 紧实，100 = 更柔更长（对光华 / 光晕无影响）",
                 0f, 100f, glowSoftness, v -> {
                     glowSoftness = v; pushGlow();
-                });
+                }, 0f);
 
         glowBars.add(glowAmountBar);
         glowBars.add(glowRangeBar);
@@ -21392,7 +21424,11 @@ public class MainActivity extends Activity {
     private void resetGlowPanel() {
         glowOn = false;
         glowStyle = 1;
-        glowAmount = 0f;
+        // **80, not 0.** 0 used to be the shipped amount; 1.6.13o made 80 the
+        // default so that switching the pass on does something visible, and
+        // this page kept resetting to "off" -- a reset that disagrees with the
+        // value a fresh install starts from is how "双击归位不对" happens.
+        glowAmount = 80f;
         glowRange = 30f;
         glowSpread = 50f;
         glowWarmth = 0f;
@@ -21400,7 +21436,7 @@ public class MainActivity extends Activity {
         glowSoftness = 0f;
         pushGlow();
         // DialBar is 0..1000 across the row's own lo..hi, not 0..100.
-        if (glowAmountBar != null) glowAmountBar.setProgress(0);     // 0 = 关
+        if (glowAmountBar != null) glowAmountBar.setProgress(800);   // 80
         if (glowRangeBar != null) glowRangeBar.setProgress(300);     // 30
         if (glowSpreadBar != null) glowSpreadBar.setProgress(500);   // 50
         if (glowWarmthBar != null) glowWarmthBar.setProgress(500);   // 0 of -100..100
@@ -21852,11 +21888,11 @@ public class MainActivity extends Activity {
         body.setOrientation(LinearLayout.VERTICAL);
 
         pfMarginBar = rangeRow(body, "纸边宽", "相纸 / 片夹的留白，毫米；按这张纸的实际尺寸",
-                0.5f, 20f, pfMargin, 0.5f, v -> pfMargin = v);
+                0.5f, 20f, pfMargin, 0.5f, v -> pfMargin = v, 3.0f);
         pfFxBar = rangeRow(body, "取景 左右", "画面在片门里向左 / 右挪；只有需要裁切时才有行程",
-                -1f, 1f, pfFx, 0.01f, v -> pfFx = v);
+                -1f, 1f, pfFx, 0.01f, v -> pfFx = v, 0f);
         pfFyBar = rangeRow(body, "取景 上下", "画面在片门里向上 / 下挪",
-                -1f, 1f, pfFy, 0.01f, v -> pfFy = v);
+                -1f, 1f, pfFy, 0.01f, v -> pfFy = v, 0f);
 
         TextView only = label("这一层只作用在 fotufilm 的帧上。第一引擎的片边在引擎里，相纸边还没有。",
                 7.5f, UI_MUTED, tfHan);
@@ -21976,11 +22012,11 @@ public class MainActivity extends Activity {
             redraw.accept(null);
         }), new LinearLayout.LayoutParams(-1, dp(52)));
         edgeFogBar = rangeRow(edgeInner, "片基雾", "片基本身的灰雾。0 是完全透明，越大越脏",
-                0.0f, 4.0f, edgeFog, 0.1f, v -> edgeFog = v);
+                0.0f, 4.0f, edgeFog, 0.1f, v -> edgeFog = v, 1.0f);
         edgeLeaksBar = rangeRow(edgeInner, "漏光", "卷轴漏进来的光，从片边渗向画面",
-                0.0f, 4.0f, edgeLeaks, 0.1f, v -> edgeLeaks = v);
+                0.0f, 4.0f, edgeLeaks, 0.1f, v -> edgeLeaks = v, 0f);
         frameNoBar = rangeRow(edgeInner, "片边张数", "片边上印的张数，整格走动。0 = 按 seed 随机",
-                0.0f, 99.0f, frameNumber, 1f, v -> frameNumber = v);
+                0.0f, 99.0f, frameNumber, 1f, v -> frameNumber = v, 0f);
         // **The aperture: a stop list, not a number line.** f/1.2 -> f/1.4 is
         // a hair at the left of a 0..64 dial and half its travel is past any
         // lens anyone owns -- and the value used to be sent as "%.0f", so
@@ -22059,18 +22095,18 @@ public class MainActivity extends Activity {
         }), new LinearLayout.LayoutParams(-1, dp(52)));
         pairSplitBar = rangeRow(pairBox, "第二段·位置",
                 "第二段从片长的这一段开始。0.514 = 18 mm 画面 + 1 mm 间隙，共 37 mm",
-                0.30f, 0.70f, pairSplit, 0.002f, v -> pairSplit = v);
+                0.30f, 0.70f, pairSplit, 0.002f, v -> pairSplit = v, 0.514f);
         pairHighKneeBar = rangeRow(pairBox, "第二段·高光阈值",
                 "从这一档开始压后半格的高光。越大，只有更亮的地方被收回",
-                -6.0f, 6.0f, pairHighKnee, 0.1f, v -> pairHighKnee = v);
+                -6.0f, 6.0f, pairHighKnee, 0.1f, v -> pairHighKnee = v, 1.0f);
         pairHighRoomBar = rangeRow(pairBox, "第二段·高光强度",
                 "后半格膝盖以上还能装几档。0 = 后半格的高光不压",
-                0.0f, 8.0f, pairHighRoom, 0.1f, v -> pairHighRoom = v);
+                0.0f, 8.0f, pairHighRoom, 0.1f, v -> pairHighRoom = v, 2.0f);
         pairShadowKneeBar = rangeRow(pairBox, "第二段·暗部阈值",
-                "后半格的趾部从这里开始提", -6.0f, 6.0f, pairShadowKnee, 0.1f, v -> pairShadowKnee = v);
+                "后半格的趾部从这里开始提", -6.0f, 6.0f, pairShadowKnee, 0.1f, v -> pairShadowKnee = v, -1.0f);
         pairShadowRoomBar = rangeRow(pairBox, "第二段·暗部强度",
                 "后半格暗部提多少档。0 = 后半格的暗部不动",
-                0.0f, 8.0f, pairShadowRoom, 0.1f, v -> pairShadowRoom = v);
+                0.0f, 8.0f, pairShadowRoom, 0.1f, v -> pairShadowRoom = v, 0.0f);
         edgeInner.addView(pairBox, new LinearLayout.LayoutParams(-1, -2));
 
         this.edgeInner = edgeInner;
@@ -22096,15 +22132,15 @@ public class MainActivity extends Activity {
         // 0..200 mm: 30 was the schema's old cap and it stopped the date a
         // third of the way along a 6x12 / 6x17 rebate.
         dateInsetXBar = rangeRow(dateInner, "左右内边距", "字到片门左右边的距离，毫米（可直接在画布上拖）",
-                0.0f, 200.0f, dateInsetX, v -> dateInsetX = v);
+                0.0f, 200.0f, dateInsetX, v -> dateInsetX = v, 3.0f);
         dateInsetYBar = rangeRow(dateInner, "上下内边距", "字到片门上下边的距离，毫米（可直接在画布上拖）",
-                0.0f, 200.0f, dateInsetY, v -> dateInsetY = v);
+                0.0f, 200.0f, dateInsetY, v -> dateInsetY = v, 2.4f);
         // 8.0: the engine clamps at 8 now, because "make the date bigger" was
         // the one adjustment the old 3.0 ceiling refused.
         dateSizeBar = rangeRow(dateInner, "日期大小", "相对该样式的字高（1.0 是标准，可放大到 8 倍）",
-                0.4f, 8.0f, dateSize, v -> dateSize = v);
+                0.4f, 8.0f, dateSize, v -> dateSize = v, 1.0f);
         dateEvBar = rangeRow(dateInner, "日期亮度", "红光在 18% 灰之上的曝光，单位挡",
-                -2.0f, 8.0f, dateEv, v -> dateEv = v);
+                -2.0f, 8.0f, dateEv, v -> dateEv = v, 5.5f);
         LinearLayout dateGrid1 = new LinearLayout(this);
         dateGrid1.setOrientation(LinearLayout.HORIZONTAL);
         // The one field the app used to decide for the user: it read the date
@@ -24372,7 +24408,9 @@ public class MainActivity extends Activity {
         dateOn = false;
         dateMark.setLit(false);
         dateSize = 1.0f;
-        dateEv = 3.5f;
+        // 5.5 is the default `defaultLook()` and the Mac's glowBaseEV; this
+        // page kept the pre-1.6.16u 3.5, so 重置 dimmed the date by two stops.
+        dateEv = 5.5f;
         dateInsetX = 3.0f;
         dateInsetY = 2.4f;
         datePlacement = "frame";
@@ -25662,15 +25700,23 @@ public class MainActivity extends Activity {
     }
 
     /** .range-field: an 8 px head with the value in blue, then the 10 px bar. */
+    /**
+     * `initial` is the value the row shows; `def` is where a double tap on the
+     * pointer puts it back -- the neutral this control starts at on a fresh
+     * import. They are not the same thing: `initial` is whatever the frame on
+     * screen carries, `def` is the app's own starting point.
+     */
     private SeekBar rangeRow(LinearLayout parent, String name, final float lo, final float hi,
-                             float initial, final java.util.function.Consumer<Float> apply) {
-        return rangeRow(parent, name, null, lo, hi, initial, apply);
+                             float initial, final java.util.function.Consumer<Float> apply,
+                             float def) {
+        return rangeRow(parent, name, null, lo, hi, initial, apply, def);
     }
 
     private SeekBar rangeRow(LinearLayout parent, String name, String hint,
                              final float lo, final float hi,
-                             float initial, final java.util.function.Consumer<Float> apply) {
-        return rangeRow(parent, name, hint, lo, hi, initial, 0f, apply);
+                             float initial, final java.util.function.Consumer<Float> apply,
+                             float def) {
+        return rangeRow(parent, name, hint, lo, hi, initial, 0f, apply, def);
     }
 
     /** **Quantised to `step`, so the number on the row is the number sent.**
@@ -25684,7 +25730,7 @@ public class MainActivity extends Activity {
      */
     private SeekBar rangeRow(LinearLayout parent, String name, String hint,
                              final float lo, final float hi, float initial, final float step,
-                             final java.util.function.Consumer<Float> apply) {
+                             final java.util.function.Consumer<Float> apply, float def) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -25738,6 +25784,22 @@ public class MainActivity extends Activity {
                 // one per hundredth of a stop.
                 onEdgeChanged();
             }
+        });
+        // **The same double tap as the optics rows.** These rows had none: the
+        // reset target stayed at -1, so double-tapping 数量 on 发光 did nothing
+        // while the row above it on 光学 reset. `def` is the neutral, and the
+        // commit is the release path, so a rebate or a glow is actually rebuilt.
+        final float home = rangeSnap(Math.max(lo, Math.min(hi, def)), lo, hi, step);
+        final int resetProgress = Math.max(0, Math.min(1000,
+                Math.round((home - lo) / (hi - lo) * 1000f)));
+        ((DialBar) bar).setResetTarget(resetProgress, () -> {
+            // The track is 1000 steps wide, so `setProgress` alone lands within
+            // one thousandth of the range -- 1.0004 for a date size of 1. The
+            // value and the number are written after it, exactly.
+            bar.setProgress(resetProgress);
+            apply.accept(home);
+            value.setText(rangeText(home, step));
+            onEdgeChanged();
         });
         // **32 dp, and the same 32 as everywhere else.** It was 44 here, which
         // made this row's track four times thicker than the optics page's:
@@ -33577,9 +33639,10 @@ public class MainActivity extends Activity {
 
     }
 
+    /** `def`: where a double tap on the pointer puts the row back. */
     private View[] fotuRow(LinearLayout parent, String title, final float lo, final float hi,
-                         final java.util.function.Supplier<Float> get,
-                         final java.util.function.Consumer<Float> set, String hint) {
+                           final java.util.function.Supplier<Float> get,
+                           final java.util.function.Consumer<Float> set, String hint, float def) {
         final LinearLayout line = new LinearLayout(this);
         line.setOrientation(LinearLayout.HORIZONTAL);
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -33633,6 +33696,22 @@ public class MainActivity extends Activity {
                         renderFotu();
                     }
                 }));
+        // Double tap puts the row back to its neutral and re-develops, exactly
+        // as releasing the dial does -- a reset that only moves the thumb is
+        // the number lying about the picture.
+        final float home = Math.max(lo, Math.min(hi, def));
+        final int resetProgress = Math.max(0, Math.min(1000,
+                Math.round((home - lo) / (hi - lo) * 1000f)));
+        bar.setResetTarget(resetProgress, () -> {
+            bar.setProgress(resetProgress);
+            set.accept(home);
+            value.setText(String.format(java.util.Locale.US, "%.2f", home));
+            if (uiReady && isFotuStock(filmStock)) {
+                showingOriginal = false;
+                setOriginalVisual(false);
+                renderFotu();
+            }
+        });
         parent.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
         // The note is behind the "!" now.
         return new View[]{line, bar};
@@ -33878,7 +33957,7 @@ public class MainActivity extends Activity {
     private void buildFotuToneGroup() {
         fotuRow(fotuBody, "曝光", -2f, 2f, () -> fotuEv, v -> fotuEv = v,
                 "fotufilm 的曝光在这里：改的是底片的受光量，密度和色彩都跟着变。"
-                + "光学页的「曝光」是冲印之后的推拉，拉不回已经到白的高光");
+                + "光学页的「曝光」是冲印之后的推拉，拉不回已经到白的高光", 0f);
         // **Only the screen medium has one.** The styles are how a
         // negative becomes a *picture* rather than a print, and the host
         // consults them only when it is building the screen tables -- on
@@ -33890,8 +33969,8 @@ public class MainActivity extends Activity {
                     new String[]{"自动定标（默认）", "分级打印", "固定校准曝光"},
                     () -> fotuDigitalRef == null ? "" : fotuDigitalRef, v -> fotuDigitalRef = v);
         }
-        fotuRow(fotuBody, "高光", -1f, 1f, () -> fotuHighlights, v -> fotuHighlights = v, "往右收高光");
-        fotuRow(fotuBody, "阴影", -1f, 1f, () -> fotuShadows, v -> fotuShadows = v, "往右提阴影");
+        fotuRow(fotuBody, "高光", -1f, 1f, () -> fotuHighlights, v -> fotuHighlights = v, "往右收高光", 0f);
+        fotuRow(fotuBody, "阴影", -1f, 1f, () -> fotuShadows, v -> fotuShadows = v, "往右提阴影", 0f);
         // It is the *region* switch for the two sliders below it: with
         // both at zero the host never reads it, which is why it sat at
         // the top of the panel doing nothing.
@@ -33906,27 +33985,27 @@ public class MainActivity extends Activity {
             renderImage();
         }));
         fotuRow(fotuBody, "提暗部", 0f, 1f, () -> fotuShadowDetail, v -> fotuShadowDetail = v,
-                "把相纸肩部的黑提起来：暗部打开，黑仍是黑（改的是印相的光，不是加灰）");
+                "把相纸肩部的黑提起来：暗部打开，黑仍是黑（改的是印相的光，不是加灰）", 0f);
         fotuRow(fotuBody, "收高光", 0f, 1f, () -> fotuHighlightDetail, v -> fotuHighlightDetail = v,
-                "把趾部之外的曝光往白里卷：高光保住层次，不会剪成一片白");
+                "把趾部之外的曝光往白里卷：高光保住层次，不会剪成一片白", 0f);
         fotuRow(fotuBody, "印相校正", 0f, 1f, () -> fotuPrintCorrection, v -> fotuPrintCorrection = v,
-                "相纸的染层平衡：往右把偏色收到中性，0 是相纸标定的原样");
+                "相纸的染层平衡：往右把偏色收到中性，0 是相纸标定的原样", 0f);
         fotuRow(fotuBody, "黑点", 0f, 0.5f, () -> fotuBlackPoint, v -> fotuBlackPoint = v,
-                "把黑抬成灰：相纸的暗部整体提亮，不裁切；0 是黑到底");
+                "把黑抬成灰：相纸的暗部整体提亮，不裁切；0 是黑到底", 0f);
         fotuRow(fotuBody, "白点", 0.5f, 1f, () -> fotuWhitePoint, v -> fotuWhitePoint = v,
-                "把白压暗：整体变暗并留出高光余量；1 是白到底");
+                "把白压暗：整体变暗并留出高光余量；1 是白到底", 1.0f);
     }
 
     /** 色彩: saturation and the grade, on top of what the film and paper did. */
     private void buildFotuColourGroup() {
-        fotuRow(fotuBody, "饱和度", 0f, 2f, () -> fotuSaturation, v -> fotuSaturation = v, "1 是原样");
-        fotuRow(fotuBody, "鲜艳度", -1f, 1f, () -> fotuVibrance, v -> fotuVibrance = v, "只动低饱和的地方");
-        fotuRow(fotuBody, "色温", -1f, 1f, () -> fotuWarmth, v -> fotuWarmth = v, "往右暖，往左冷");
-        fotuRow(fotuBody, "色调", -1f, 1f, () -> fotuTint, v -> fotuTint = v, "往右品红，往左绿");
+        fotuRow(fotuBody, "饱和度", 0f, 2f, () -> fotuSaturation, v -> fotuSaturation = v, "1 是原样", 1.0f);
+        fotuRow(fotuBody, "鲜艳度", -1f, 1f, () -> fotuVibrance, v -> fotuVibrance = v, "只动低饱和的地方", 0f);
+        fotuRow(fotuBody, "色温", -1f, 1f, () -> fotuWarmth, v -> fotuWarmth = v, "往右暖，往左冷", 0f);
+        fotuRow(fotuBody, "色调", -1f, 1f, () -> fotuTint, v -> fotuTint = v, "往右品红，往左绿", 0f);
         fotuRow(fotuBody, "层间抑制", 0f, 2f, () -> fotuCouplers, v -> fotuCouplers = v,
-                "染料层之间的相互抑制，1 是原样；往上颜色变浓、暗部更紧");
-        fotuRow(fotuBody, "分级 · 提升", -1f, 1f, () -> fotuGradeLift, v -> fotuGradeLift = v, null);
-        fotuRow(fotuBody, "分级 · 增益", -1f, 1f, () -> fotuGradeGain, v -> fotuGradeGain = v, null);
+                "染料层之间的相互抑制，1 是原样；往上颜色变浓、暗部更紧", 1.0f);
+        fotuRow(fotuBody, "分级 · 提升", -1f, 1f, () -> fotuGradeLift, v -> fotuGradeLift = v, null, 0f);
+        fotuRow(fotuBody, "分级 · 增益", -1f, 1f, () -> fotuGradeGain, v -> fotuGradeGain = v, null, 0f);
         // Meaningful once lift or gain is away from zero.
         fotuChoiceRow(fotuBody, "分级作用域", "线性光里分级，还是像调色台那样在编码信号上分级；只在动了分级·提升/增益时才看得出来",
                 new String[]{"", "encoded"}, new String[]{"线性光", "编码信号"},
@@ -33935,9 +34014,9 @@ public class MainActivity extends Activity {
 
     /** 胶片: how the negative was shot and how it has aged. */
     private void buildFotuFilmGroup() {
-        fotuRow(fotuBody, "相机预闪", 0f, 0.25f, () -> fotuPreflash, v -> fotuPreflash = v, "拍摄时的预闪，抬暗部");
-        fotuRow(fotuBody, "过期", 0f, 20f, () -> fotuExpired, v -> fotuExpired = v, "按年：速度损失加灰雾");
-        fotuRow(fotuBody, "漂白", 0f, 1f, () -> fotuBleach, v -> fotuBleach = v, "留银：反差更高，颜色更淡");
+        fotuRow(fotuBody, "相机预闪", 0f, 0.25f, () -> fotuPreflash, v -> fotuPreflash = v, "拍摄时的预闪，抬暗部", 0f);
+        fotuRow(fotuBody, "过期", 0f, 20f, () -> fotuExpired, v -> fotuExpired = v, "按年：速度损失加灰雾", 0f);
+        fotuRow(fotuBody, "漂白", 0f, 1f, () -> fotuBleach, v -> fotuBleach = v, "留银：反差更高，颜色更淡", 0f);
 
         final LinearLayout pushRow = new LinearLayout(this);
         pushRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -33966,51 +34045,51 @@ public class MainActivity extends Activity {
         fotuGrainNote.setPadding(dp(2), dp(2), dp(2), dp(8));
         fotuBody.addView(fotuGrainNote, new LinearLayout.LayoutParams(-1, -2));
         fotuRow(fotuBody, "颗粒强度", 0f, 2f, () -> fotuGrain, v -> fotuGrain = v,
-                "胶片自己的颗粒 × 这个数，1 是原样（两种颗粒模型都有效）");
+                "胶片自己的颗粒 × 这个数，1 是原样（两种颗粒模型都有效）", 1.0f);
         fotuRow(fotuBody, "颗粒大小", 0.5f, 2f, () -> fotuGrainSize, v -> fotuGrainSize = v,
-                "颗粒的晶体尺度，1 是按实测；往右更粗更软，往左更细（两种颗粒模型都有效）");
+                "颗粒的晶体尺度，1 是按实测；往右更粗更软，往左更细（两种颗粒模型都有效）", 1.0f);
         // **The five that only exist under the tile model.** 彩色颗粒, 扫描柔度 and
         // the three layer shares are slots the host reads while it samples a laid
         // out tile bank; on the default clump model they used to slide and change
         // no pixel at all. They are gated now, not merely annotated.
         gateGrain(fotuRow(fotuBody, "彩色颗粒", 0f, 1f, () -> fotuGrainColour, v -> fotuGrainColour = v,
-                "1 是三层各自独立（真胶片的彩色噪点），0 是三层同一团颗粒"));
+                "1 是三层各自独立（真胶片的彩色噪点），0 是三层同一团颗粒", 1.0f));
         gateGrain(fotuRow(fotuBody, "扫描柔度", 0.5f, 2f, () -> fotuGrainSoft, v -> fotuGrainSoft = v,
-                "每个像素平均多大一块胶片；1 是按扫描的清晰度"));
+                "每个像素平均多大一块胶片；1 是按扫描的清晰度", 1.0f));
         gateGrain(fotuRow(fotuBody, "红层颗粒", 0f, 2f, () -> fotuGrainR, v -> fotuGrainR = v,
-                "红光敏感那一层的晶体量，1 是实测"));
+                "红光敏感那一层的晶体量，1 是实测", 1.0f));
         gateGrain(fotuRow(fotuBody, "绿层颗粒", 0f, 2f, () -> fotuGrainG, v -> fotuGrainG = v,
-                "绿光敏感那一层的晶体量"));
+                "绿光敏感那一层的晶体量", 1.0f));
         gateGrain(fotuRow(fotuBody, "蓝层颗粒", 0f, 2f, () -> fotuGrainB, v -> fotuGrainB = v,
-                "蓝光敏感那一层的晶体量"));
+                "蓝光敏感那一层的晶体量", 1.0f));
         fotuRow(fotuBody, "颗粒不匀", 0f, 0.9f, () -> fotuMottle, v -> fotuMottle = v,
-                "把颗粒的变化分一部分给更大的团块：0 全是细颗粒，0.9 几乎全是粗团块（总颗粒量不变）");
+                "把颗粒的变化分一部分给更大的团块：0 全是细颗粒，0.9 几乎全是粗团块（总颗粒量不变）", 0f);
         refreshGrainGates();
     }
 
     /** 光晕: light that came back off the base, and the layers' cross-talk. */
     private void buildFotuHalationGroup() {
         fotuRow(fotuBody, "光晕", 0f, 4f, () -> fotuHalation, v -> fotuHalation = v,
-                "胶片背后的光晕半径 × 这个数，1 是原样；0.5 收一半，2 放开");
+                "胶片背后的光晕半径 × 这个数，1 是原样；0.5 收一半，2 放开", 1.0f);
         fotuRow(fotuBody, "光晕颜色", 0f, 1f, () -> fotuHalationColour, v -> fotuHalationColour = v,
-                "把三层的光晕往回光最亮的那层拉平；0 是胶片自己的颜色，1 是单色光晕");
+                "把三层的光晕往回光最亮的那层拉平；0 是胶片自己的颜色，1 是单色光晕", 0f);
         fotuRow(fotuBody, "层间扩散", 0f, 3f, () -> fotuCouplerReach, v -> fotuCouplerReach = v,
-                "抑制剂能跨过多远的层间；1 是按片基实测，0 封住层间（颜色变平），3 跨得更远");
+                "抑制剂能跨过多远的层间；1 是按片基实测，0 封住层间（颜色变平），3 跨得更远", 1.0f);
         fotuRow(fotuBody, "红–绿扩散", 0f, 3f, () -> fotuCouplerRG, v -> fotuCouplerRG = v,
-                "只动红层到绿层那一道：往右红绿互相吃，红更暗、绿更沉");
+                "只动红层到绿层那一道：往右红绿互相吃，红更暗、绿更沉", 1.0f);
         fotuRow(fotuBody, "绿–蓝扩散", 0f, 3f, () -> fotuCouplerGB, v -> fotuCouplerGB = v,
-                "只动绿层到蓝层那一道：往右蓝更沉，天空和阴影会分开");
+                "只动绿层到蓝层那一道：往右蓝更沉，天空和阴影会分开", 1.0f);
         fotuRow(fotuBody, "边缘对比", 0f, 3f, () -> fotuCouplerSelf, v -> fotuCouplerSelf = v,
-                "一层自己的抑制剂回敬自己多少；1 是实测，往上边缘更硬、细节更冲");
+                "一层自己的抑制剂回敬自己多少；1 是实测，往上边缘更硬、细节更冲", 1.0f);
     }
 
     /** 镜头: what happened in front of the film. */
     private void buildFotuLensGroup() {
-        fotuRow(fotuBody, "眩光", 0f, 1f, () -> fotuFlare, v -> fotuFlare = v, "镜头里那层雾");
+        fotuRow(fotuBody, "眩光", 0f, 1f, () -> fotuFlare, v -> fotuFlare = v, "镜头里那层雾", 0f);
         fotuRow(fotuBody, "色边", 0f, 1f, () -> fotuFringe, v -> fotuFringe = v,
-                "高反差边缘的色散强度；0 关掉，1 最强");
+                "高反差边缘的色散强度；0 关掉，1 最强", 0f);
         fotuRow(fotuBody, "色边半径", 20f, 300f, () -> fotuFringeRadius, v -> fotuFringeRadius = v,
-                "色散铺开的半径，单位微米；100 是常见值，要比层间扩散大才看得见");
+                "色散铺开的半径，单位微米；100 是常见值，要比层间扩散大才看得见", 100f);
         fotuChoiceRow(fotuBody, "放大机", "彩扩机的漫射光，还是黑白放大机的聚光：聚光对比更硬、颗粒更露",
                 new String[]{"", "condenser"}, new String[]{"漫射（彩扩机）", "聚光（黑白）"},
                 () -> fotuCondenser > 0.5f ? "condenser" : "", v -> fotuCondenser = v.isEmpty() ? 0f : 1f);
@@ -34039,21 +34118,21 @@ public class MainActivity extends Activity {
                 });
         fotuBody.addView(paperCells, new LinearLayout.LayoutParams(-1, dp(46)));
         fotuRow(fotuBody, "印片灯温", 2800f, 3600f, () -> fotuPrinterLamp, v -> fotuPrinterLamp = v,
-                "印片机灯泡的色温；3200 K 是默认，低一点更黄");
+                "印片机灯泡的色温；3200 K 是默认，低一点更黄", 3200f);
         fotuRow(fotuBody, "洋红滤镜", 0f, 1.2f, () -> fotuPrinterM, v -> fotuPrinterM = v,
-                "二向色滤镜的 M 档，0.40 是默认；加洋红让画面偏绿");
+                "二向色滤镜的 M 档，0.40 是默认；加洋红让画面偏绿", 0.4f);
         fotuRow(fotuBody, "黄滤镜", 0f, 1.2f, () -> fotuPrinterY, v -> fotuPrinterY = v,
-                "二向色滤镜的 Y 档，0.50 是默认；加黄让画面偏蓝");
+                "二向色滤镜的 Y 档，0.50 是默认；加黄让画面偏蓝", 0.5f);
         fotuRow(fotuBody, "印片曝光", -6f, 6f, () -> fotuPrinterEv, v -> fotuPrinterEv = v,
-                "整张相纸的整体曝光，单位档；0 是默认");
+                "整张相纸的整体曝光，单位档；0 是默认", 0f);
         fotuRow(fotuBody, "红光合", 1f, 50f, () -> fotuPrinterR, v -> fotuPrinterR = v,
-                "电影正片专用的三色光合，单位 printer point；25 是本片基的瞄准值，多一点偏青");
+                "电影正片专用的三色光合，单位 printer point；25 是本片基的瞄准值，多一点偏青", 25f);
         fotuRow(fotuBody, "绿光合", 1f, 50f, () -> fotuPrinterG, v -> fotuPrinterG = v,
-                "同上，绿光束；25 是瞄准值");
+                "同上，绿光束；25 是瞄准值", 25f);
         fotuRow(fotuBody, "蓝光合", 1f, 50f, () -> fotuPrinterB, v -> fotuPrinterB = v,
-                "同上，蓝光束；25 是瞄准值");
+                "同上，蓝光束；25 是瞄准值", 25f);
         fotuRow(fotuBody, "印片预闪", 0f, 0.1f, () -> fotuPrinterPreflash, v -> fotuPrinterPreflash = v,
-                "印相时的整体预闪：暗部抬起来，高光几乎不动");
+                "印相时的整体预闪：暗部抬起来，高光几乎不动", 0f);
         fotuChoiceRow(fotuBody, "观察光源", "看照片用哪种灯：判色台、日光还是家里的钨丝灯（只改看片的光）",
                 new String[]{"", "d65", "tungsten"}, new String[]{"参考（相纸 D50）", "日光 D65", "钨丝 2856 K"},
                 () -> fotuPrintLight, v -> fotuPrintLight = v);
