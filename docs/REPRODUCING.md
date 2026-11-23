@@ -60,3 +60,24 @@ OFL/Apache 授权见 `fonts/` 旁的许可文件。
 
 `libfotufilmhost.so` 的**源码在本仓库**（`app/src/main/cpp/fotufilm/`），但它要链上游
 fotufilm 的 Halide AOT kernel 归档和 `libfotufilmcodecs.so`。见 README 的「第二引擎」一节。
+
+## The two extra Inter weights (1.7.4a)
+
+`app/src/main/assets/fonts/` is gitignored with the rest of `assets/`, so a
+fresh clone has `Inter-Regular.ttf` and `OPPOSans.ttf` only. The UI asks for two
+more faces by name:
+
+    Inter-Medium.ttf     44 KB    500 — the wordmark, row names, buttons
+    Inter-SemiBold.ttf   44 KB    600 — panel titles, slider values, selected tabs
+
+Both are subset from Inter's own upstream Medium / SemiBold to exactly the 230
+characters `Inter-Regular.ttf` carries, and both are produced by:
+
+    pip install fonttools brotli
+    python3 tools/assets/make_inter_weights.py
+
+They have to be real instances: `Typeface.create(face, 500)` returns the face
+unchanged on a static font, so a synthesised "Medium" is a Regular with a
+different name, and 600 renders identically to 400 — which is exactly the bug
+the readability pass was asked to fix. `weight(TextView, int)` falls back to the
+synthesised bold if the files are missing, so a clone without them still runs.
