@@ -375,6 +375,8 @@ public class MainActivity extends Activity {
     private String shelfEngine = "";
     /** The first card tap with no engine set turns the two boxes' red halo on. */
     private boolean engineNudge;
+    /** The chosen engine's letters: a red dark enough to read on paper. */
+    private static final int ENGINE_LIT_INK = 0xFFD9141E;
     private EngineGlowBox engineSpkGlow, engineFotuGlow;
     private android.animation.ValueAnimator engineGlowAnim;
     /** The two cells of that switch. */
@@ -3233,16 +3235,20 @@ public class MainActivity extends Activity {
     /**
      * How tall a panel may grow before it scrolls: the film page's own height.
      *
-     * <p>**222 dp is 38 + 38 + 111 + 35** -- 胶片's head, its maker row, the
+     * <p>**230 dp is 46 + 38 + 111 + 35** -- 胶片's head, its maker row, the
      * shelf and the paper row. Nothing here is a taste: the numbers are the
      * page's own furniture, and a cap below them would clip the shelf. Every
      * other page is cut to the same line, so switching tools never moves the
      * photograph by more than the strip's own 38 dp.
      *
+     * <p>The head is 46 rather than 38 because the engine switch lights a lamp
+     * that spills 12.5 dp (see `EngineGlowBox`); a 24 dp cell in a 38 dp row
+     * would have its glow cut into a straight line 7 dp out.
+     *
      * <p>It was 240/300 for a while, which is a third of a phone: 冲印 then
      * ended 38 dp *below* the line and 「高太多了」 was right.
      */
-    private static final int PANEL_CAP_DP = 222;
+    private static final int PANEL_CAP_DP = 230;
     /** 反馈群：the one place a user can reach a human. Shown once per build. */
     private static final String QQ_GROUP = "1134320449";
     // **A hidden pixel ceiling, for one purpose: letting a tester name a size
@@ -16651,7 +16657,7 @@ public class MainActivity extends Activity {
         filmHead.setClipChildren(false);
         engineBox.addView(engineSpkCell, new LinearLayout.LayoutParams(-2, dp(24)));
         final LinearLayout.LayoutParams fotuCellLp = new LinearLayout.LayoutParams(-2, dp(24));
-        fotuCellLp.leftMargin = dp(4);
+        fotuCellLp.leftMargin = dp(8);
         engineBox.addView(engineFotuCell, fotuCellLp);
         final int beforeReset = filmHead.getChildCount() - 1;
         final LinearLayout.LayoutParams engineLp = new LinearLayout.LayoutParams(-2, -2);
@@ -16670,7 +16676,10 @@ public class MainActivity extends Activity {
         filmHead.addView(meterChip, beforeReset + 1, chipLp);
         refreshEngineSwitch();
         refreshMeterChip();
-        panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(38)));
+        // 46, not 38: the engine lamp's spill is 12.5 dp, and a 24 dp cell in a
+        // 38 dp row would have its glow sliced flat 7 dp out. `PANEL_CAP_DP`
+        // carries the extra 8 (see there).
+        panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(46)));
 
         HorizontalScrollView brandScroll = new HorizontalScrollView(this);
         brandScroll.setHorizontalScrollBarEnabled(false);
@@ -26367,20 +26376,237 @@ public class MainActivity extends Activity {
         meterChip.setBackground(thinBox(on));
     }
 
-    /** Paint the switch from `shelfEngine`. Two 1 dp boxes, the live one accented. */
+    /**
+     * **The switch's lamp.**
+     *
+     * <p>Four optical layers, and every one of them is centred -- `dx = dy = 0`.
+     * A dropped shadow would say the button floats above the panel; a safelight
+     * has no direction, so nothing here is offset:
+     *
+     * <ol>
+     *   <li><b>far ambient spill</b> -- #FF262E at 0.26 through a 12.5 dp
+     *       gaussian, reaching past the cell so the paper around it picks up the
+     *       colour;</li>
+     *   <li><b>tight bloom</b> -- #FF1722 at 0.58 through a 4 dp one, which is
+     *       what makes the edge read as the source of the light;</li>
+     *   <li><b>core stroke</b> -- 1.4 dp of #FF2A32 with a 0.5 dp #FF9E99
+     *       filament down its middle, so the frame is over-exposed rather than an
+     *       outline;</li>
+     *   <li><b>inner rim</b> -- 4 dp of #FF2A32 at 0.18, blurred and clipped to
+     *       the inside, so the light lands on the button's own wall instead of
+     *       tinting the whole face pink.</li>
+     * </ol>
+     *
+     * <p>**Why a bitmap.** `BlurMaskFilter` is applied by the software
+     * rasteriser; a hardware canvas silently ignores it, and `setShadowLayer` is
+     * no better on a Drawable. The only way to get a real gaussian on a phone is
+     * to draw the lamp off-screen and blit it -- once per size and state, then
+     * breathe with `Paint.setAlpha`, so no frame pays for a blur.
+     *
+     * <p>The numbers worth tuning are the constants below; they are the whole
+     * difference between "a glowing edge" and "a red box".
+     */
+    private final class EngineGlowBox extends android.graphics.drawable.Drawable {
+        // ---- optics, in dp -----------------------------------------------
+        static final float OUTER_GLOW_RADIUS = 12.5f;   // far ambient spill
+        static final float INNER_GLOW_RADIUS = 4.0f;    // tight bloom
+        static final float INNER_RIM_RADIUS = 4.0f;     // how far the rim reaches in
+        static final float CORE_STROKE_DP = 1.4f;       // the lit frame
+        static final float CORE_FILAMENT_DP = 0.5f;     // the over-exposed line in it
+        // ---- strength -----------------------------------------------------
+        static final float GLOW_ALPHA = 0.26f;
+        static final float BLOOM_ALPHA = 0.58f;
+        static final float RIM_ALPHA = 0.18f;
+        static final float GLOW_ALPHA_DIM = 0.10f;      // the "pick me" pair
+        static final float BLOOM_ALPHA_DIM = 0.25f;
+        static final float RIM_ALPHA_DIM = 0.10f;
+        static final float FILAMENT_ALPHA = 0.75f;
+        // ---- colours -------------------------------------------------------
+        static final int OUTER_COLOR = 0xFFFF262E;
+        static final int BLOOM_COLOR = 0xFFFF1722;
+        static final int CORE_COLOR = 0xFFFF2A32;
+        static final int FILAMENT_COLOR = 0xFFFF9E99;
+        // ---- states ---------------------------------------------------------
+        static final int MODE_OFF = 0;   // a hairline; `thinBox(false)` draws it
+        static final int MODE_DIM = 1;   // both cells, "an engine is not chosen yet"
+        static final int MODE_LIT = 2;   // the chosen engine, all four layers
+
+        private final android.graphics.Paint p =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint eraser = new android.graphics.Paint();
+        private final android.graphics.RectF r = new android.graphics.RectF();
+        private final java.util.HashMap<Float, android.graphics.BlurMaskFilter> masks =
+                new java.util.HashMap<>();
+        private android.graphics.Bitmap lamp;
+        private float pad;
+        private int lampW, lampH, lampMode = -1;
+        /** 0..1: the breathing multiplier. Only the "pick me" pair breathes. */
+        float glow = 1f;
+        int mode = MODE_OFF;
+
+        @Override public void draw(android.graphics.Canvas c) {
+            final android.graphics.Rect b = getBounds();
+            if (b.width() <= 0 || b.height() <= 0) return;
+            if (mode == MODE_OFF) {
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setStrokeWidth(Math.max(1f, dp(1)));
+                p.setColor(UI_LINE);
+                r.set(b.left + 0.5f, b.top + 0.5f, b.right - 0.5f, b.bottom - 0.5f);
+                c.drawRect(r, p);
+                return;
+            }
+            ensureLamp(b.width(), b.height());
+            if (lamp == null) return;
+            p.setAlpha((int) (255f * Math.max(0f, Math.min(1f, glow))));
+            c.drawBitmap(lamp, b.left - pad, b.top - pad, p);
+            p.setAlpha(255);
+        }
+
+        /** Three radii, three filters: a mask filter is a shader, not a value. */
+        private android.graphics.BlurMaskFilter blur(float radius) {
+            android.graphics.BlurMaskFilter m = masks.get(radius);
+            if (m == null) {
+                m = new android.graphics.BlurMaskFilter(radius,
+                        android.graphics.BlurMaskFilter.Blur.NORMAL);
+                masks.put(radius, m);
+            }
+            return m;
+        }
+
+        /** Draw the four layers, once per size and state. */
+        private void ensureLamp(int w, int h) {
+            if (lamp != null && lampW == w && lampH == h && lampMode == mode) return;
+            // **Dropped, never recycled.** A hardware display list still holds
+            // the bitmap it recorded; recycling one here is the classic
+            // "trying to use a recycled bitmap" crash. Since Android 8 a bitmap
+            // is ordinary managed memory, so dropping the reference is enough.
+            lamp = null;
+            final boolean lit = mode == MODE_LIT;
+            pad = dp(OUTER_GLOW_RADIUS + 8f);
+            lampW = w;
+            lampH = h;
+            lampMode = mode;
+            final int bw = Math.max(1, w + Math.round(pad * 2f));
+            final int bh = Math.max(1, h + Math.round(pad * 2f));
+            android.graphics.Bitmap made;
+            try {
+                made = android.graphics.Bitmap.createBitmap(bw, bh,
+                        android.graphics.Bitmap.Config.ARGB_8888);
+            } catch (Throwable t) {
+                return;                       // no lamp is better than a crash
+            }
+            final android.graphics.Canvas c = new android.graphics.Canvas(made);
+            final android.graphics.RectF box = new android.graphics.RectF(pad, pad, pad + w, pad + h);
+
+            // 1. the far spill: a filled, heavily blurred body of the cell. The
+            //    half that lands inside is erased below, and what is left is the
+            //    halo on the panel around it.
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(OUTER_COLOR);
+            p.setAlpha(Math.round(255f * (lit ? GLOW_ALPHA : GLOW_ALPHA_DIM)));
+            p.setMaskFilter(blur(dp(OUTER_GLOW_RADIUS)));
+            c.drawRect(box, p);
+
+            // 2. the bloom: the same shape at a third of the radius and twice the
+            //    strength -- the edge has to be brighter than the spill.
+            p.setColor(BLOOM_COLOR);
+            p.setAlpha(Math.round(255f * (lit ? BLOOM_ALPHA : BLOOM_ALPHA_DIM)));
+            p.setMaskFilter(blur(dp(INNER_GLOW_RADIUS)));
+            c.drawRect(box, p);
+            p.setMaskFilter(null);
+
+            // A light does not tint its own pane: both halos are cut back to the
+            // cell's edge. The core stroke is drawn on the seam afterwards, so
+            // the cut never shows.
+            eraser.setXfermode(new android.graphics.PorterDuffXfermode(
+                    android.graphics.PorterDuff.Mode.CLEAR));
+            c.drawRect(box, eraser);
+            eraser.setXfermode(null);
+
+            // 4. the inner rim: 4 dp of red on the inside wall, blurred so it
+            //    lands on the pane and dies before it reaches the middle.
+            final int save = c.save();
+            c.clipRect(box);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(dp(INNER_RIM_RADIUS));
+            p.setColor(CORE_COLOR);
+            p.setAlpha(Math.round(255f * (lit ? RIM_ALPHA : RIM_ALPHA_DIM)));
+            p.setMaskFilter(blur(dp(INNER_RIM_RADIUS * 0.5f)));
+            final float inset = dp(INNER_RIM_RADIUS) * 0.5f;
+            r.set(box.left + inset, box.top + inset, box.right - inset, box.bottom - inset);
+            c.drawRect(r, p);
+            p.setMaskFilter(null);
+            c.restoreToCount(save);
+
+            // 3. the core: crisp 1.4 dp, and the filament only on the chosen
+            //    engine -- the dim pair must never outshine the choice.
+            final float half = dp(CORE_STROKE_DP) * 0.5f;
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(dp(CORE_STROKE_DP));
+            p.setColor(CORE_COLOR);
+            // The frame itself dims with the rest: a full-strength 1.4 dp red
+            // edge on the "pick me" pair would read as two chosen engines. At
+            // 0.42 it is an unlit neon tube -- visible, unmistakably not on.
+            p.setAlpha(lit ? 255 : Math.round(255f * 0.42f));
+            r.set(box.left + half, box.top + half, box.right - half, box.bottom - half);
+            c.drawRect(r, p);
+            if (lit) {
+                p.setStrokeWidth(dp(CORE_FILAMENT_DP));
+                p.setColor(FILAMENT_COLOR);
+                p.setAlpha(Math.round(255f * FILAMENT_ALPHA));
+                c.drawRect(r, p);
+            }
+            p.setAlpha(255);
+            lamp = made;
+        }
+
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    /** Paint both cells from `shelfEngine`: the engine in force wears the lamp. */
     private void refreshEngineSwitch() {
         final boolean fotu = "fotu".equals(shelfEngine);
         final boolean none = shelfEngine.isEmpty();
         final boolean nudge = none && engineNudge;
-        if (engineSpkCell != null) {
-            engineSpkCell.setTextColor(nudge ? 0xFFFF3B30 : (none || fotu ? UI_MUTED : UI_BLUE));
-            engineSpkCell.setBackground(nudge ? engineGlowBox(true) : thinBox(!fotu && !none));
-        }
-        if (engineFotuCell != null) {
-            engineFotuCell.setTextColor(nudge ? 0xFFFF3B30 : (none || !fotu ? UI_MUTED : UI_BLUE));
-            engineFotuCell.setBackground(nudge ? engineGlowBox(false) : thinBox(fotu));
-        }
+        final int idle = nudge ? EngineGlowBox.MODE_DIM : EngineGlowBox.MODE_OFF;
+        styleEngineCell(engineSpkCell, engineGlowBox(true),
+                none ? idle : (fotu ? EngineGlowBox.MODE_OFF : EngineGlowBox.MODE_LIT));
+        styleEngineCell(engineFotuCell, engineGlowBox(false),
+                none ? idle : (fotu ? EngineGlowBox.MODE_LIT : EngineGlowBox.MODE_OFF));
         glowEngineCells(nudge);
+    }
+
+    /**
+     * One cell of the switch: the lamp or a hairline, and its letters.
+     *
+     * <p>The chosen engine is lit and its text is {@link #ENGINE_LIT_INK}; the
+     * other is a hairline with muted letters, so the pair never reads as two
+     * equal options. Before anything is chosen both are dim -- and only after a
+     * tap has pointed at the switch (`engineNudge`), because a lamp that
+     * breathes on arrival is the app nagging.
+     */
+    private void styleEngineCell(TextView cell, EngineGlowBox lamp, int mode) {
+        if (cell == null || lamp == null) return;
+        lamp.mode = mode;
+        lamp.invalidateSelf();
+        if (mode == EngineGlowBox.MODE_OFF) {
+            cell.setBackground(thinBox(false));
+            cell.setTextColor(UI_MUTED);
+            cell.setShadowLayer(0f, 0f, 0f, 0);
+            return;
+        }
+        if (mode == EngineGlowBox.MODE_LIT) lamp.glow = 1f;
+        cell.setBackground(lamp);
+        cell.setTextColor(ENGINE_LIT_INK);
+        if (mode == EngineGlowBox.MODE_LIT) {
+            // A hair of the same red on the letters: the button is lit, its text
+            // is lit with it. Under 1.5 dp -- this is a glow, not a shadow.
+            cell.setShadowLayer(Math.max(1f, dp(1.2f)), 0f, 0f, 0x66D9141E);
+        } else {
+            cell.setShadowLayer(0f, 0f, 0f, 0);
+        }
     }
 
     private EngineGlowBox engineGlowBox(boolean spk) {
@@ -26392,105 +26618,49 @@ public class MainActivity extends Activity {
         return box;
     }
 
-    /** The halo breathes while it is on, and is stopped the moment an engine is picked. */
+    /**
+     * The breath: only the "an engine is not chosen yet" pair pulses, and it
+     * starts near full brightness (0.35 .. 1) so the first frame is not a dark
+     * one. A chosen engine is steady -- a light that keeps moving while you work
+     * is not your light.
+     */
     private void glowEngineCells(boolean on) {
         if (!on) {
             if (engineGlowAnim != null) {
                 engineGlowAnim.cancel();
                 engineGlowAnim = null;
             }
-            if (engineSpkGlow != null) { engineSpkGlow.glow = 0f; engineSpkGlow.invalidateSelf(); }
-            if (engineFotuGlow != null) { engineFotuGlow.glow = 0f; engineFotuGlow.invalidateSelf(); }
+            if (engineSpkGlow != null) {
+                engineSpkGlow.glow = engineSpkGlow.mode == EngineGlowBox.MODE_LIT ? 1f : 0f;
+                engineSpkGlow.invalidateSelf();
+            }
+            if (engineFotuGlow != null) {
+                engineFotuGlow.glow = engineFotuGlow.mode == EngineGlowBox.MODE_LIT ? 1f : 0f;
+                engineFotuGlow.invalidateSelf();
+            }
             return;
         }
         if (engineGlowAnim != null) return;
-        engineGlowAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        // Seeded, not awaited: the first animator frame lands ~16 ms later, and
+        // until then a lamp whose `glow` is still 0 is a dark one.
+        if (engineSpkGlow != null) { engineSpkGlow.glow = 0.35f; engineSpkGlow.invalidateSelf(); }
+        if (engineFotuGlow != null) { engineFotuGlow.glow = 0.35f; engineFotuGlow.invalidateSelf(); }
+        engineGlowAnim = android.animation.ValueAnimator.ofFloat(0.35f, 1f);
         engineGlowAnim.setDuration(900);
         engineGlowAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
         engineGlowAnim.setRepeatMode(android.animation.ValueAnimator.REVERSE);
         engineGlowAnim.addUpdateListener(a -> {
             final float f = (Float) a.getAnimatedValue();
-            if (engineSpkGlow != null) { engineSpkGlow.glow = f; engineSpkGlow.invalidateSelf(); }
-            if (engineFotuGlow != null) { engineFotuGlow.glow = f; engineFotuGlow.invalidateSelf(); }
+            if (engineSpkGlow != null && engineSpkGlow.mode == EngineGlowBox.MODE_DIM) {
+                engineSpkGlow.glow = f;
+                engineSpkGlow.invalidateSelf();
+            }
+            if (engineFotuGlow != null && engineFotuGlow.mode == EngineGlowBox.MODE_DIM) {
+                engineFotuGlow.glow = f;
+                engineFotuGlow.invalidateSelf();
+            }
         });
         engineGlowAnim.start();
-    }
-
-    /**
-     * **A lamp, not four rings.**
-     *
-     * <p>The two engine switches wear this while the shelf has no engine, and
-     * the halo breathes (a ValueAnimator on `glow`). The first version drew
-     * four nested strokes two dp apart and read as a red box with a red border
-     * -- the owner's word: 没有弥散效果，不像灯泡. Light does not have edges, so
-     * the halo is a **radial gradient on an inflated ellipse**: bright at the
-     * box, gone by seven dp, with a lit pane behind the border so the glow has
-     * a source. `setShadowLayer` is unavailable to a Drawable under hardware
-     * acceleration; a shader is not.
-     *
-     * <p>It paints outside its bounds, so the two parents have to allow it
-     * (`engineBox` and `filmHead` both `setClipChildren(false)`) -- that is
-     * also the reason the ellipse stays inside the 7 dp the 38 dp head row
-     * leaves around a 24 dp cell.
-     */
-    private final class EngineGlowBox extends android.graphics.drawable.Drawable {
-        private final android.graphics.Paint p =
-                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final android.graphics.RectF r = new android.graphics.RectF();
-        private final android.graphics.Matrix m = new android.graphics.Matrix();
-        private android.graphics.RadialGradient halo;
-        private float haloRx, haloRy;
-        float glow;
-
-        @Override public void draw(android.graphics.Canvas c) {
-            final android.graphics.Rect b = getBounds();
-            if (glow > 0.01f) {
-                final float cx = b.exactCenterX(), cy = b.exactCenterY();
-                final float rx = b.width() * 0.5f + dp(7.5f);
-                final float ry = b.height() * 0.5f + dp(6.5f);
-                if (halo == null || haloRx != rx || haloRy != ry) {
-                    halo = new android.graphics.RadialGradient(0f, 0f, 1f,
-                            new int[]{0xC8FF5346, 0x8CFF3B30, 0x33FF5A46, 0x00FF6A50},
-                            new float[]{0f, 0.42f, 0.72f, 1f},
-                            android.graphics.Shader.TileMode.CLAMP);
-                    haloRx = rx;
-                    haloRy = ry;
-                }
-                m.setScale(rx, ry);
-                m.postTranslate(cx, cy);
-                halo.setLocalMatrix(m);
-                p.setStyle(android.graphics.Paint.Style.FILL);
-                p.setShader(halo);
-                p.setAlpha((int) (255f * glow));
-                // **Only outside the cell.** Painting the gradient across the
-                // whole ellipse washes the button red and the letters vanish
-                // into it; a Difference clip leaves a ring of light with a lit
-                // pane behind it, which is what a lamp looks like.
-                final int save = c.save();
-                c.clipRect(cx - rx, cy - ry, cx + rx, cy + ry);
-                c.clipRect(b.left, b.top, b.right, b.bottom,
-                        android.graphics.Region.Op.DIFFERENCE);
-                c.drawRect(cx - rx, cy - ry, cx + rx, cy + ry, p);
-                c.restoreToCount(save);
-                p.setShader(null);
-                // The pane: a faint wash, so the cell reads as lit from within.
-                p.setColor(0xFFFF3B30);
-                p.setAlpha((int) (34f * glow));
-                r.set(b.left + dp(1.5f), b.top + dp(1.5f),
-                        b.right - dp(1.5f), b.bottom - dp(1.5f));
-                c.drawRect(r, p);
-                p.setAlpha(255);
-            }
-            p.setStyle(android.graphics.Paint.Style.STROKE);
-            p.setStrokeWidth(Math.max(1f, dp(1)));
-            p.setColor(glow > 0.02f ? 0xFFFF3B30 : UI_LINE);
-            r.set(b.left + 0.5f, b.top + 0.5f, b.right - 0.5f, b.bottom - 0.5f);
-            c.drawRect(r, p);
-        }
-
-        @Override public void setAlpha(int a) { }
-        @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
-        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
     }
 
     /** What a greyed card says when it is tapped. */
