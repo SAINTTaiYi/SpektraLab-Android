@@ -16989,7 +16989,22 @@ public class MainActivity extends Activity {
      * 里面 67 : 27 的两条带跟着一起放大 —— 展开前后是同一张卡，只是变大了。
      */
     private void measureShelfCell() {
-        final int cols = Math.max(1, filmCols);
+        // **收起态是一张固定的卡，不能从行宽推。** 一度这里也走「行宽 / 列数」
+        // —— 而 `filmCols == 1` 时那个商就是整行宽（320 dp），横条上一张卡几乎
+        // 占满半屏。横条上的卡一直就是 86 x 94。
+        if (filmCols <= 1) {
+            shelfCellW = dp(CARD_W_DP);
+            shelfCellH = dp(CARD_H_DP);
+            return;
+        }
+        if (filmCols == 2) {
+            // 横屏右栏：宽度由 weight 分配，`addFilmCard` 也不读这两个数，给个
+            // 占位即可。
+            shelfCellW = dp(CARD_W_DP);
+            shelfCellH = dp(CARD_H_DP);
+            return;
+        }
+        final int cols = filmCols;
         final int usable = gridRowWidthPx();
         shelfCellW = Math.max(1, (usable - dp(9) * cols) / cols);
         shelfCellH = Math.max(1, Math.round(shelfCellW * CARD_H_DP / CARD_W_DP));
