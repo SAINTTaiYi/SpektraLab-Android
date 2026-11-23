@@ -370,8 +370,8 @@ public class MainActivity extends Activity {
      * instead of hidden.
      */
     /** **No engine until the user picks one.** The shelf is a catalogue until
-     *  then: the cards do not develop, and the first tap asks which machine
-     *  will do it (see `showEngineChooser`). */
+     *  then: nothing is developed, every card is its film's box front, and a tap
+     *  points at the switch instead of choosing for the user. */
     private String shelfEngine = "";
     /** The first card tap with no engine set turns the two boxes' red halo on. */
     private boolean engineNudge;
@@ -16644,6 +16644,11 @@ public class MainActivity extends Activity {
         final LinearLayout engineBox = new LinearLayout(this);
         engineBox.setOrientation(LinearLayout.HORIZONTAL);
         engineBox.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        // The nudge halo is a glow, not a border: it paints past the cell, so
+        // neither the pair nor the 38 dp head row may clip it (see
+        // `EngineGlowBox`).
+        engineBox.setClipChildren(false);
+        filmHead.setClipChildren(false);
         engineBox.addView(engineSpkCell, new LinearLayout.LayoutParams(-2, dp(24)));
         final LinearLayout.LayoutParams fotuCellLp = new LinearLayout.LayoutParams(-2, dp(24));
         fotuCellLp.leftMargin = dp(4);
@@ -16954,8 +16959,8 @@ public class MainActivity extends Activity {
     /** Can the shelf's engine develop this card? 原图 always can. */
     private boolean engineHas(String cardId) {
         if ("original".equals(cardId)) return true;
-        // With no engine chosen yet every card is a real option -- the tap is
-        // what picks the engine (see `showEngineChooser`).
+        // With no engine chosen yet every card is a real option -- it just has
+        // no picture, because nothing develops before the engine is named.
         if (shelfEngine.isEmpty()) return true;
         return engineIdOf(cardId) != null;
     }
@@ -17458,7 +17463,9 @@ public class MainActivity extends Activity {
             return;
         }
         if (appPaused || batchExportRunning) return;
-        final String passEngine = shelfEngine.isEmpty() ? "spk" : shelfEngine;
+        // Same rule as `startPrefetch`: a neutral shelf has nothing to queue.
+        if (shelfEngine.isEmpty()) return;
+        final String passEngine = shelfEngine;
         int missing = 0;
         for (int i = 0; i < filmCards.size(); ++i) {
             final Object tag = filmCards.get(i).getTag();
@@ -17818,10 +17825,14 @@ public class MainActivity extends Activity {
             return;
         }
         if (shelfEngine.isEmpty()) {
-            // **Which machine?** Nothing has been developed yet, so this is the
-            // first decision of the session -- asked here rather than in a
-            // banner nobody reads.
-            showEngineChooser(id, index);
+            // **A catalogue entry, not a decision.** Nothing is developed
+            // before an engine is chosen, so this card has no picture to pick:
+            // the answer is the switch beside the title, and the switch says so
+            // by lighting up (see `EngineGlowBox`). Asking here with a sheet
+            // interrupted the one gesture the shelf exists for.
+            engineNudge = true;
+            refreshEngineSwitch();
+            showInAppToast("先在「胶片与相纸」右上角选引擎（SPK / FOTU），再点胶片");
             return;
         }
         // **The head's switch decides, not the card.** A film the shelf's engine
@@ -26362,11 +26373,11 @@ public class MainActivity extends Activity {
         final boolean none = shelfEngine.isEmpty();
         final boolean nudge = none && engineNudge;
         if (engineSpkCell != null) {
-            engineSpkCell.setTextColor(none || fotu ? UI_MUTED : UI_BLUE);
+            engineSpkCell.setTextColor(nudge ? 0xFFFF3B30 : (none || fotu ? UI_MUTED : UI_BLUE));
             engineSpkCell.setBackground(nudge ? engineGlowBox(true) : thinBox(!fotu && !none));
         }
         if (engineFotuCell != null) {
-            engineFotuCell.setTextColor(none || !fotu ? UI_MUTED : UI_BLUE);
+            engineFotuCell.setTextColor(nudge ? 0xFFFF3B30 : (none || !fotu ? UI_MUTED : UI_BLUE));
             engineFotuCell.setBackground(nudge ? engineGlowBox(false) : thinBox(fotu));
         }
         glowEngineCells(nudge);
@@ -26406,30 +26417,69 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * **A square 1 dp box with a red halo.** The two engine switches wear it
-     * while the shelf has no engine: the halo breathes (a ValueAnimator on
-     * `glow`), it is drawn as four nested strokes because a Drawable gets no
-     * `setShadowLayer` under hardware acceleration, and the box itself turns
-     * accent-red so the pair reads as one control asking to be pressed.
+     * **A lamp, not four rings.**
+     *
+     * <p>The two engine switches wear this while the shelf has no engine, and
+     * the halo breathes (a ValueAnimator on `glow`). The first version drew
+     * four nested strokes two dp apart and read as a red box with a red border
+     * -- the owner's word: 没有弥散效果，不像灯泡. Light does not have edges, so
+     * the halo is a **radial gradient on an inflated ellipse**: bright at the
+     * box, gone by seven dp, with a lit pane behind the border so the glow has
+     * a source. `setShadowLayer` is unavailable to a Drawable under hardware
+     * acceleration; a shader is not.
+     *
+     * <p>It paints outside its bounds, so the two parents have to allow it
+     * (`engineBox` and `filmHead` both `setClipChildren(false)`) -- that is
+     * also the reason the ellipse stays inside the 7 dp the 38 dp head row
+     * leaves around a 24 dp cell.
      */
     private final class EngineGlowBox extends android.graphics.drawable.Drawable {
         private final android.graphics.Paint p =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private final android.graphics.RectF r = new android.graphics.RectF();
+        private final android.graphics.Matrix m = new android.graphics.Matrix();
+        private android.graphics.RadialGradient halo;
+        private float haloRx, haloRy;
         float glow;
 
         @Override public void draw(android.graphics.Canvas c) {
             final android.graphics.Rect b = getBounds();
-            if (glow > 0.02f) {
-                p.setStyle(android.graphics.Paint.Style.STROKE);
-                for (int i = 1; i <= 4; ++i) {
-                    final float out = dp(i * 1.8f);
-                    p.setStrokeWidth(dp(2.2f));
-                    p.setColor(0xFFFF3B30);
-                    p.setAlpha((int) (glow * 46f / i));
-                    r.set(b.left - out, b.top - out, b.right + out, b.bottom + out);
-                    c.drawRoundRect(r, out, out, p);
+            if (glow > 0.01f) {
+                final float cx = b.exactCenterX(), cy = b.exactCenterY();
+                final float rx = b.width() * 0.5f + dp(7.5f);
+                final float ry = b.height() * 0.5f + dp(6.5f);
+                if (halo == null || haloRx != rx || haloRy != ry) {
+                    halo = new android.graphics.RadialGradient(0f, 0f, 1f,
+                            new int[]{0xC8FF5346, 0x8CFF3B30, 0x33FF5A46, 0x00FF6A50},
+                            new float[]{0f, 0.42f, 0.72f, 1f},
+                            android.graphics.Shader.TileMode.CLAMP);
+                    haloRx = rx;
+                    haloRy = ry;
                 }
+                m.setScale(rx, ry);
+                m.postTranslate(cx, cy);
+                halo.setLocalMatrix(m);
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                p.setShader(halo);
+                p.setAlpha((int) (255f * glow));
+                // **Only outside the cell.** Painting the gradient across the
+                // whole ellipse washes the button red and the letters vanish
+                // into it; a Difference clip leaves a ring of light with a lit
+                // pane behind it, which is what a lamp looks like.
+                final int save = c.save();
+                c.clipRect(cx - rx, cy - ry, cx + rx, cy + ry);
+                c.clipRect(b.left, b.top, b.right, b.bottom,
+                        android.graphics.Region.Op.DIFFERENCE);
+                c.drawRect(cx - rx, cy - ry, cx + rx, cy + ry, p);
+                c.restoreToCount(save);
+                p.setShader(null);
+                // The pane: a faint wash, so the cell reads as lit from within.
+                p.setColor(0xFFFF3B30);
+                p.setAlpha((int) (34f * glow));
+                r.set(b.left + dp(1.5f), b.top + dp(1.5f),
+                        b.right - dp(1.5f), b.bottom - dp(1.5f));
+                c.drawRect(r, p);
+                p.setAlpha(255);
             }
             p.setStyle(android.graphics.Paint.Style.STROKE);
             p.setStrokeWidth(Math.max(1f, dp(1)));
@@ -26441,41 +26491,6 @@ public class MainActivity extends Activity {
         @Override public void setAlpha(int a) { }
         @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
         @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
-    }
-
-    /**
-     * **Which engine develops this film?** Asked once, on the first card tap of
-     * a session that has no engine yet. A film only one engine ships says so on
-     * the other row instead of being offered and then failing.
-     */
-    private void showEngineChooser(String cardId, int index) {
-        final String spk = cardId.startsWith(FotuFilm.PREFIX)
-                ? FOTU_TWIN_SPK.get(cardId.substring(FotuFilm.PREFIX.length())) : cardId;
-        final boolean spkOk = spk != null && filmIds.contains(spk);
-        final String twin = cardId.startsWith(FotuFilm.PREFIX) ? null : fotuTwinOf(cardId);
-        final boolean fotuOk = cardId.startsWith(FotuFilm.PREFIX)
-                ? fotuIds.contains(cardId.substring(FotuFilm.PREFIX.length())) : twin != null;
-        // **A question with one answer is not a question.** Twenty-nine films
-        // are sold by one engine only; asking which engine, with the other row
-        // greyed, is a tap that carries no decision.
-        if (spkOk && !fotuOk) { setShelfEngine("spk"); pickFilmCard(cardId, index); return; }
-        if (!spkOk && fotuOk) { setShelfEngine("fotu"); pickFilmCard(cardId, index); return; }
-        if (!spkOk) { showInAppToast(otherEngineNote()); return; }
-        final java.util.List<String> labels = new java.util.ArrayList<>();
-        final java.util.List<String> notes = new java.util.ArrayList<>();
-        labels.add("SpektraLab 引擎");
-        notes.add("完整流程 · 片边 / 日期 / 裁切 / TIF" + (fotuOk ? "" : " · 这支胶片只有它有"));
-        labels.add("fotufilm 引擎");
-        notes.add("光谱实测 · 12 种输出介质" + (spkOk ? "" : " · 这支胶片只有它有"));
-        engineNudge = true;
-        refreshEngineSwitch();
-        showChoiceSheet("用哪个引擎冲印这张？", labels, notes, null,
-                i -> i == 0 ? spkOk : fotuOk,
-                pick -> {
-                    final String engine = labels.indexOf(pick) == 0 ? "spk" : "fotu";
-                    setShelfEngine(engine);
-                    if (!shelfEngine.isEmpty()) pickFilmCard(cardId, index);
-                });
     }
 
     /** What a greyed card says when it is tapped. */
@@ -27321,12 +27336,12 @@ public class MainActivity extends Activity {
         // not the export's.
         if (batchExportRunning) return;
         if (session == null || beforeBitmap == null) return;
-        // **A neutral shelf still previews.** The cards are "what this film
-        // does to your photograph", and one of the two engines is what draws
-        // that -- so with no engine chosen the first engine draws them. The
-        // switch stays neutral (a preview is not a decision), every card is a
-        // real option, and the choice is made once, on the first tap.
-        final String passEngine = shelfEngine.isEmpty() ? "spk" : shelfEngine;
+        // **Nothing is developed before an engine is chosen.** The cards are a
+        // catalogue at that point -- box fronts, no loaders -- and a preview
+        // drawn by an engine the user did not pick answers a question nobody
+        // asked. The switch beside the title is the only way in.
+        if (shelfEngine.isEmpty()) return;
+        final String passEngine = shelfEngine;
         // **Every card the shelf's engine can draw**, in shelf order, the
         // visible brand first. A card the engine does not ship is greyed and is
         // not queued: there is nothing to render for it.
