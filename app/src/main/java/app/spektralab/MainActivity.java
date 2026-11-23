@@ -16936,6 +16936,23 @@ public class MainActivity extends Activity {
         return n != null && n >= PREFETCH_FAIL_SHOWN;
     }
 
+    /**
+     * **A thumbnail belongs to a photograph, not only to a film.**
+     *
+     * <p>`filmThumbs` is keyed by film id, and that key says nothing about which
+     * picture the film was developed from. Clearing the map on import was the
+     * only thing keeping a new frame from showing the previous one's previews
+     * -- true for every synchronous path and false for anything that finished
+     * late (reported as 「导入新照片，卡片预览还是上一张」). The photograph is part
+     * of the key now, so an entry written against another picture can never be
+     * read for this one, whoever writes it and whenever.
+     */
+    private String thumbKey(String cardKey) {
+        if (cardKey == null) return "-";
+        final Uri src = sourceUri;
+        return (src == null ? "-" : src.toString()) + "|" + cardKey;
+    }
+
     private static String cardKeyFor(String stock) {
         if (stock == null || !stock.startsWith(FotuFilm.PREFIX)) return stock;
         final String spk = FOTU_TWIN_SPK.get(stock.substring(FotuFilm.PREFIX.length()));
@@ -17422,8 +17439,8 @@ public class MainActivity extends Activity {
             if ("original".equals(id)) continue;
             final android.view.View box = filmCardImages.get(id);
             if (!(box instanceof android.view.ViewGroup)) continue;
-            final boolean have = filmThumbs.containsKey(id)
-                    || filmThumbs.containsKey(cardKeyFor(id));
+            final boolean have = filmThumbs.containsKey(thumbKey(id))
+                    || filmThumbs.containsKey(thumbKey(cardKeyFor(id)));
             if (have) {
                 // picture + scrim + bars = the loader is still on screen
                 if (((android.view.ViewGroup) box).getChildCount() > 1) { stale = true; break; }
@@ -17482,7 +17499,7 @@ public class MainActivity extends Activity {
             final String id = (String) tag;
             if ("original".equals(id)) continue;
             if (!engineHasFor(id, passEngine)) continue;
-            if (filmThumbs.containsKey(cardKeyFor(id))) continue;
+            if (filmThumbs.containsKey(thumbKey(cardKeyFor(id)))) continue;
             ++missing;
         }
         queueTries = 0;
@@ -17522,7 +17539,7 @@ public class MainActivity extends Activity {
             // engine's preview of a film this one cannot develop.
             imageBox.addView(new FilmCoverView(this, id, text),
                     new android.widget.FrameLayout.LayoutParams(-1, -1));
-        } else if (!filmThumbs.containsKey(key) && prefetchFailureShown(key)) {
+        } else if (!filmThumbs.containsKey(thumbKey(key)) && prefetchFailureShown(key)) {
             // **A card that cannot be drawn says so.** An endless loader and a
             // drawn cover both read as "still loading"; after three passes this
             // is the honest state, and a tap retries it.
@@ -17539,7 +17556,7 @@ public class MainActivity extends Activity {
             imageBox.addView(new FilmCoverView(this, id, text),
                     new android.widget.FrameLayout.LayoutParams(-1, -1));
         } else {
-            Bitmap preview = filmThumbs.get(key);
+            Bitmap preview = filmThumbs.get(thumbKey(key));
             if (preview == null && filmStock != null && !showingOriginal
                     && cardShowsStock(id, filmStock)) {
                 preview = lastRenderedBitmap;
@@ -17737,8 +17754,8 @@ public class MainActivity extends Activity {
         // The stock that just finished is not necessarily the id its card is
         // filed under: a film both engines ship is drawn on one card.
         final android.widget.FrameLayout box = filmCardImages.get(cardKeyFor(id));
-        Bitmap thumb = filmThumbs.get(id);
-        if (thumb == null) thumb = filmThumbs.get(cardKeyFor(id));
+        Bitmap thumb = filmThumbs.get(thumbKey(id));
+        if (thumb == null) thumb = filmThumbs.get(thumbKey(cardKeyFor(id)));
         if (box == null || thumb == null) {
             // **Never silent.** These two are the only ways a finished picture
             // fails to reach its card, and both used to leave the loader
@@ -17777,7 +17794,8 @@ public class MainActivity extends Activity {
             final int h = Math.max(1, Math.round(w * rendered.getHeight() / (float) rendered.getWidth()));
             // One card, one key: a merged film's render is filed under the card
             // it is drawn on, whichever engine developed it.
-            filmThumbs.put(cardKeyFor(stock), Bitmap.createScaledBitmap(rendered, w, h, true));
+            filmThumbs.put(thumbKey(cardKeyFor(stock)),
+                    Bitmap.createScaledBitmap(rendered, w, h, true));
         } catch (Throwable ignored) { }
     }
 
@@ -27527,7 +27545,7 @@ public class MainActivity extends Activity {
             if ("original".equals(id)) continue;
             if (!engineHasFor(id, passEngine)) continue;
             final String key = cardKeyFor(id);
-            if (filmThumbs.containsKey(key)) continue;
+            if (filmThumbs.containsKey(thumbKey(key))) continue;
             // It already said "无法预览"; a tap is the next attempt, not a pass.
             if (prefetchFails.containsKey(key)) continue;
             if ("all".equals(brandFilter) || brandFilter.equals(brandOf(id))) pending.add(id);
@@ -27573,7 +27591,7 @@ public class MainActivity extends Activity {
                 if (generation != prefetchGeneration || !prefetchRunning) return;
                 final String id = pending.get(i);
                 final String key = cardKeyFor(id);
-                if (filmThumbs.containsKey(key)) continue;
+                if (filmThumbs.containsKey(thumbKey(key))) continue;
                 if (fotu) {
                     // Both are CPU work on the same phone: wait the render out.
                     for (int guard = 0; rendering || fotuRendering || wbDecoding; ++guard) {
@@ -27610,7 +27628,7 @@ public class MainActivity extends Activity {
                 try { DebugSink.text("prefetch-timing", id + " " + ms + " ms"); } catch (Throwable ignored) { }
                 runOnUiThread(() -> {
                     if (generation != prefetchGeneration) return;
-                    filmThumbs.put(key, thumb);
+                    filmThumbs.put(thumbKey(key), thumb);
                     prefetchFails.remove(key);
                     prefetchFailWhy.remove(key);
                     updateCardThumb(id);
@@ -27685,7 +27703,7 @@ public class MainActivity extends Activity {
         prefetchRunning = false;
         final java.util.List<String> all = prefetchMissing;
         int missing = 0;
-        if (all != null) for (String id : all) if (!filmThumbs.containsKey(id)) ++missing;
+        if (all != null) for (String id : all) if (!filmThumbs.containsKey(thumbKey(id))) ++missing;
         markFile("prefetch done gen=" + generation + "/" + prefetchGeneration
                 + " thumbs=" + filmThumbs.size() + " missing=" + missing);
         try {
@@ -27732,7 +27750,7 @@ public class MainActivity extends Activity {
     /** Replace a card's picture slot with a definite state, not a loader. */
     private void markCardUnavailable(String id, String why) {
         final android.widget.FrameLayout box = filmCardImages.get(cardKeyFor(id));
-        if (box == null || filmThumbs.containsKey(id)) return;
+        if (box == null || filmThumbs.containsKey(thumbKey(id))) return;
         box.removeAllViews();
         box.addView(unavailableTile(), new android.widget.FrameLayout.LayoutParams(-1, -1));
         markFile("thumb unavailable " + id + " · " + why);
