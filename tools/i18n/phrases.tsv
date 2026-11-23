@@ -238,3 +238,32 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 ：更快更稳，细节会少一些。	: faster and more stable, a little less detail.
 ：更快更稳，细节会少一些。\n\n本机按可用内存建议约 	: faster and more stable, a little less detail.\n\nThis device suggests about 
 ；	; 
+现在的胶片：	 current film: 
+fotufilm 的片门由胶片本身决定：35mm 胶片是 135（36 × 24），Vision3 / Eterna / Double-X 这些电影片是 Super 35，Instax 两支是它们自己的相纸尺寸。要换片门，换一支别的画幅的胶片。	fotufilm's gauge is the film itself: 35mm stocks are 135 (36 × 24), Vision3 / Eterna / Double-X are Super 35, and the two Instax films are their own sheet size. To change the gate, pick a stock of another format.
+135 全画幅	135 full frame
+135 半格	135 half frame
+135 XPan	135 XPan
+645	645
+6×6	6×6
+6×7	6×7
+6×8	6×8
+6×9	6×9
+6×12	6×12
+6×17	6×17
+Super 35	Super 35
+16mm 电影	16 mm movie
+Super 8	Super 8
+4×5 页片	4×5 sheet
+Instax mini	Instax mini
+Instax SQ	Instax SQ
+Instax wide	Instax wide
+ · 中画幅后背	 · medium-format back
+ · 厂印	 · edge print
+ 格	 frames
+不可用 · 	unavailable · 
+出片 	Output 
+ · 照片放进 	 · photo in a 
+ 的窗口	 window
+已导出画框 	Exported frame 
+画框是印在画面上的装饰，出片尺寸由模板决定（	A frame is printing over the picture and the template sets the size (
+）。\\n\\nTIFF / DNG 是给电脑上的 Lightroom 的母版，不套画框。	).\\n\\nTIFF and DNG are the masters that go to Lightroom on a desktop, where a printed card would be in the way.

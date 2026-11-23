@@ -378,12 +378,23 @@ static std::string g_rebate_holes = "white";    // the scan's light, or a black 
 static std::string g_pf_kind;
 static std::string g_pf_gauge = "135";
 static bool g_pf_etext = false;   // draw the stock's own edge print
+// Film Border's two remaining controls (`PrintFrameConfiguration`): how many
+// frames' length of the roll the picture runs across, and the camera a 135 cut
+// was exposed in.
+static int g_pf_frames = 1;
+static bool g_pf_medium_back = false;
 static double g_pf_margin = 3.0, g_pf_fx = 0.0, g_pf_fy = 0.0;
 static double g_pf_paper[3] = {0.930, 0.923, 0.900};
+// The same paper at maximum density: the carrier's filed rebate (`rebateRGB`).
+static double g_pf_paper_dense[3] = {0.060, 0.055, 0.050};
 static double g_pf_film[3]  = {0.965, 0.700, 0.520};
 // The light box's view of the same rebate, and the ink printed on it.
 static double g_pf_film_light[3] = {0.975, 0.960, 0.940};
 static double g_pf_film_ink[3]   = {0.055, 0.050, 0.046};
+// The DX number on the same strip: 0.5 denser than the rebate (official
+// `edgeDensities`), through the same light-box gain.
+static double g_pf_film_bar[3]   = {0.55, 0.40, 0.32};
+static bool g_pf_bars_ok = false;   // negatives only; a transparency has none
 
 // D50 (CIE daylight 5000 K) from the S0/S1/S2 basis in `spectral_data.hpp`.
 static void pf_d50(double out[spectral_grid::kCount]) {
@@ -445,27 +456,36 @@ static void pf_density_to_display(const std::vector<float> &density, double out[
 // against a pale base. Normalising each colour by its own maximum instead made
 // the inscription come out as a lighter peach -- measured before this: the text
 // was (220, 150, 110)-ish on a (248, 193, 155) base.
-static void pf_density_pair_to_lightbox(const std::vector<float> &base_density,
-                                        const std::vector<float> &ink_density, double level,
-                                        double out_base[3], double out_ink[3]) {
-    double lb[3], li[3];
-    if (!pf_linear_display(base_density, lb) || !pf_linear_display(ink_density, li)) return;
+static void pf_density_triple_to_lightbox(const std::vector<float> &base_density,
+                                          const std::vector<float> &ink_density,
+                                          const std::vector<float> &bar_density, double level,
+                                          double out_base[3], double out_ink[3],
+                                          double out_bar[3]) {
+    double lb[3], li[3], lr[3];
+    if (!pf_linear_display(base_density, lb) || !pf_linear_display(ink_density, li)
+            || !pf_linear_display(bar_density, lr)) return;
     const double m = std::max(lb[0], std::max(lb[1], lb[2]));
     const double k = (level > 0.0 && m > 1e-9) ? level / m : 1.0;
     double ob[3] = {lb[0] * k, lb[1] * k, lb[2] * k};
     double oi[3] = {li[0] * k, li[1] * k, li[2] * k};
+    double orr[3] = {lr[0] * k, lr[1] * k, lr[2] * k};
     pf_encode3(ob, out_base);
     pf_encode3(oi, out_ink);
+    pf_encode3(orr, out_bar);
 }
 
 static void pf_paper_from(const paper::Stock &sheet) {
-    std::vector<float> density(size_t(spectral_grid::kCount), 0.0f);
+    std::vector<float> white(size_t(spectral_grid::kCount), 0.0f);
+    std::vector<float> dense(size_t(spectral_grid::kCount), 0.0f);
     for (int c = 0; c < 3; ++c) {
         const std::vector<float> &dye = sheet.spectra.dyes[size_t(c)];
-        for (int i = 0; i < spectral_grid::kCount && i < int(dye.size()); ++i)
-            density[size_t(i)] += float(sheet.curves[size_t(c)].d_min) * dye[size_t(i)];
+        for (int i = 0; i < spectral_grid::kCount && i < int(dye.size()); ++i) {
+            white[size_t(i)] += float(sheet.curves[size_t(c)].d_min) * dye[size_t(i)];
+            dense[size_t(i)] += float(sheet.curves[size_t(c)].d_max()) * dye[size_t(i)];
+        }
     }
-    pf_density_to_display(density, g_pf_paper);
+    pf_density_to_display(white, g_pf_paper);
+    pf_density_to_display(dense, g_pf_paper_dense);
 }
 
 static void pf_film_from(const film::Spectra &stock) {
@@ -474,7 +494,8 @@ static void pf_film_from(const film::Spectra &stock) {
     // 反转片是 dMax（未曝光的片边显影到最大密度）；印字取 0.72 档（官方
     // `edgeDensities`）。印出来的那张（Carrier / Emulsion）要不归一化的值，
     // 光箱下的片边（Film Border）要归一化到 0.9。
-    std::vector<float> base_density(size_t(n), 0.0f), ink_density(size_t(n), 0.0f);
+    std::vector<float> base_density(size_t(n), 0.0f), ink_density(size_t(n), 0.0f),
+            bar_density(size_t(n), 0.0f);
     bool built = true;
     for (int c = 0; c < 3; ++c) {
         const std::vector<float> &dye = stock.dye[size_t(c)];
@@ -486,9 +507,12 @@ static void pf_film_from(const film::Spectra &stock) {
         // than its rebate, a transparency's 0.08 -- on the dark dMax edge those
         // read as faint light marks, which is what a real reversal strip has.
         const double dink = dmin + (stock.reversal ? 0.08 : 0.72) * (dmax - dmin);
+        // The DX bars: `edgeDensities` prints them 0.5 above base.
+        const double dbar = dmin + 0.5;
         for (int i = 0; i < n; ++i) {
             base_density[size_t(i)] += float(dbase * double(dye[size_t(i)]));
             ink_density[size_t(i)] += float(dink * double(dye[size_t(i)]));
+            bar_density[size_t(i)] += float(dbar * double(dye[size_t(i)]));
         }
     }
     if (!built) {
@@ -496,14 +520,19 @@ static void pf_film_from(const film::Spectra &stock) {
         if (!stock.has_minimum_density) return;
         base_density = stock.minimum_density;
         ink_density = stock.minimum_density;
+        bar_density = stock.minimum_density;
     }
     pf_density_to_display(base_density, g_pf_film);
     if (stock.reversal) {
         pf_density_to_display(base_density, g_pf_film_light);
         pf_density_to_display(ink_density, g_pf_film_ink);
+        pf_density_to_display(bar_density, g_pf_film_bar);
     } else {
-        pf_density_pair_to_lightbox(base_density, ink_density, 0.9, g_pf_film_light, g_pf_film_ink);
+        pf_density_triple_to_lightbox(base_density, ink_density, bar_density, 0.9,
+                                      g_pf_film_light, g_pf_film_ink, g_pf_film_bar);
     }
+    // The DX number is a negative-only marking (`stock.isReversal == false`).
+    g_pf_bars_ok = !stock.reversal;
 }
 
 // Film Border / Film Border Positive: the rebate draws 135 and the 120 frames,
@@ -1975,6 +2004,12 @@ static int run(int argc, char **argv) {
             if (print_frame::is_film_kind(print_frame::kind_from_id(g_pf_kind))) g_rebate = 1;
         }
         else if (flag == "--pfgauge") g_pf_gauge = next("--pfgauge");
+        else if (flag == "--pfframes") g_pf_frames = std::atoi(next("--pfframes"));
+        else if (flag == "--pfcam") {
+            const std::string cam = next("--pfcam");
+            g_pf_medium_back = cam == "mediumFormatBack" || cam == "medium-format-back"
+                            || cam == "medium";
+        }
         else if (flag == "--etext") g_pf_etext = std::atoi(next("--etext")) != 0;
         else if (flag == "--pfmargin") g_pf_margin = std::atof(next("--pfmargin"));
         else if (flag == "--pffx") g_pf_fx = std::atof(next("--pffx"));
@@ -3696,6 +3731,8 @@ static int run(int argc, char **argv) {
             print_frame::Request pf;
             pf.kind = pk;
             pf.gauge = g_pf_gauge;
+            pf.frames = g_pf_frames;
+            pf.medium_format_back = g_pf_medium_back;
             pf.frame_no = g_rebate_num > 0 ? std::to_string(g_rebate_num) : std::string();
             pf.inscription = g_rebate_text;
             pf.stock = stock_id;
@@ -3706,16 +3743,35 @@ static int run(int argc, char **argv) {
             std::memcpy(pf.film_rgb, g_pf_film, sizeof pf.film_rgb);
             std::memcpy(pf.film_light, g_pf_film_light, sizeof pf.film_light);
             std::memcpy(pf.film_ink, g_pf_film_ink, sizeof pf.film_ink);
+            std::memcpy(pf.film_bar, g_pf_film_bar, sizeof pf.film_bar);
+            std::memcpy(pf.paper_dense, g_pf_paper_dense, sizeof pf.paper_dense);
+            pf.draws_bars = g_pf_bars_ok;
+            pf.shows_print = g_pf_etext;
+            if (pk == print_frame::Kind::FilmPositive) {
+                // `Film Border Positive` is the strip scanned and inverted: a
+                // dark rebate, light edge printing and black perforations. The
+                // rebate is `invertedBaseRGB` (0.004 linear, official), and the
+                // lettering and the code come up light on it.
+                for (int k = 0; k < 3; ++k) {
+                    pf.film_rgb[k] = 0.0517;    // sRGB of 0.004 linear
+                    pf.film_light[k] = 0.0517;  // the strip's own fill
+                    pf.film_ink[k] = 0.92;
+                    pf.film_bar[k] = 0.92;
+                }
+            }
             print_frame::Layout pl;
             std::string pf_error;
             if (print_frame::layout(pf, int(width), int(height), pl, pf_error)) {
                 std::vector<uint8_t> framed;
                 print_frame::compose(pf, pl, rgb.data(), int(width), int(height), framed);
                 rgb.swap(framed);
-                std::printf("print-frame | %s  canvas %dx%d (%.1f x %.1f mm)  picture %dx%d at %d,%d  %.3f px/mm\n",
+                std::printf("print-frame | %s  canvas %dx%d (%.1f x %.1f mm)  picture %dx%d at %d,%d  %.3f px/mm"
+                            "  frames %d%s  gauge %s\n",
                             print_frame::kind_id(pk), pl.canvas_w, pl.canvas_h,
                             pl.sheet_w_mm, pl.sheet_h_mm, pl.photo_w, pl.photo_h,
-                            pl.photo_x, pl.photo_y, pl.px_per_mm);
+                            pl.photo_x, pl.photo_y, pl.px_per_mm,
+                            pl.frames, pl.exposes_edges ? " (edges open)" : "",
+                            g_pf_gauge.c_str());
                 width = uint32_t(pl.canvas_w);
                 height = uint32_t(pl.canvas_h);
                 frame = size_t(width) * size_t(height);
@@ -3986,6 +4042,8 @@ extern "C" int fh_process(const char *resources, const char *config_prefix, cons
                 else if (one.rfind("rholes:", 0) == 0) { args.push_back("--rholes"); args.push_back(one.substr(7)); }
                 else if (one.rfind("pf:", 0) == 0) { args.push_back("--pf"); args.push_back(one.substr(3)); }
                 else if (one.rfind("pfg:", 0) == 0) { args.push_back("--pfgauge"); args.push_back(one.substr(4)); }
+                else if (one.rfind("pffr:", 0) == 0) { args.push_back("--pfframes"); args.push_back(one.substr(5)); }
+                else if (one.rfind("pfcam:", 0) == 0) { args.push_back("--pfcam"); args.push_back(one.substr(6)); }
                 else if (one.rfind("etext:", 0) == 0) { args.push_back("--etext"); args.push_back(one.substr(6)); }
                 else if (one.rfind("pfm:", 0) == 0) { args.push_back("--pfmargin"); args.push_back(one.substr(4)); }
                 else if (one.rfind("pffx:", 0) == 0) { args.push_back("--pffx"); args.push_back(one.substr(5)); }

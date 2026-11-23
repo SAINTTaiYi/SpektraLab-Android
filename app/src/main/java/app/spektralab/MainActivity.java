@@ -369,7 +369,14 @@ public class MainActivity extends Activity {
      * below are previews *of*, and a film only one engine carries is greyed
      * instead of hidden.
      */
-    private String shelfEngine = "spk";
+    /** **No engine until the user picks one.** The shelf is a catalogue until
+     *  then: the cards do not develop, and the first tap asks which machine
+     *  will do it (see `showEngineChooser`). */
+    private String shelfEngine = "";
+    /** The first card tap with no engine set turns the two boxes' red halo on. */
+    private boolean engineNudge;
+    private EngineGlowBox engineSpkGlow, engineFotuGlow;
+    private android.animation.ValueAnimator engineGlowAnim;
     /** The two cells of that switch. */
     private TextView engineSpkCell, engineFotuCell;
     /** The EDR switch in the print panel; `edrOn` is still the value. */
@@ -492,10 +499,21 @@ public class MainActivity extends Activity {
     private float edgeFog = 1.0f;          // 0..4
     /** 印刷边框 (fotufilm's print-frame model). */
     private String pfKind = "none";
-    /** The user actually picked a print frame (see `Look.pfChosen`). */
-    private boolean pfChosen = false;
+    /** 画框：`assets/frames/<id>` 的一套模板；空串 = 不套。见 `FrameTemplate`。 */
+    private String frameTemplate = "";
+    /** 段落之间那一行空行；放在常量里，译文表才对得上每段。 */
+    private static final String PARA = "\n\n";
+    private TextView frameValue, frameSize;
+    private LinearLayout framePage;
     private float pfMargin = 3.0f, pfFx = 0f, pfFy = 0f;
+    /** Film Border's two remaining controls, official `printFrameCount` and
+     *  `printFrameCamera`: one picture across 1-4 frames of the roll, and the
+     *  camera a 135 cut was exposed in. */
+    private String pfCamera = "panoramic";     // or "mediumFormatBack"
+    private int pfFrames = 1;                  // 1..4
     private SeekBar pfMarginBar, pfFxBar, pfFyBar;
+    private TextView pfCameraValue, pfFramesValue;
+    private View pfCameraCell, pfFramesCell;
     private TextView pfValue;
     private LinearLayout pfPage;
     private float edgeLeaks = 0.0f;        // 0..4
@@ -628,6 +646,19 @@ public class MainActivity extends Activity {
         // Same contract: every bar reads the static at draw time, so setting it
         // before the first panel is built is enough.
         DialBar.setStyle(getSharedPreferences("ui", MODE_PRIVATE).getInt("slider_style", 0));
+        // **The engine is a per-photograph decision, never a remembered one.**
+        //
+        // It used to be read back from the preferences, and a remembered "spk"
+        // read as the app having chosen for a photograph the owner had not even
+        // looked at yet: the SPK box arrived accented, every film the other
+        // engine sells arrived greyed, and -- because the switch is also what
+        // starts the shelf's queue -- the cards sat on their loaders. Reported
+        // twice ("导入新照片依旧选了 spk 引擎"). A neutral shelf means all
+        // fifty-four cards, no greying, and the question asked once, at the
+        // first tap.
+        shelfEngine = "";
+        DialBar.onDragStart = this::beginDragFocus;
+        DialBar.onDragEnd = this::endDragFocus;
         CrashTrail.mark(this, "app:onCreate");
         // The native side, before anything reads it: every object the engine
         // is linked against is loaded by path, and a failure is kept (see
@@ -647,6 +678,22 @@ public class MainActivity extends Activity {
         try { DebugSink.text("app-start", "buildInfo=" + SpektraLabEngine.buildInfo()); } catch (Throwable ignored) {}
         
         buildUi();
+        // **After `buildUi`, never before it.** `panels` is filled inside it,
+        // so this loop used to walk six nulls and register nothing at all --
+        // which is exactly 「还是没限高」: whatever `enterPanel` measured to was
+        // what the page kept.
+        for (View p : panels) capPanel(p);
+        capPanel(fotuPanel);
+        // **Now that the views exist.** This used to sit before `buildUi` behind
+        // an `if (controls != null)` that was always false, so the picture's box
+        // never grew past the canvas column at all.
+        if (controls != null) {
+            controls.addOnLayoutChangeListener((v, l, t, r, b2, ol, ot, orr, ob) -> syncCanvasOverflow());
+        }
+        if (canvasStage != null) {
+            canvasStage.addOnLayoutChangeListener((v, l, t, r, b2, ol, ot, orr, ob) -> syncCanvasOverflow());
+        }
+        syncCanvasOverflow();
         uiReady = true;
         pushGlow();
         // The strip and the look come back on the next frame, not inside
@@ -677,6 +724,10 @@ public class MainActivity extends Activity {
     @Override
     public void onConfigurationChanged(android.content.res.Configuration cfg) {
         super.onConfigurationChanged(cfg);
+        // The stage was measured for the old window; one way to be right on the
+        // other side of a turn is to put the board back and let the user open it
+        // again.
+        try { closeCurveStage(); } catch (Throwable ignored) { }
         try {
             applyEditorLayout();
             if (lightDesk != null) lightDesk.invalidate();
@@ -930,7 +981,9 @@ public class MainActivity extends Activity {
     private LinearLayout edgeShapeRow;
     /** 边框那三张卡片。**两个引擎各有一套**：fotufilm 没有日期水印（web 端也没有），
      *  第一引擎没有印刷边框。 */
-    private View edgeCardRebate, edgeCardDate, edgeCardPf;
+    private View edgeCardRebate, edgeCardDate, edgeCardPf, edgeCardFrame;
+    /** Each card's summary supplier and the line it writes into. */
+    private final java.util.List<Object[]> edgeCardRefs = new java.util.ArrayList<>();
     private int edgePageIndex = -1;
     /** Ceiling for a 边框 sub-page, in dp.
      *
@@ -1332,6 +1385,8 @@ public class MainActivity extends Activity {
          * `onTouchEvent`, and by nothing else.
          */
         boolean latLocked;
+        /** Fired when a drag really starts / ends; the panel folds to one row. */
+        static java.util.function.Consumer<DialBar> onDragStart, onDragEnd;
         /** Notches across the range, and how many of them make a major tick. */
         private static final int kSteps = 96, kMajor = 4, kClickEvery = 2;
 
@@ -1365,6 +1420,17 @@ public class MainActivity extends Activity {
 
         private final float d;
         private final int thumbSlop;
+
+        /**
+         * **White, while the row is the only thing on the canvas.**
+         *
+         * <p>During a drag the panel is transparent and the picture is behind
+         * the slider: the accent blue has nothing to sit on, and a paper card
+         * behind the row was both ugly and -- because it added padding -- moved
+         * the slider down out from under the finger. The row keeps its place
+         * and changes colour instead.
+         */
+        boolean light;
         private final android.graphics.Paint paint =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private final android.graphics.RectF rect = new android.graphics.RectF();
@@ -1649,6 +1715,7 @@ public class MainActivity extends Activity {
                         lastUpMs = 0;
                         return true;
                     }
+                    if (dragging && onDragEnd != null) onDragEnd.accept(this);
                     touching = true;
                     tracking = true;
                     dragging = false;
@@ -1682,6 +1749,7 @@ public class MainActivity extends Activity {
                         // sideways than vertical.
                         if (adx < 8f * d || adx < ady * 1.5f) return true;
                         dragging = true;
+                        if (onDragStart != null) onDragStart.accept(this);
                         // **Re-anchor.** The travel that qualified the gesture
                         // must not also move the value, or the dial jumps a step
                         // the instant it decides the finger meant it.
@@ -1728,6 +1796,7 @@ public class MainActivity extends Activity {
                     lastUpMs = android.os.SystemClock.uptimeMillis();
                     if (dragging) {
                         dragging = false;
+                        if (onDragEnd != null) onDragEnd.accept(this);
                         if (listener != null) listener.onStopTrackingTouch(this);
                     }
                     // Their release: throw 150 ms of velocity, then spring.
@@ -1786,12 +1855,28 @@ public class MainActivity extends Activity {
             } catch (Throwable ignored) { }
         }
 
+        /**
+         * **A page can be rebuilt under the finger.** `showPrintGroup` and
+         * friends empty the body, and a view removed mid-gesture stops
+         * receiving events -- no ACTION_UP, no ACTION_CANCEL, so `onDragEnd`
+         * never ran and the panel stayed canvas-blue for good.
+         */
+        @Override protected void onDetachedFromWindow() {
+            if (dragging) {
+                dragging = false;
+                if (onDragEnd != null) onDragEnd.accept(this);
+            }
+            super.onDetachedFromWindow();
+        }
+
         // --- drawing ----------------------------------------------------------
 
         @Override protected void onDraw(android.graphics.Canvas c) {
             final int w = getWidth(), h = getHeight();
             if (w <= 0 || h <= 0 || getMax() <= 0) return;
             if (style == STYLE_TRACK) { drawTrack(c, w, h); return; }
+            final int dim = light ? 0x99FFFFFF : UI_MUTED;
+            final int hotInk = light ? 0xFFFFFFFF : UI_BLUE;
             final float pitch = pitch();
             final float cx = pointerX();
             final float unit = kUnitDp * d;
@@ -1814,7 +1899,7 @@ public class MainActivity extends Activity {
             if (glowA > 0.004f) {
                 if (haloShader == null || Math.abs(haloR - 24f * d) > 0.5f) {
                     haloR = 24f * d;
-                    final int ink = UI_BLUE & 0x00FFFFFF;
+                    final int ink = (light ? 0xFFFFFF : UI_BLUE) & 0x00FFFFFF;
                     haloShader = new android.graphics.RadialGradient(0f, 0f, haloR,
                             new int[]{0x9A000000 | ink, 0x44000000 | ink, 0x00000000 | ink},
                             new float[]{0f, 0.5f, 1f},
@@ -1888,7 +1973,7 @@ public class MainActivity extends Activity {
                         (0.72f + 0.28f * m) * Math.min(1f, 0.14f + 0.50f * f + 0.30f * g),
                         0.30f + 0.70f * pop);
                 final float hot = Math.max(Math.min(1f, 0.60f * f + 0.60f * g), pop);
-                paint.setColor(blend(UI_MUTED, UI_BLUE, hot));
+                paint.setColor(blend(dim, hotInk, hot));
                 paint.setAlpha(Math.round(lit * 255f));
                 rect.set(x - tickW, midY - tickH * 0.5f, x + tickW, midY + tickH * 0.5f);
                 c.drawRoundRect(rect, tickW, tickW, paint);
@@ -1909,7 +1994,8 @@ public class MainActivity extends Activity {
                 if (text == null || text.isEmpty()) continue;
                 final float tw = paint.measureText(text);
                 if (x - tw * 0.5f < lastRight + 2.5f * d) continue;
-                paint.setColor(Math.abs(x - cx) < pitch * kMajor * 0.5f ? UI_INK : UI_MUTED);
+                paint.setColor(light ? 0xFFFFFFFF
+                        : (Math.abs(x - cx) < pitch * kMajor * 0.5f ? UI_INK : UI_MUTED));
                 c.drawText(text, x, baseline, paint);
                 lastRight = x + tw * 0.5f;
             }
@@ -1937,11 +2023,11 @@ public class MainActivity extends Activity {
             paint.setStyle(android.graphics.Paint.Style.FILL);
             paint.setAlpha(0xFF);
 
-            paint.setColor(UI_LINE);
+            paint.setColor(light ? 0x66FFFFFF : UI_LINE);
             rect.set(x0, trackY - half, x1, trackY + half);
             c.drawRoundRect(rect, half, half, paint);
 
-            paint.setColor(UI_BLUE);
+            paint.setColor(light ? 0xFFFFFFFF : UI_BLUE);
             rect.set(x0, trackY - half, Math.max(x0, thumbX), trackY + half);
             c.drawRoundRect(rect, half, half, paint);
 
@@ -1964,7 +2050,7 @@ public class MainActivity extends Activity {
                     appear = Math.max(0f, Math.min(1f, introT * 1.8f - rank * 0.8f));
                     if (appear <= 0.01f) continue;
                 }
-                paint.setColor(UI_MUTED);
+                paint.setColor(light ? 0xFFFFFFFF : UI_MUTED);
                 paint.setAlpha(Math.round((major ? 0xB4 : 0x78) * appear));
                 final float th = (major ? 4f : 2f) * d * (intro ? (0.4f + 0.6f * appear) : 1f);
                 rect.set(x - 0.5f * d, top, x + 0.5f * d, top + th);
@@ -1982,9 +2068,9 @@ public class MainActivity extends Activity {
             // 拇指最后画：纸色的缝先铺，蓝点压在上面
             final float r = 7f * d * (touching ? 1.12f : 1f);
             paint.setAlpha(0xFF);
-            paint.setColor(UI_PAPER);
+            paint.setColor(light ? UI_STAGE : UI_PAPER);
             c.drawCircle(thumbX, trackY, r + 1.5f * d, paint);
-            paint.setColor(UI_BLUE);
+            paint.setColor(light ? 0xFFFFFFFF : UI_BLUE);
             c.drawCircle(thumbX, trackY, r, paint);
         }
 
@@ -2061,18 +2147,12 @@ public class MainActivity extends Activity {
         float edgeFog, edgeLeaks, frameNumber;
         /** 印刷边框: fotufilm's finishing layer -- paper, carrier, mount, canvas. */
         String pfKind;
-        /**
-         * Somebody actually asked for a print frame.
-         *
-         * <p>The seven motion/sheet gauges belong to the print frame, and the
-         * gate sheet is the only way to reach them -- so the gate alone cannot
-         * say whether a print frame was wanted. A look from before this marker
-         * existed may sit on Super 8 or Super 35 because the auto-pick used to
-         * hand those gauges out (a 4:3 frame went to Super 35, a 13:9 to Super
-         * 8), and the host then drew a whole Super 8 frame where the rebate
-         * should have been. No marker, no print frame.
-         */
-        boolean pfChosen;
+        /** 画框模板的 id；空串 = 不套。 */
+        String frameTemplate;
+        /** Film Border: how many frames the picture spans (1-4) and the
+         *  camera a 135 cut was exposed in. */
+        String pfCamera = "panoramic";
+        int pfFrames = 1;
         float pfMargin, pfFx, pfFy;
         /** Switches: 1 is on. Kept as floats so one knob can drive them. */
         float halationOn = 1f, grainOn = 1f, couplersOn = 1f, antihalationRemoved = 0f;
@@ -2284,7 +2364,9 @@ public class MainActivity extends Activity {
             putNum(o, "leaks", l.edgeLeaks);
             putNum(o, "frameno", l.frameNumber);
             o.put("pfk", l.pfKind == null ? "none" : l.pfKind);
-            o.put("pfc", l.pfChosen ? 1 : 0);
+            o.put("frt", l.frameTemplate == null ? "" : l.frameTemplate);
+            o.put("pfcam", l.pfCamera == null ? "panoramic" : l.pfCamera);
+            o.put("pffr", l.pfFrames);
             putNum(o, "pfm", l.pfMargin);
             putNum(o, "pffx", l.pfFx);
             putNum(o, "pffy", l.pfFy);
@@ -2485,7 +2567,10 @@ public class MainActivity extends Activity {
         l.edgeLeaks = (float) o.optDouble("leaks", 0.0);
         l.frameNumber = (float) o.optDouble("frameno", 0.0);
         l.pfKind = o.optString("pfk", "none");
-        l.pfChosen = o.optInt("pfc", 0) != 0;
+        l.frameTemplate = o.optString("frt", "");
+        l.pfCamera = "mediumFormatBack".equals(o.optString("pfcam", "panoramic"))
+                ? "mediumFormatBack" : "panoramic";
+        l.pfFrames = Math.max(1, Math.min(4, o.optInt("pffr", 1)));
         l.pfMargin = (float) o.optDouble("pfm", 3.0);
         l.pfFx = (float) o.optDouble("pffx", 0.0);
         l.pfFy = (float) o.optDouble("pffy", 0.0);
@@ -2821,10 +2906,10 @@ public class MainActivity extends Activity {
     private final java.util.List<Frame> frames = new java.util.ArrayList<>();
     private android.view.ViewGroup sourceBar;
     private LinearLayout sourceRow, thumbStrip;
-    /** 照片栏的底：整条画布蓝 + 一块右缘斜切的白板。 */
-    private ShelfBoard shelfBoard;
-    /** 只画白板那一块里的缩略图。 */
-    private ShelfScroll shelfScroll;
+    /** 照片栏的纸：右缘的圆角跟着收起进度长出来。 */
+    private ShelfPaper shelfPaper;
+    /** 缩略图那一条（原来只画白板里的那一块，斜切去掉后就是一条普通滚动条）。 */
+    private HorizontalScrollView shelfScroll;
     /** 画布脚上那一条（文件名 + 状态）：收起时它跟着画布的下缘一起下移。 */
     private View previewFoot;
     /** 缩略图那一条：当前这张最后画（不用 `setZ` —— translationZ 会带出投影）。 */
@@ -2852,9 +2937,10 @@ public class MainActivity extends Activity {
      * halfway through reversible: the target flips, the position and the
      * velocity carry over, and nothing is reset.
      */
-    private float shelfFold, shelfFoldVel, shelfFoldTarget;
-    private boolean shelfFoldAnimating;
-    private long shelfFoldClockNs;
+    private float shelfFold, shelfFoldTarget;
+    private android.animation.ValueAnimator shelfFoldAnim;
+    /** 收起后停在屏内的那一格：`‹` 的把手。 */
+    private static final float SHELF_DOCK_DP = 40f;
     private HorizontalScrollView thumbScroll;
     private boolean shelfCollapsed = false;
     /** Set while a chip is re-opening a frame, so the import does not append a
@@ -2950,6 +3036,8 @@ public class MainActivity extends Activity {
      *  time. The session has a single native result buffer, so this and a
      *  user render share RENDER_LOCK. */
     private volatile boolean prefetchRunning = false;
+    /** How many times `ensureShelfQueue` has re-posted itself for a busy frame. */
+    private int queueTries;
     private Thread prefetchThread = null;
     private volatile int prefetchGeneration = 0;
     /**
@@ -3142,6 +3230,19 @@ public class MainActivity extends Activity {
     private final List<View> formatCards = new ArrayList<>();
     private static final int CONTROLS_OPEN_DP = 298;
     private static final int CONTROLS_CLOSED_DP = 58;
+    /**
+     * How tall a panel may grow before it scrolls: the film page's own height.
+     *
+     * <p>**222 dp is 38 + 38 + 111 + 35** -- 胶片's head, its maker row, the
+     * shelf and the paper row. Nothing here is a taste: the numbers are the
+     * page's own furniture, and a cap below them would clip the shelf. Every
+     * other page is cut to the same line, so switching tools never moves the
+     * photograph by more than the strip's own 38 dp.
+     *
+     * <p>It was 240/300 for a while, which is a third of a phone: 冲印 then
+     * ended 38 dp *below* the line and 「高太多了」 was right.
+     */
+    private static final int PANEL_CAP_DP = 222;
     /** 反馈群：the one place a user can reach a human. Shown once per build. */
     private static final String QQ_GROUP = "1134320449";
     // **A hidden pixel ceiling, for one purpose: letting a tester name a size
@@ -3450,7 +3551,7 @@ public class MainActivity extends Activity {
                 final android.widget.TextView tv = new android.widget.TextView(this);
                 tv.setTypeface(tfDisplay);
                 tv.setTextScaleX(0.9f);
-                tv.setTextColor(UI_BLUE);
+                tv.setTextColor(0xFFF6F3EA);
                 tv.setIncludeFontPadding(false);
                 tv.setClickable(false);
                 tv.setFocusable(false);
@@ -3466,6 +3567,8 @@ public class MainActivity extends Activity {
             if (parent == null) return;
             dialValue.setVisibility(android.view.View.VISIBLE);
             dialValue.setText(text == null ? "" : text);
+            // White only while the panel is see-through; on paper it is blue.
+            dialValue.setTextColor(dragRow != null ? 0xFFF6F3EA : UI_BLUE);
             dialValue.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 22f * pop);
             dialValue.setAlpha(Math.min(1f, alpha));
             dialValue.measure(
@@ -3852,7 +3955,13 @@ public class MainActivity extends Activity {
                 - panelHolder.getPaddingLeft() - panelHolder.getPaddingRight();
         if (inner <= 0) return;
         int to = naturalHeight(panel, inner);
-        if (capPx > 0 && to > capPx) to = capPx;
+        // A tab page is the only thing whose height moves the photograph, so
+        // that is the only thing this caps. Inner bodies (`printBody`,
+        // `viewScrolls`, `fotuBody`) are sized by their own page.
+        final int cap = capPx > 0 ? capPx
+                : (panel.getParent() == panelHolder && (panels[5] == null || panel != panels[5])
+                        ? dp(PANEL_CAP_DP) : 0);
+        if (cap > 0 && to > cap) to = cap;
         cancelHeight(panel);
         // Every component animates itself, and stays visible while it does.
         componentArrival(panel);
@@ -3867,9 +3976,17 @@ public class MainActivity extends Activity {
             }
             return;
         }
+        // **A capped page is pinned even when the height does not travel.**
+        // Left as WRAP_CONTENT the first measure comes out at the *natural*
+        // height (278 for 冲印) and `capPanel` clips it one frame later -- the
+        // photograph would jump 56 dp as the tab opens.
+        final android.view.ViewGroup.LayoutParams lp = panel.getLayoutParams();
+        if (cap > 0 && lp.height != to) {
+            lp.height = to;
+            panel.setLayoutParams(lp);
+        }
         if (fromH <= 0) return;
         if (to <= 0 || to == fromH) return;
-        final android.view.ViewGroup.LayoutParams lp = panel.getLayoutParams();
         lp.height = fromH;
         panel.setLayoutParams(lp);
         animateHeightTo(panel, fromH, to);
@@ -13639,6 +13756,10 @@ public class MainActivity extends Activity {
         // 栏也试过，`clipChildren=false` 在真机上并没有让它画到父视图之外。装进
         // 同一个 FrameLayout，脚就永远在自己的父视图里面，怎么走都不会被切。
         canvasColumn = new android.widget.FrameLayout(this);
+        // **画布色，一直铺到照片栏的底。** 收起照片栏以后那一条是透明的（见
+        // `applyShelfFold`），照片在它后面 —— 而没有照片时后面就是这块底色，
+        // 不是 App 的纸白。
+        canvasColumn.setBackgroundColor(UI_STAGE);
         leftColumn.addView(canvasColumn, new LinearLayout.LayoutParams(-1, 0, 1f));
         canvasColumn.addView(stage, new android.widget.FrameLayout.LayoutParams(-1, -1));
         editorSourceBar = buildSourceBar();
@@ -14879,6 +15000,7 @@ public class MainActivity extends Activity {
         private final android.graphics.Path white = new android.graphics.Path();
         private final int blue, paper;
         private float topX, bottomX, bandTop, bandBottom;
+        private int alpha = 255;
 
         ShelfBoard(int blue, int paper) {
             this.blue = blue;
@@ -14907,6 +15029,7 @@ public class MainActivity extends Activity {
             paint.setStyle(android.graphics.Paint.Style.FILL);
             paint.setShader(null);
             paint.setColor(blue);
+            paint.setAlpha(alpha);
             c.drawRect(b, paint);
             if (bottomX <= b.left) return;
             // **白板 = 整块减去斜切那一条。** 顺序：上边 → 右上 → 下到斜切的上边 →
@@ -14924,12 +15047,21 @@ public class MainActivity extends Activity {
             white.lineTo(b.left, b.bottom);
             white.close();
             paint.setColor(paper);
+            paint.setAlpha(alpha);
             c.drawPath(white, paint);
         }
 
-        @Override public void setAlpha(int alpha) { }
+        @Override public void setAlpha(int a) {
+            a = Math.max(0, Math.min(255, a));
+            if (a == alpha) return;
+            alpha = a;
+            invalidateSelf();
+        }
         @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
-        @Override public int getOpacity() { return android.graphics.PixelFormat.OPAQUE; }
+        @Override public int getOpacity() {
+            return alpha >= 255 ? android.graphics.PixelFormat.OPAQUE
+                    : android.graphics.PixelFormat.TRANSLUCENT;
+        }
     }
 
     /**
@@ -14939,6 +15071,54 @@ public class MainActivity extends Activity {
      * <p>裁剪路径的左边界给得很远，因为收起来时缩略图会走到本视图左边界之外
      * （`stackX` 16 dp 在整条坐标系里，而本视图从 50 dp 开始）。
      */
+    /**
+     * **The strip's paper, with a right edge.** Expanded that edge is the
+     * screen's own edge; folded it is the line that is left on screen, and it
+     * grows a 12 dp radius as the strip parks there -- one drawable, no second
+     * view to keep in step with the translation.
+     */
+    private static final class ShelfPaper extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Path path = new android.graphics.Path();
+        private final android.graphics.RectF rect = new android.graphics.RectF();
+        private final int color;
+        private final float[] radii = new float[8];
+
+        ShelfPaper(int color) {
+            this.color = color;
+            paint.setColor(color);
+            paint.setStyle(android.graphics.Paint.Style.FILL);
+        }
+
+        void setRightRadius(float px) {
+            if (Math.abs(radii[2] - px) < 0.05f) return;
+            radii[0] = radii[1] = 0f;                      // top-left
+            radii[2] = radii[3] = px;                      // top-right
+            radii[4] = radii[5] = px;                      // bottom-right
+            radii[6] = radii[7] = 0f;                      // bottom-left
+            invalidateSelf();
+        }
+
+        @Override public void draw(android.graphics.Canvas c) {
+            final android.graphics.Rect b = getBounds();
+            if (b.isEmpty()) return;
+            rect.set(b);
+            path.reset();
+            path.addRoundRect(rect, radii, android.graphics.Path.Direction.CW);
+            paint.setColor(color);
+            paint.setAlpha(0xFF);
+            c.drawPath(path, paint);
+        }
+
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
+        @Override public int getOpacity() {
+            return radii[2] > 0.5f ? android.graphics.PixelFormat.TRANSLUCENT
+                    : android.graphics.PixelFormat.OPAQUE;
+        }
+    }
+
     private static final class ShelfScroll extends android.widget.HorizontalScrollView {
         private final android.graphics.Path clip = new android.graphics.Path();
         private float edgeTop, edgeBottom, bandTop, bandBottom;
@@ -15026,17 +15206,34 @@ public class MainActivity extends Activity {
             leftColumn.addView(canvasColumn, new LinearLayout.LayoutParams(-1, -1));
         }
         canvasColumn.removeAllViews();
+        // **画布整个铺满这一列，照片栏叠在它上面。** Not `bottomMargin`: the
+        // strip used to hold 62 dp of the column, so the picture stopped above
+        // it. Now the picture's box is the column (and runs on under the
+        // panel), and the strip is an overlay at the bottom of it -- sliding
+        // the strip away reveals the photograph instead of moving the frame.
+        canvasColumn.setClipChildren(true);
         if (canvasStage != null) {
-            // **画布不能压到照片栏底下。** 它是 match_parent，照片栏是叠在它上面
-            // 的一层 —— 不给下边距的话，照片的取景框会比以前高 62 dp。
-            final android.widget.FrameLayout.LayoutParams slp =
-                    new android.widget.FrameLayout.LayoutParams(-1, -1);
-            slp.bottomMargin = dp(frames.isEmpty() ? 0f : SHELF_H_DP);
-            canvasColumn.addView(canvasStage, slp);
+            canvasColumn.addView(canvasStage,
+                    new android.widget.FrameLayout.LayoutParams(-1, -1));
         }
         if (editorSourceBar != null) {
             canvasColumn.addView(editorSourceBar, new android.widget.FrameLayout.LayoutParams(
                     -1, dp(frames.isEmpty() ? 0f : SHELF_H_DP), android.view.Gravity.BOTTOM));
+        }
+        if (shelfHandle != null) {
+            // **收起来的那一叠照片，坐在状态行的上面。** A sibling of the strip
+            // rather than a child of it: the strip slides away and this stays
+            // where it is. The 30 dp margin is the status line (20 dp) plus its
+            // own 8 dp, so the filename reads *under* the stack instead of
+            // being covered by it.
+            final android.view.ViewGroup old = (android.view.ViewGroup) shelfHandle.getParent();
+            if (old != null) old.removeView(shelfHandle);
+            final android.widget.FrameLayout.LayoutParams hlp =
+                    new android.widget.FrameLayout.LayoutParams(dp(52), dp(46),
+                            android.view.Gravity.BOTTOM | android.view.Gravity.START);
+            hlp.leftMargin = dp(16);
+            hlp.bottomMargin = dp(30);
+            canvasColumn.addView(shelfHandle, hlp);
         }
         if (previewFoot != null) {
             final android.view.ViewGroup old = (android.view.ViewGroup) previewFoot.getParent();
@@ -15051,20 +15248,23 @@ public class MainActivity extends Activity {
     private View buildSourceBar() {
         final android.widget.FrameLayout bar = new android.widget.FrameLayout(this);
         sourceBar = bar;
-        // **和画布同一个颜色。** 换成克莱因蓝试过一版：斜切确实被「圈」出来了，
-        // 可收起以后整条和画布成了两种蓝 —— 那是更糟的错。同色时把它和画布分开
-        // 的是**白**：斜切只占缩略图那 42 dp，上下各留 10 dp 白，所以它读成「照片
-        // 栏里的一块」，而不是「从屏幕顶通下来的柱子」。
-        shelfBoard = new ShelfBoard(UI_STAGE, UI_PAPER);
-        bar.setBackground(shelfBoard);
-        // 宽度只有布局之后才知道，而 `updateShelfVisibility` 常在布局之前跑：
-        // 每次排完版按当前的 p 再算一遍斜切线的位置。
+        // **A plain paper strip that slides.** No colour wash, no wedge, no
+        // width change: the bar keeps its full width and moves left, and only
+        // the chevron's 40 dp stays on screen. The paper's right edge is the
+        // line that remains, so its radius lives on the drawable.
+        shelfPaper = new ShelfPaper(UI_PAPER);
+        bar.setBackground(shelfPaper);
+        // 宽度只有布局之后才知道，所以每次排完版按当前的 p 再算一遍。
         bar.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> applyShelfFold(shelfFold));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), 0, dp(4), 0);
+        // **The row ends exactly where the dock does.** No right padding: the
+        // ‹ is 40 dp wide, so once the strip has slid its full travel the only
+        // thing on screen *is* the chevron, and its touch target is the paper
+        // the user can see.
+        row.setPadding(dp(10), 0, 0, 0);
         sourceRow = row;
 
         final TextView add = label("\uff0b", 17, UI_BLUE, tfDisplay);
@@ -15075,7 +15275,9 @@ public class MainActivity extends Activity {
 
         // The strip. Empty until a photograph is opened: no placeholder tile,
         // because an empty shelf is not a missing control.
-        shelfScroll = new ShelfScroll(this);
+        shelfScroll = new HorizontalScrollView(this);
+        shelfScroll.setHorizontalScrollBarEnabled(false);
+        shelfScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         thumbScroll = shelfScroll;
         shelfStrip = new ShelfStrip(this);
         thumbStrip = shelfStrip;
@@ -15084,27 +15286,23 @@ public class MainActivity extends Activity {
         shelfScroll.addView(thumbStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
         row.addView(shelfScroll, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        // 白字的 ‹：它站在蓝色斜切里，不是站在纸上。
-        final TextView fold = label("\u2039", 15, uiOnCanvas(), tfHan);
+        // 纸上的 ‹：它回到纸上了，所以是灰的，和 ＋ 同一套语言。
+        final TextView fold = label("\u2039", 15, UI_MUTED, tfHan);
         fold.setGravity(android.view.Gravity.CENTER);
-        fold.setOnClickListener(v -> setShelfCollapsed(true));
+        // **One control, two states.** Folded, this is the handle that brings
+        // the strip back -- and it is the only thing left on screen, so it has
+        // to answer both ways.
+        fold.setOnClickListener(v -> setShelfCollapsed(!shelfCollapsed));
         shelfFoldBtn = fold;
         pressFeedback(fold);
-        // **缩略图停在斜切之前，不钻进蓝里。** 左外边距就是那道斜切的顶宽
-        // （26 dp）再加一点余量：否则滚到最后一张时它会被前沿按在 16 dp 处，
-        // 而那时 p 还是 0。
-        final LinearLayout.LayoutParams foldLp = new LinearLayout.LayoutParams(dp(28), dp(48));
-        foldLp.leftMargin = dp(32);
-        row.addView(fold, foldLp);
+        row.addView(fold, new LinearLayout.LayoutParams(dp(SHELF_DOCK_DP), dp(48)));
 
         bar.addView(row, new android.widget.FrameLayout.LayoutParams(-1, dp(62)));
-
+        // **Bought here, mounted by `fillCanvasColumn`.** It cannot live in the
+        // bar: the bar slides away and this has to stay put. Forgetting this
+        // line is what left the strip with nothing to come back to -- the slide
+        // ran to the end and the screen had no handle at all.
         shelfHandle = buildShelfHandle();
-        final android.widget.FrameLayout.LayoutParams stackLp =
-                new android.widget.FrameLayout.LayoutParams(dp(48), dp(42),
-                        android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL);
-        stackLp.leftMargin = dp(16);
-        bar.addView(shelfHandle, stackLp);
         return bar;
     }
 
@@ -15238,7 +15436,9 @@ public class MainActivity extends Activity {
         look.edgeLeaks = edgeLeaks;
         look.frameNumber = frameNumber;
         look.pfKind = pfKind;
-        look.pfChosen = pfChosen;
+        look.frameTemplate = frameTemplate;
+        look.pfCamera = pfCamera;
+        look.pfFrames = pfFrames;
         look.pfMargin = pfMargin;
         look.pfFx = pfFx;
         look.pfFy = pfFy;
@@ -15351,9 +15551,12 @@ public class MainActivity extends Activity {
         if (look == null) return;
         final String engineBefore = shelfEngine;
         filmStock = look.filmStock;
-        // The shelf follows the film: a restored fotufilm look comes back on the
-        // engine that can develop it.
-        shelfEngine = isFotuStock(filmStock) ? "fotu" : "spk";
+        // **The shelf follows the film -- but only when there is one.** This
+        // line used to answer "spk" for a look with no stock, so every import
+        // quietly chose an engine before the user had: the switch showed SPK
+        // selected, the cards started developing, and the first-tap sheet could
+        // never appear ("我刚导入新照片就给我自己选了 spk 引擎").
+        if (filmStock != null) shelfEngine = isFotuStock(filmStock) ? "fotu" : "spk";
         printStock = look.printStock;
         printExposure = look.printExposure;
         meterMethod = sanitizeMeter(look.meterMethod);
@@ -15446,14 +15649,10 @@ public class MainActivity extends Activity {
         edgeLeaks = look.edgeLeaks;
         frameNumber = look.frameNumber;
         pfKind = look.pfKind == null ? "none" : look.pfKind;
-        pfChosen = look.pfChosen;
-        // **A print frame is an opt-in.** Without the marker the gate goes back
-        // to the rebate's own ten; `refreshEdgeFormats` then picks the one that
-        // fits the picture. See `Look.pfChosen`.
-        if (!pfChosen && isPrintFrameGauge(overscanFormat)) {
-            overscanFormat = "135";
-            pfKind = "none";
-        }
+        frameTemplate = look.frameTemplate == null ? "" : look.frameTemplate;
+        FrameTemplate.forget();
+        pfCamera = "mediumFormatBack".equals(look.pfCamera) ? "mediumFormatBack" : "panoramic";
+        pfFrames = Math.max(1, Math.min(4, look.pfFrames));
         refreshPfRows();
         pfMargin = look.pfMargin > 0f ? look.pfMargin : 3f;
         pfFx = look.pfFx;
@@ -15497,6 +15696,13 @@ public class MainActivity extends Activity {
         filmFormatMm = look.filmFormatMm;
         overscanOn = look.overscanOn;
         overscanFormat = look.overscanFormat;
+        // **A fotufilm frame's gauge is its film's**, whatever an older look
+        // saved: the stock packs decide it (`FilmFormat.nativeID`), and a 135
+        // strip around a Super 35 stock is a camera that does not exist.
+        if (isFotuStock(filmStock)) {
+            overscanFormat = fotuGaugeOf(filmStock);
+            filmFormatMm = EDGE_MM[Math.max(0, gateIndex(overscanFormat))];
+        }
         // A pair is only ever on `135_half`; a stale flag on a restored look
         // would ask the engine for two frames in a gate that has one.
         overscanPair = look.overscanPair && "135_half".equals(look.overscanFormat);
@@ -15666,9 +15872,12 @@ public class MainActivity extends Activity {
         look.edgeLeaks = 0.0f;
         look.frameNumber = 0.0f;
         look.pfKind = "none";
+        look.frameTemplate = "";
         look.pfMargin = 3.0f;
         look.pfFx = 0.0f;
         look.pfFy = 0.0f;
+        look.pfCamera = "panoramic";
+        look.pfFrames = 1;
         look.halationOn = 1f;
         look.grainOn = 1f;
         look.couplersOn = 1f;
@@ -15791,14 +16000,13 @@ public class MainActivity extends Activity {
      * 过来，位置和速度都留着，原路返回。
      */
     private void setShelfCollapsed(boolean collapsed) {
-        // 没有照片就没有可收的东西：叠是零张照片的叠，再展开也没有出口。
+        // 没有照片就没有可收的东西：收起以后屏上只剩一个把手，点开也没有内容。
         if (collapsed && frames.isEmpty()) return;
         final float target = collapsed ? 1f : 0f;
         if (shelfCollapsed == collapsed && Math.abs(shelfFoldTarget - target) < 0.001f
-                && !shelfFoldAnimating) return;
+                && shelfFoldAnim != null && shelfFoldAnim.isRunning()) return;
         shelfCollapsed = collapsed;
-        if (frames.isEmpty() || Math.abs(shelfFold - target) < 0.001f) {
-            // 恢复存档，或者第一次排版：不播动画，直接落到端点。
+        if (frames.isEmpty()) {
             updateShelfVisibility();
             return;
         }
@@ -15815,10 +16023,9 @@ public class MainActivity extends Activity {
      */
     private void updateShelfVisibility() {
         if (sourceBar == null) return;
-        if (shelfFoldAnimating) return;
+        if (shelfFoldAnim != null && shelfFoldAnim.isRunning()) return;
         shelfFold = shelfCollapsed ? 1f : 0f;
         shelfFoldTarget = shelfFold;
-        shelfFoldVel = 0f;
         final boolean show = !frames.isEmpty();
         // **条子恒在，只是没有照片时高度为 0。** 画布脚上那条文件名/状态挂在它
         // 里面（要能滑到照片栏上），条子 GONE 的话它也会跟着消失。
@@ -15830,17 +16037,19 @@ public class MainActivity extends Activity {
             lp.height = h;
             sourceBar.setLayoutParams(lp);
         }
-        // 画布的下边距跟着走：照片的取景框永远到照片栏的上沿为止。
+        // **画布不再给它让位。** The strip is an overlay at the bottom of the
+        // canvas column now: the picture's box runs under it (and under the
+        // panel), so sliding the strip away reveals the photograph instead of
+        // growing the frame -- the picture has to be nailed down.
         if (canvasStage != null && canvasStage.getLayoutParams()
                 instanceof android.widget.FrameLayout.LayoutParams) {
             final android.widget.FrameLayout.LayoutParams slp =
                     (android.widget.FrameLayout.LayoutParams) canvasStage.getLayoutParams();
-            if (slp.bottomMargin != h) {
-                slp.bottomMargin = h;
+            if (slp.bottomMargin != 0) {
+                slp.bottomMargin = 0;
                 canvasStage.setLayoutParams(slp);
             }
         }
-        if (shelfHandle != null && !show) shelfHandle.setVisibility(View.INVISIBLE);
         updateShelfHandle();
         resetShelfControls();
         resetFrameChips();
@@ -15875,181 +16084,119 @@ public class MainActivity extends Activity {
     // 照片栏 ⇄ 左下角的照片叠
     // -----------------------------------------------------------------------
 
-    /** 起（或改）一次：只动目标，位置和速度原样带着。 */
+    /**
+     * **320 ms, one strong deceleration, interruptible.**
+     *
+     * <p>Lightroom's own curve: `cubic-bezier(0.32, 0.72, 0, 1)`. A tap part
+     * way through cancels the running animator and starts a new one **from the
+     * position the strip is at**, with the duration scaled to what is left --
+     * so a double tap mid-slide turns round without a jump, and the speed
+     * carries over.
+     */
     private void beginShelfFold(float target) {
-        if (sourceBar != null) sourceBar.setVisibility(View.VISIBLE);
-        if (target > 0.5f) updateShelfHandle();
+        // **Drop the reference before cancelling.** `cancel()` runs the old
+        // animator's end listener synchronously; if `shelfFoldAnim` still
+        // pointed at it, that listener would snap the strip to the *previous*
+        // target for one frame -- the flicker a fast double tap would show.
+        final android.animation.ValueAnimator old = shelfFoldAnim;
+        shelfFoldAnim = null;
+        if (old != null) old.cancel();
         shelfFoldTarget = target;
-        if (uiRoot == null) {
+        final float from = shelfFold;
+        if (Math.abs(target - from) < 0.002f) {
             shelfFold = target;
             applyShelfFold(target);
-            finishShelfFold();
             return;
         }
-        if (!shelfFoldAnimating) {
-            shelfFoldAnimating = true;
-            shelfFoldClockNs = 0L;
-            shelfFoldPost();
-        }
-    }
-
-
-    private void shelfFoldPost() {
-        if (uiRoot == null) return;
-        uiRoot.postOnAnimation(shelfFoldStep);
-    }
-
-    /** The spring, integrated twice per frame so a stiff one cannot overshoot. */
-    private final Runnable shelfFoldStep = new Runnable() {
-        @Override public void run() {
-            if (!shelfFoldAnimating) return;
-            final long now = System.nanoTime();
-            float dt = shelfFoldClockNs == 0L ? 0.016f : (now - shelfFoldClockNs) / 1e9f;
-            shelfFoldClockNs = now;
-            dt = Math.max(0.001f, Math.min(dt, 1f / 30f));
-            // 阻尼 0.92 / 刚度 300，两个方向同一组：起步就看得出在动，落位
-            // 不回头（过冲 0.06 %），380–420 ms 之间停稳。
-            final float k = 300f;
-            final float zeta = 0.92f;
-            final float c = 2f * zeta * (float) Math.sqrt(k);
-            for (int i = 0; i < 2; ++i) {
-                final float acc = -k * (shelfFold - shelfFoldTarget) - c * shelfFoldVel;
-                shelfFoldVel += acc * dt * 0.5f;
-                shelfFold += shelfFoldVel * dt * 0.5f;
-            }
+        final long ms = Math.max(80L, Math.round(320f * Math.abs(target - from)));
+        shelfFoldAnim = android.animation.ValueAnimator.ofFloat(from, target);
+        shelfFoldAnim.setDuration(ms);
+        shelfFoldAnim.setInterpolator(
+                new android.view.animation.PathInterpolator(0.32f, 0.72f, 0f, 1f));
+        shelfFoldAnim.addUpdateListener(a -> {
+            shelfFold = (Float) a.getAnimatedValue();
             applyShelfFold(shelfFold);
-            if (Math.abs(shelfFold - shelfFoldTarget) < 0.0025f
-                    && Math.abs(shelfFoldVel) < 0.03f) {
+        });
+        shelfFoldAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                if (shelfFoldAnim != a) return;
                 shelfFold = shelfFoldTarget;
                 applyShelfFold(shelfFold);
-                finishShelfFold();
-                return;
+                shelfFoldAnim = null;
+                Probe.log("shelf", "fold=" + (shelfFoldTarget > 0.5f ? 1 : 0)
+                        + " frames=" + frames.size());
             }
-            shelfFoldPost();
-        }
-    };
+        });
+        shelfFoldAnim.start();
+    }
 
-    /**
-     * 一帧：整条动效都读这一个 `p`（0 = 展开，1 = 收成一张叠）。
-     *
-     * <p>每一段都是 `p` 的区间，不是时间的区间 —— 所以中途反向时每一件东西
-     * 都按自己的进度倒回去，顺序和速度正是卷回来的那一段。
-     */
+
     private void applyShelfFold(float pRaw) {
         final float p = clamp01(pRaw);
+        // **平移，绝不改宽度。** The bar keeps its full width and slides left
+        // until the chevron's 40 dp is all that is still on screen. One GPU
+        // translation per frame, nothing re-lays out, and the thumbnails
+        // cannot squash while it moves -- the strip's paper, the ＋, the chips
+        // and the ‹ all travel together as one sheet.
+        // **All the way out.** What stands for the strip when it is folded is
+        // the stack of prints, not a tab of paper -- but if the stack is not
+        // there for any reason, stop a dock's width short so there is always
+        // something on screen that can bring the strip back.
         final int w = sourceBar == null ? 0 : sourceBar.getWidth();
-        // 白板右缘（左上 → 右下）：下端从「容器宽 − 38 dp」推到 0，上端永远
-        // 比它早一条 26 dp 的斜边。蓝与白就是这条边的两侧。
-        final float bottomX = Math.max(0f, (w - dp(38f)) * (1f - p));
-        final float topX = bottomX - dp(26f);
-        // **斜切只占缩略图那一条。** 照片 42 dp 居中在 62 dp 里，上下各留 10 dp 白；
-        // 收起时这两条留白跟着归零，蓝才铺满整条。
-        final float pad = dp(10f) * (1f - p);
-        final float bandTop = pad;
-        final float bandBottom = dp(SHELF_H_DP) - pad;
-        if (shelfBoard != null) shelfBoard.setEdge(topX, bottomX, bandTop, bandBottom);
-        if (shelfScroll != null) {
-            final float left = shelfScroll.getLeft();
-            final float top = shelfScroll.getTop();
-            shelfScroll.setEdge(topX - left, bottomX - left, bandTop - top, bandBottom - top);
-            // 收起之后那一条不接手势：手指底下是照片叠，不是一条看不见的缩略图。
-            shelfScroll.setScrollable(p < 0.5f);
-        }
-        // ＋：p 0 → 0.35，原地缩到 0.6 并淡出，给左边的照片叠让出位置。
-        final float add = clamp01(p / 0.35f);
+        final int keep = shelfHandle == null ? dp(SHELF_DOCK_DP) : 0;
+        if (sourceBar != null) sourceBar.setTranslationX(-Math.max(0, w - keep) * p);
+        // **纸的右缘就是收起以后露在外面的那条边**，所以圆角长在它身上：
+        // 展开时右缘在屏幕边上（看不见），收起时它是把手的外沿。
+        if (shelfPaper != null) shelfPaper.setRightRadius(dp(12f) * clamp01((p - 0.70f) / 0.30f));
+        // **＋ 和缩略图比栏位更早退场**（180 / 320 ms）。跟着一起滑到边缘再被
+        // 裁掉，快速收放时会有拖影。
+        final float items = 1f - clamp01(p / 0.5625f);
         if (shelfAddBtn != null) {
-            final float sc = 1f - 0.4f * add;
-            shelfAddBtn.setAlpha(1f - add);
-            shelfAddBtn.setScaleX(sc);
-            shelfAddBtn.setScaleY(sc);
+            shelfAddBtn.setAlpha(items);
+            if (shelfAddBtn.isEnabled() != (p < 0.30f)) shelfAddBtn.setEnabled(p < 0.30f);
         }
-        // ‹：p 0 → 0.18，淡出并往斜切里退 8 dp。
-        final float fold = clamp01(p / 0.18f);
+        if (shelfScroll != null) shelfScroll.setAlpha(items);
+        // **‹ 原地翻成 ›。** 它一路滑到最左边停下，就是展开的把手——所以它
+        // 自己不能淡，也不能被禁用。
         if (shelfFoldBtn != null) {
-            shelfFoldBtn.setAlpha(1f - fold);
-            shelfFoldBtn.setTranslationX(-dp(8f) * fold);
+            shelfFoldBtn.setAlpha(1f);
+            shelfFoldBtn.setRotation(180f * p);
+            if (!shelfFoldBtn.isEnabled()) shelfFoldBtn.setEnabled(true);
         }
-        // **淡出不是禁用。** 透明的 ＋ / ‹ 仍然接手指：收起来以后 ＋ 正好在
-        // 照片叠底下，点一下会开出导入单。各自按自己的淡出进度闭嘴。
-        if (shelfAddBtn != null && shelfAddBtn.isEnabled() != (p < 0.30f))
-            shelfAddBtn.setEnabled(p < 0.30f);
-        if (shelfFoldBtn != null && shelfFoldBtn.isEnabled() != (p < 0.15f))
-            shelfFoldBtn.setEnabled(p < 0.15f);
-        pushShelfChips(p, bottomX);
+        // **哪一叠照片顶上来。** Three prints, the current one on top; they
+        // fade in over the last third of the slide, so the strip hands over to
+        // them rather than both being on screen at once.
         applyShelfStack(p);
-        // **画布的下缘跟着蓝一起落到照片栏的底。** 收起以后那一条并进了画布，
+        // **画布的下缘跟着纸一起落到照片栏的底。** 收起以后那一条并进了画布，
         // 脚上的文件名/状态要是留在原地，就悬在半空。左边给照片叠让开一个身位。
         if (previewFoot != null) {
             // 展开时它比画布的下沿高一个照片栏（位置和以前一模一样）；收起时落到
             // 照片栏的下沿 = 画布视觉上的新底边。没有照片时照片栏高度是 0。
             final float lift = frames.isEmpty() ? 0f : dp(SHELF_H_DP);
             previewFoot.setTranslationY(lift * (p - 1f));
-            final int left = Math.round(dp(16f + 50f * p));
+            // **The status line runs the full width.** The stack is above it,
+            // not beside it, so the filename starts at the same 16 dp as the
+            // strip's own ＋.
+            final int left = dp(16);
             if (previewFoot.getPaddingLeft() != left) {
                 previewFoot.setPadding(left, 0, dp(16), 0);
             }
         }
-    }
-
-    /** 蓝色前沿推着缩略图往左：谁被追上谁动，先追尾，再一张一张叠起来。 */
-    private void pushShelfChips(float p, float bottomX) {
-        if (thumbStrip == null || shelfScroll == null) return;
-        // 斜切在缩略图垂直中心（62 dp 的一半）处的 X —— 那才是推板的前沿。
-        final float front = bottomX - dp(13f) - dp(10f);
-        final float stackX = dp(16f);
-        // **只按看得见的那一段算碰撞。** 条子外面还有半张缩略图（滚到最后一张
-        // 时它探出右边界），它的右缘在墙外面，可谁也不该在 p = 0 就被推走。
-        final float stripRight = shelfScroll.getLeft() + shelfScroll.getWidth();
-        // 被推到位的最后一张换成头上那张卡：两者位置、尺寸一致，所以是**互换**
-        // 而不是叠加上去 —— 提前到 0.78，好让蓝色扫过缩略图之前它已经接住了。
-        final float overlap = clamp01((p - 0.78f) / 0.14f);
-        // 当前这张最后画（画序，不是 Z —— Z 会带出投影）。
-        if (shelfStrip != null) shelfStrip.setPrimary(currentFrame);
-        for (int i = 0; i < thumbStrip.getChildCount(); ++i) {
-            final View chip = thumbStrip.getChildAt(i);
-            final float chipW = chip.getWidth() > 0 ? chip.getWidth() : dp(42f);
-            // **视口里的位置**，不是列表里的绝对偏移：横向滚过之后，碰撞还算得对。
-            final float rest = shelfScroll.getLeft() + chip.getLeft() - shelfScroll.getScrollX();
-            final int rank = stackRank(i);
-            final float step = dp(rank == 1 ? 3f : rank == 2 ? 6f : 0f);
-            // **推板的算法就是规格里那条 clamp**：凡是还在墙右边的，全都挤到
-            // 同一处（墙左边一个身位），直到撞进叠的位置。整张完全在条子里才算
-            // —— 右边界上贴着的那半张不动，它只是被扫掉。
-            final boolean inside = rest + chipW <= stripRight + 0.5f;
-            final float at = inside
-                    ? Math.max(stackX + step, Math.min(rest, front - chipW))
-                    : rest;
-            chip.setTranslationX(at - rest);
-            // 错位跟着位移来：一动没动的缩略图不许提前下沉。
-            final float moved = clamp01((rest - at) / Math.max(1f, dp(10f)));
-            chip.setTranslationY(step * moved);
-            // 第三层以外的，走到主图背后就化掉（位置驱动，所以倒着也化回来）。
-            // 只化最后 12 dp：它们本来就压在最上面那张底下，露不出半个像素。
-            final float fade = rank <= 2 ? 1f : clamp01((at - stackX) / Math.max(1f, dp(12f)));
-            final float alpha = Math.min(fade, 1f - overlap);
-            chip.setAlpha(alpha);
-            // 看不见的缩略图不许接手指：收起来以后整条都是蓝的，可它还在那儿，
-            // 点一下会把一张已经看不见的照片重新打开。
-            final boolean hit = alpha > 0.5f;
-            if (chip.isEnabled() != hit) chip.setEnabled(hit);
-            if (i == currentFrame) {
-                final android.graphics.drawable.Drawable bg = chip.getBackground();
-                if (bg instanceof android.graphics.drawable.GradientDrawable) {
-                    ((android.graphics.drawable.GradientDrawable) bg).setStroke(dp(2),
-                            blend(UI_BLUE, UI_LINE, clamp01((p - 0.55f) / 0.35f)));
-                }
-            }
+        // **The compare pill must not sit behind the strip.** It hangs on the
+        // picture's lower right, and the strip is drawn over that corner -- so
+        // while the strip is on screen the pill rides above it, exactly like
+        // the status line, and drops back when the strip is folded away.
+        if (comparePill != null) {
+            final float lift = frames.isEmpty() ? 0f : dp(SHELF_H_DP);
+            comparePill.setTranslationY(-lift * (1f - p));
         }
+        // The picture follows the fold: it slides under the strip as the strip
+        // becomes the canvas. `syncCanvasOverflow` only touches the margin when
+        // the number changed, so this is free at rest.
+        syncCanvasOverflow();
     }
 
-    /** 收在哪里：0 = 当前这张（最上），1 / 2 = 后面两张，再往后不进叠。 */
-    private int stackRank(int index) {
-        if (index == currentFrame) return 0;
-        final int d = Math.abs(index - currentFrame);
-        return d <= 2 ? d : 3;
-    }
-
-    /** 收尾的那张叠：两张纸边先探出来，照片和 › 最后到位。 */
+    /** 收尾的那张叠：照片和 › 最后到位。 */
     private void applyShelfStack(float p) {
         final float out = clamp01((p - 0.62f) / 0.38f);
         final float on = clamp01((p - 0.78f) / 0.14f);
@@ -16105,19 +16252,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 落位：把 `p` 钉在端点上，再按它把每件东西算一遍。 */
-    private void finishShelfFold() {
-        shelfFoldAnimating = false;
-        shelfFoldVel = 0f;
-        shelfFoldClockNs = 0L;
-        final boolean folded = shelfFoldTarget > 0.5f;
-        shelfFold = folded ? 1f : 0f;
-        if (sourceBar != null) sourceBar.setVisibility(View.VISIBLE);
-        if (folded) updateShelfHandle();
-        applyShelfFold(shelfFold);
-        Probe.log("shelf", "fold=" + (folded ? 1 : 0) + " frames=" + frames.size());
-    }
-
+    
 
     /** File the frame that just finished importing, once. */
     private void rememberFrame(Uri uri, int reopenIndex) {
@@ -16245,7 +16380,9 @@ public class MainActivity extends Activity {
         updateShelfHandle();
         updateShelfVisibility();
         // 缩略图是新的，而它们的位置要等排完版才知道：那时按当前的 `p` 再算一遍。
-        thumbStrip.post(() -> { if (!shelfFoldAnimating) applyShelfFold(shelfFold); });
+        thumbStrip.post(() -> {
+            if (shelfFoldAnim == null || !shelfFoldAnim.isRunning()) applyShelfFold(shelfFold);
+        });
         try {
             DebugSink.text("frame-strip", "frames=" + frames.size() + " current=" + currentFrame);
         } catch (Throwable ignored) { }
@@ -16802,6 +16939,7 @@ public class MainActivity extends Activity {
     private String engineIdOf(String cardId) {
         if (cardId == null) return null;
         if ("original".equals(cardId)) return cardId;
+        if (shelfEngine.isEmpty()) return null;
         if ("fotu".equals(shelfEngine)) {
             if (cardId.startsWith(FotuFilm.PREFIX)) return cardId;
             final String twin = fotuTwinOf(cardId);
@@ -16815,7 +16953,33 @@ public class MainActivity extends Activity {
 
     /** Can the shelf's engine develop this card? 原图 always can. */
     private boolean engineHas(String cardId) {
-        return "original".equals(cardId) || engineIdOf(cardId) != null;
+        if ("original".equals(cardId)) return true;
+        // With no engine chosen yet every card is a real option -- the tap is
+        // what picks the engine (see `showEngineChooser`).
+        if (shelfEngine.isEmpty()) return true;
+        return engineIdOf(cardId) != null;
+    }
+
+    /**
+     * The same question, for an engine named by the caller.
+     *
+     * <p>The shelf previews with the first engine while no engine has been
+     * chosen (`startPrefetch`), and `engineHas` answers about `shelfEngine` --
+     * which is neutral at that point and says "everything fits", including the
+     * twenty-nine films only the second engine sells. Queuing those would ask
+     * `spk_open` for a profile that does not exist, once per card per pass.
+     */
+    private boolean engineHasFor(String cardId, String engine) {
+        if (cardId == null || "original".equals(cardId)) return false;
+        if ("fotu".equals(engine)) {
+            if (cardId.startsWith(FotuFilm.PREFIX))
+                return fotuIds.contains(cardId.substring(FotuFilm.PREFIX.length()));
+            return fotuTwinOf(cardId) != null;
+        }
+        final String spk = cardId.startsWith(FotuFilm.PREFIX)
+                ? FOTU_TWIN_SPK.get(cardId.substring(FotuFilm.PREFIX.length()))
+                : cardId;
+        return spk != null && filmIds.contains(spk);
     }
 
     /** Is this card the one standing for `stock`? A merged card answers yes for
@@ -17256,7 +17420,60 @@ public class MainActivity extends Activity {
         markFile("shelf heal stale=" + stale + " missing=" + missing
                 + " thumbs=" + filmThumbs.size() + " cards=" + filmCards.size());
         if (stale) rebuildFilmCards();
-        else if (missing > 0 && !prefetchRunning) startPrefetch();
+        else if (missing > 0) ensureShelfQueue();
+    }
+
+    /**
+     * **Is this card's picture coming?**
+     *
+     * <p>The loader is a promise, so it may only be shown for a card the
+     * running pass is actually going to draw. Born with one when no pass is
+     * going produces exactly one bug -- a shelf that says "loading" for ever --
+     * and that bug was reported twice (1.7.2w and before it). Without a pass
+     * the card is a catalogue entry: the film's box front.
+     */
+    private boolean shelfQueued(String id) {
+        if (!prefetchRunning) return false;
+        final java.util.List<String> q = prefetchMissing;
+        return q != null && q.contains(id);
+    }
+
+    /**
+     * **The one place that makes sure the shelf's queue is running.**
+     *
+     * <p>`startPrefetch` is called from a dozen places and declines quietly
+     * when the frame is not ready yet; an import that lands while a render
+     * holds `rendering` therefore queued nothing and nothing asked again, which
+     * is a shelf of loaders beside a photograph that is plainly open. This
+     * checks the conditions itself and says so in `boot.txt` when it kicks.
+     */
+    private void ensureShelfQueue() {
+        if (session == null || beforeBitmap == null) return;      // no frame yet: normal
+        if (prefetchRunning || prefetchSpkRunning || prefetchFotuRunning) { queueTries = 0; return; }
+        // A render in flight is the case this exists for: the kick declined, the
+        // render ends, and nothing else asks. Three tries, 900 ms apart, and
+        // then it is `onResume` / the next render / the next tap's business.
+        if (rendering || fotuRendering || wbDecoding) {
+            if (queueTries++ < 3) uiHandler.postDelayed(this::ensureShelfQueue, 900);
+            return;
+        }
+        if (appPaused || batchExportRunning) return;
+        final String passEngine = shelfEngine.isEmpty() ? "spk" : shelfEngine;
+        int missing = 0;
+        for (int i = 0; i < filmCards.size(); ++i) {
+            final Object tag = filmCards.get(i).getTag();
+            if (!(tag instanceof String)) continue;
+            final String id = (String) tag;
+            if ("original".equals(id)) continue;
+            if (!engineHasFor(id, passEngine)) continue;
+            if (filmThumbs.containsKey(cardKeyFor(id))) continue;
+            ++missing;
+        }
+        queueTries = 0;
+        if (missing == 0) return;
+        markFile("queue: kick missing=" + missing + " engine="
+                + (shelfEngine.isEmpty() ? "neutral/spk" : shelfEngine));
+        startPrefetch();
     }
 
     private void addFilmCard(final String id, String text, final int index) {
@@ -17294,7 +17511,11 @@ public class MainActivity extends Activity {
             // drawn cover both read as "still loading"; after three passes this
             // is the honest state, and a tap retries it.
             imageBox.addView(unavailableTile(), new android.widget.FrameLayout.LayoutParams(-1, -1));
-        } else if (beforeBitmap == null || (isFotuStock(id) && !filmThumbs.containsKey(key))) {
+        } else if (beforeBitmap == null || !shelfQueued(id)) {
+            // **Nothing is queued with no engine, so nothing may look queued.**
+            // The card is born with the source at 55 % and the loading bars
+            // when it has no preview; with no engine there is no pass coming,
+            // and forty spinning cards read as a broken shelf.
             // **No photograph yet, so there is nothing to preview.** A name
             // typed into a grey rectangle says "empty slot"; a drawn box front
             // says "this is a film". The shelf's job is choosing a stock, and
@@ -17596,6 +17817,13 @@ public class MainActivity extends Activity {
             toggleOriginal();
             return;
         }
+        if (shelfEngine.isEmpty()) {
+            // **Which machine?** Nothing has been developed yet, so this is the
+            // first decision of the session -- asked here rather than in a
+            // banner nobody reads.
+            showEngineChooser(id, index);
+            return;
+        }
         // **The head's switch decides, not the card.** A film the shelf's engine
         // does not ship is greyed and says why (`addFilmCard`); everything that
         // reaches here has an id in `shelfEngine`, and that id is what the
@@ -17627,6 +17855,25 @@ public class MainActivity extends Activity {
      *  render or the skeleton lookup fails. */
     private void selectFotuStock(String id) {
         filmStock = id;
+        // **The film is the gauge.** Official `FilmFormat.nativeID(forStockID:)`:
+        // picking a stock picks the cut it is coated on (35 mm, Super 35, an
+        // Instax sheet), and a border already on is re-cut to that gate's shape.
+        // With the border off the gauge is only recorded -- turning 片边 on asks
+        // for the crop at that moment.
+        final String gauge = fotuGaugeOf(id);
+        if (!gauge.equals(overscanFormat)) {
+            overscanFormat = gauge;
+            formatIndex = Math.max(0, gateIndex(gauge));
+            filmFormatMm = EDGE_MM[formatIndex];
+            if (overscanOn) {
+                final float cur = originalAspect();
+                final float want = (float) gateRatioAt(formatIndex);
+                if (cur > 0f && Math.abs(currentAspect() / want - 1f) > 0.045f) cropToRatio(want);
+            }
+        }
+        // The list, the caption and the millimetres all read this one place.
+        refreshEdgeFormats();
+        rebuildFormatCards();
         // **Picking a film retries the source.** `fotuSourceDead` remembers a
         // failed copy so twenty-three shelf cards do not each pay for it; an
         // explicit pick is the user asking again, and a transient provider
@@ -18609,6 +18856,8 @@ public class MainActivity extends Activity {
     private final java.util.List<float[]>[] curvePoints = new java.util.List[5];
     private int curveChannel = 0;
     private CurveView curveView;
+    /** The board, hung on the photograph (see `openCurveStage`). */
+    private android.widget.FrameLayout curveStage;
 
     /** Every row knows how to re-read its own field, so a Look can move them. */
     private final java.util.List<Runnable> viewRefreshers = new java.util.ArrayList<>();
@@ -18910,7 +19159,7 @@ public class MainActivity extends Activity {
             viewPages[i] = new LinearLayout(this);
             viewPages[i].setOrientation(LinearLayout.VERTICAL);
             viewPages[i].setVisibility(i == 0 ? View.VISIBLE : View.GONE);
-            final CappedScroll scroll = new CappedScroll(this, dp(280));
+            final CappedScroll scroll = new CappedScroll(this, dp(PANEL_CAP_DP));
             scroll.addView(viewPages[i], new android.widget.FrameLayout.LayoutParams(-1, -2));
             panel.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
             // The scroll has to hide with its page, so the page list is the
@@ -18958,6 +19207,12 @@ public class MainActivity extends Activity {
      */
     private void openViewTool(int k) {
         if (k < 0 || k >= viewPages.length) return;
+        // **The board leaves the page before the page is measured.** It is
+        // hung on the picture (see `openCurveStage`), and a blank of its size
+        // left behind would be the 150 dp hole the panel was showing. Taken
+        // out first, the page is only its title, its channels and its hint --
+        // and the panel folds down to exactly that.
+        if (k == 4) openCurveStage();
         toolPage = k;
         for (int i = 0; i < viewPages.length; ++i) {
             if (viewPages[i] != null) viewPages[i].setVisibility(i == k ? View.VISIBLE : View.GONE);
@@ -18969,8 +19224,69 @@ public class MainActivity extends Activity {
     }
 
     private void closeViewTool() {
+        closeCurveStage();
         toolPage = -1;
         showViewPage(viewPage);
+    }
+
+    /**
+     * **The board goes on the picture.**
+     *
+     * <p>`openViewTool(4)` still opens the curve page -- its title, its channel
+     * rows and its hint stay where they were -- and then lends the board to the
+     * canvas: it leaves its 150 dp slot and is hung over the photograph, square
+     * and as large as the canvas allows, so the curve is drawn on the tones it
+     * moves. A blank of the same height takes its place, so the panel does not
+     * change size as the tool opens.
+     *
+     * <p>Nothing about the board changes: same grid, same axis, same blue line,
+     * same handles, same touches (drag, tap to add, double-tap to delete).
+     */
+    private void openCurveStage() {
+        if (curveStage != null || canvasColumn == null || curveView == null) return;
+        final int w = canvasColumn.getWidth(), h = canvasColumn.getHeight();
+        if (w <= dp(120) || h <= dp(120)) return;
+        final android.view.ViewParent par = curveView.getParent();
+        if (!(par instanceof android.view.ViewGroup)) return;
+        final android.view.ViewGroup page = (android.view.ViewGroup) par;
+        page.removeView(curveView);
+
+        final android.widget.FrameLayout host = new android.widget.FrameLayout(this);
+        curveStage = host;
+        // The photograph under the board must not pan or zoom: on the canvas
+        // these gestures are the curve's.
+        host.setClickable(true);
+        // The strip and the filename keep their own corner: the sheet stops
+        // where the strip begins, so the picture inside it is still the picture
+        // the user can open a frame from.
+        final int under = frames.isEmpty() ? 0 : dp(SHELF_H_DP);
+        final int side = Math.max(dp(160), Math.min(w - dp(18), h - under - dp(18)));
+        host.addView(curveView, new android.widget.FrameLayout.LayoutParams(
+                side, side, android.view.Gravity.CENTER));
+        final android.widget.FrameLayout.LayoutParams hlp =
+                new android.widget.FrameLayout.LayoutParams(-1, -1);
+        hlp.bottomMargin = under;
+        canvasColumn.addView(host, hlp);
+        markFile("curve on canvas " + side);
+    }
+
+    /** Home to the panel's slot, and nothing else. */
+    private void closeCurveStage() {
+        if (curveStage == null) return;
+        final android.widget.FrameLayout host = curveStage;
+        curveStage = null;
+        if (curveView != null && curveView.getParent() == host) host.removeView(curveView);
+        final View page = viewPages.length > 4 ? viewPages[4] : null;
+        if (page instanceof android.view.ViewGroup && curveView != null) {
+            final android.view.ViewGroup pg = (android.view.ViewGroup) page;
+            // Back into its slot: header, the channel row, **the board**, hint.
+            pg.addView(curveView, Math.min(2, pg.getChildCount()),
+                    new android.widget.LinearLayout.LayoutParams(-1, dp(150)));
+            curveView.invalidate();
+        }
+        if (host.getParent() instanceof android.view.ViewGroup) {
+            ((android.view.ViewGroup) host.getParent()).removeView(host);
+        }
     }
 
     /** The header a tool screen wears: its name, and the way out. */
@@ -18980,8 +19296,19 @@ public class MainActivity extends Activity {
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
         row.addView(label(title, 8.5f, UI_INK, tfHan),
                 new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView done = label("完成", 9, UI_BLUE, tfHan);
-        done.setPadding(dp(14), dp(6), dp(2), dp(6));
+        // **A square box filled with the accent**, one hairline of the same
+        // colour around it: the way out of a tool is the one control on the row
+        // that is a *thing*, not a word.
+        final TextView done = label("完成", 8.5f, 0xFFF6F3EA, tfHan);
+        done.setGravity(android.view.Gravity.CENTER);
+        done.setPadding(dp(15), dp(5), dp(15), dp(5));
+        final android.graphics.drawable.GradientDrawable box =
+                new android.graphics.drawable.GradientDrawable();
+        box.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        box.setCornerRadius(0f);
+        box.setColor(UI_BLUE);
+        box.setStroke(Math.max(1, dp(1)), UI_BLUE);
+        done.setBackground(box);
         done.setOnClickListener(v -> closeViewTool());
         row.addView(done);
         page.addView(row, new LinearLayout.LayoutParams(-1, dp(34)));
@@ -20128,6 +20455,25 @@ public class MainActivity extends Activity {
 
         CurveView() { super(MainActivity.this); }
 
+        /**
+         * **Push the curve and paint it -- on either engine.**
+         *
+         * <p>The three commit points (a drag ends, a point is deleted, the
+         * channel is reset) used to check `session != null`, which is the first
+         * engine's business: on a fotufilm frame there is no session, so the
+         * board moved the *live* frame and then never asked for the real one,
+         * leaving the canvas on an 800 px preview for ever.
+         */
+        private void commitCurve() {
+            pushViewCurves();
+            if (!uiReady || filmStock == null) return;
+            showingOriginal = false;
+            setOriginalVisual(false);
+            if (isFotuStock(filmStock)) { renderFotu(); return; }
+            if (session == null) return;
+            renderImage();
+        }
+
         private android.graphics.PointF toScreen(float x, float y) {
             final float w = getWidth() - padL - padR, h = getHeight() - padT - padB;
             return new android.graphics.PointF(padL + x * w, padT + (1f - y) * h);
@@ -20378,12 +20724,7 @@ public class MainActivity extends Activity {
                         lastTapPoint = -1;
                         lastTapMs = 0;
                         invalidate();
-                        pushViewCurves();
-                        if (uiReady && session != null) {
-                            showingOriginal = false;
-                            setOriginalVisual(false);
-                            renderImage();
-                        }
+                        commitCurve();
                         return true;
                     }
                     // 这一下算不算「一次点击」，留给下一次双击去配对。
@@ -20395,14 +20736,7 @@ public class MainActivity extends Activity {
                         lastTapPoint = -1;
                     }
                     // 只是点了一下已经存在的点，没有改动：不必重推、不必重渲。
-                    if (dragging >= 0 && (moved || added)) {
-                        pushViewCurves();
-                        if (uiReady && session != null) {
-                            showingOriginal = false;
-                            setOriginalVisual(false);
-                            renderImage();
-                        }
-                    }
+                    if (dragging >= 0 && (moved || added)) commitCurve();
                     dragging = -1;
                     return true;
                 }
@@ -20502,7 +20836,7 @@ public class MainActivity extends Activity {
         printBody.setOrientation(LinearLayout.VERTICAL);
         // **The same 250 dp cap the other engine's print panel has**, so a frame
         // that changes engines does not move the photograph.
-        final CappedScroll printScroll = new CappedScroll(this, dp(250));
+        final CappedScroll printScroll = new CappedScroll(this, dp(PANEL_CAP_DP));
         printScroll.addView(printBody, new android.widget.FrameLayout.LayoutParams(-1, -2));
         panel.addView(printScroll, new LinearLayout.LayoutParams(-1, -2));
         showPrintGroup(0);
@@ -22613,6 +22947,13 @@ public class MainActivity extends Activity {
 
     private void pickFormat(int index) {
         if (index < 0 || index >= FORMAT_MM.length) return;
+        // On a fotufilm frame the gauge and the frame's millimetres come from
+        // the stock (`FilmFormat.nativeID`), so a card here would desync the
+        // two. The scale page is the first engine's instrument.
+        if (isFotuStock(filmStock)) {
+            showInAppToast("fotufilm 的画幅跟着胶片走 —— 换一支别的画幅的胶片");
+            return;
+        }
         if (overscanOn) {
             // **A card is a gate.** With a rebate on the engine takes the
             // frame's length from the gate, so a card cannot mean "the frame is
@@ -22654,6 +22995,8 @@ public class MainActivity extends Activity {
     private LinearLayout buildEdgePanel() {
         edgeRoot = new LinearLayout(this);
         edgeRoot.setOrientation(LinearLayout.VERTICAL);
+        // Rebuilding the page must not leave the old rows' refs behind.
+        edgeCardRefs.clear();
 
         // Two big cards. A card is a switch, a one-line summary, and a door
         // into its own page -- not fifteen controls at once.
@@ -22662,23 +23005,320 @@ public class MainActivity extends Activity {
         home.addView(sectionHead("FRAME & IMPRINT / 边框", this::resetEdgePanel),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
-        HorizontalScrollView cardScroll = new HorizontalScrollView(this);
-        cardScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout cardStrip = new LinearLayout(this);
-        cardStrip.setOrientation(LinearLayout.HORIZONTAL);
-        edgeCardRebate = bigCard("片边", "REBATE", this::edgeSummary, () -> openEdgePage(0));
-        cardStrip.addView(edgeCardRebate, cardLp());
-        edgeCardDate = bigCard("日期水印", "DATE BACK", this::dateSummary, () -> openEdgePage(1));
-        cardStrip.addView(edgeCardDate, cardLp());
-        edgeCardPf = bigCard("印刷边框", "PRINT FRAME", this::pfSummary, () -> openEdgePage(2));
-        cardStrip.addView(edgeCardPf, cardLp());
-        cardScroll.addView(cardStrip, new android.widget.FrameLayout.LayoutParams(-2, -2));
-        home.addView(cardScroll, new LinearLayout.LayoutParams(-1, -2));
+        // **Rows, not a horizontal scroller.** Four 176 dp cards do not fit a
+        // phone: the fourth sat entirely past the right edge, with nothing on
+        // screen saying it was there -- 「完全看不到」. A row stack shows every
+        // group at once and needs no gesture to discover them.
+        LinearLayout cards = new LinearLayout(this);
+        cards.setOrientation(LinearLayout.VERTICAL);
+        edgeCardRebate = edgeRow("片边", "REBATE", this::edgeSummary, () -> openEdgePage(0));
+        cards.addView(edgeCardRebate, new LinearLayout.LayoutParams(-1, dp(52)));
+        cards.addView(hairline(UI_LINE), new LinearLayout.LayoutParams(-1, dp(1)));
+        edgeCardDate = edgeRow("日期水印", "DATE BACK", this::dateSummary, () -> openEdgePage(1));
+        cards.addView(edgeCardDate, new LinearLayout.LayoutParams(-1, dp(52)));
+        cards.addView(hairline(UI_LINE), new LinearLayout.LayoutParams(-1, dp(1)));
+        edgeCardPf = edgeRow("印刷边框", "PRINT FRAME", this::pfSummary, () -> openEdgePage(2));
+        cards.addView(edgeCardPf, new LinearLayout.LayoutParams(-1, dp(52)));
+        cards.addView(hairline(UI_LINE), new LinearLayout.LayoutParams(-1, dp(1)));
+        // **Both engines.** A designed card is composed after the render, so it
+        // has nothing to do with which engine produced the picture.
+        edgeCardFrame = edgeRow("画框", "FRAME", this::frameSummary, () -> openEdgePage(3));
+        cards.addView(edgeCardFrame, new LinearLayout.LayoutParams(-1, dp(52)));
+        home.addView(cards, new LinearLayout.LayoutParams(-1, -2));
 
         edgeRoot.addView(home, new LinearLayout.LayoutParams(-1, -2));
         buildEdgePages();
         refreshEdgeGroups();
         return edgeRoot;
+    }
+
+    /**
+     * One border group as a full-width row: name, what it is set to, a door.
+     *
+     * <p>Registered in `edgeCardRefs` rather than through a view tag: three
+     * different animation helpers in this class write `setTag` on rows.
+     */
+    private View edgeRow(String title, String subtitle,
+                         java.util.function.Supplier<String> summary, Runnable onOpen) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(2), 0, dp(2), 0);
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        TextView name = mixedLabel(title + "  " + subtitle, 8.5f, UI_INK);
+        name.setLetterSpacing(0.06f);
+        texts.addView(name);
+        final TextView sum = label(summary.get(), 7f, UI_MUTED, tfHan);
+        texts.addView(sum);
+        row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(label("›", 12f, UI_MUTED, tfBody));
+        row.setOnClickListener(v -> onOpen.run());
+        edgeCardRefs.add(new Object[]{summary, sum});
+        return row;
+    }
+
+    // --- 拖动滑杆时面板收成一行 ---------------------------------------------
+    /** The row being dragged, and what the panel looked like before it folded. */
+    private View dragRow, dragPage;
+    private android.graphics.drawable.Drawable dragPageBackground, dragAppBackground;
+    private android.graphics.drawable.Drawable dragControlsBackground;
+    private boolean dragClipLeft, dragClipCanvas, dragClipApp;
+    /** The bar under the finger, and every TextView of its row that went
+     *  white for the duration. See `beginDragFocus`. */
+    private DialBar dragBar;
+    /** How far the picture may travel down while a slider is held, and the
+     *  animation of that travel (0 = rest, 1 = it has taken the room). */
+    private int dragPhotoLift;
+    private float dragPhoto;
+    private android.animation.ValueAnimator dragPhotoAnim;
+    private final java.util.List<Object[]> dragTinted = new java.util.ArrayList<>();
+    private final java.util.List<Object[]> dragFaded = new java.util.ArrayList<>();
+
+    /**
+     * **Fold the panel to the row under the finger.** Lightroom does this so the
+     * picture gets the screen while a value is being found; here the panel sits
+     * above the canvas in a vertical stack, so shrinking it to one row grows the
+     * canvas -- and the picture, which now fills it.
+     *
+     * <p>The row is moved to the top of `panelHolder` by translation, not by
+     * re-parenting: the gesture is being delivered to that view, and detaching
+     * it mid-drag would cancel the drag.
+     */
+    private void beginDragFocus(DialBar bar) {
+        // **A previous drag that never released.** The page can be rebuilt
+        // under a finger (see `DialBar.onDetachedFromWindow`), and before that
+        // hook existed the panel stayed blue for good. Ending here costs
+        // nothing and heals any state that is still standing.
+        if (dragRow != null) endDragFocus(null);
+        if (panelHolder == null) return;
+        View page = null;
+        for (int i = 0; i < panelHolder.getChildCount(); ++i) {
+            final View c = panelHolder.getChildAt(i);
+            if (c.getVisibility() == View.VISIBLE) { page = c; break; }
+        }
+        if (page == null) return;
+        // The chain from the page down to the row that owns the bar.
+        final java.util.List<View> chain = new java.util.ArrayList<>();
+        View cur = bar;
+        while (cur != null && cur != page) {
+            chain.add(cur);
+            final android.view.ViewParent par = cur.getParent();
+            if (!(par instanceof View)) return;
+            cur = (View) par;
+        }
+        if (cur != page) return;
+        chain.add(page);
+        dragRow = bar;
+        dragFaded.clear();
+        // **Fade, do not resize.** Collapsing the panel to one row grew the
+        // canvas, but it also made the panel jump on every touch -- 「面板高度会
+        // 突然变低」 -- and it still was not transparent. What Lightroom does is
+        // fade the panel out and leave the slider floating over the picture, so
+        // the picture has to be behind the panel for it to read at all (see
+        // `syncCanvasOverflow`).
+        dragPageBackground = page.getBackground();
+        page.setBackground(null);
+        if (page instanceof android.view.ViewGroup)
+            fadeExcept((android.view.ViewGroup) page, chain, 0f);
+        // **The picture is already behind the panel -- stop covering it.**
+        // `syncCanvasOverflow` gives `compare` a negative bottom margin so its
+        // box reaches the bottom of the window, but three ancestors clipped it
+        // at the canvas column and `controls` painted paper over everything
+        // below that. Fading the rows alone left a sheet of paper, which is
+        // 「面板还是没有变透明，露出整张照片」 to the letter.
+        // **The whole column turns into canvas.** `controls` is a sibling of
+        // the canvas column and is drawn *over* it, so painting the box itself
+        // canvas-blue covered the very part of the picture the panel was meant
+        // to reveal (the picture runs to 543 dp, the panel starts at 510). The
+        // colour goes on the root and the panel box becomes see-through: the
+        // picture shows where it is, the canvas shows where it is not.
+        //
+        // **A new drawable, not `setBackgroundColor`.** That one *mutates* the
+        // existing ColorDrawable when there already is one -- so the saved copy
+        // turned blue with it and every release restored canvas as "paper":
+        // 「松手后面板变成蓝色了」.
+        if (editorRoot != null) {
+            dragAppBackground = editorRoot.getBackground();
+            editorRoot.setBackground(
+                    new android.graphics.drawable.ColorDrawable(UI_STAGE));
+        }
+        if (controls != null) {
+            dragControlsBackground = controls.getBackground();
+            controls.setBackground(null);
+        }
+        if (canvasColumn != null) {
+            dragClipCanvas = canvasColumn.getClipChildren();
+            canvasColumn.setClipChildren(false);
+        }
+        if (leftColumn != null) {
+            dragClipLeft = leftColumn.getClipChildren();
+            leftColumn.setClipChildren(false);
+        }
+        // **The one that actually mattered.** `clipChildren` is what sets the
+        // *child's* clip: turning it off on the column and the left column let
+        // their own children out, but the left column's own node still clipped
+        // at its bottom -- which is where the panel begins. So the picture was
+        // cut exactly at the panel's top edge no matter what the two inner
+        // flags said. The flag that decides it lives one level up, on the app.
+        if (editorRoot instanceof android.view.ViewGroup) {
+            final android.view.ViewGroup rootG = (android.view.ViewGroup) editorRoot;
+            dragClipApp = rootG.getClipChildren();
+            rootG.setClipChildren(false);
+        }
+        // **The picture does not move and does not scale.** Its box is the
+        // whole column already (see `syncCanvasOverflow`) and its scale is a
+        // fit, so all a transparent panel has to do is stop covering it.
+        //
+        // The one thing in the way is the photograph strip: 62 dp of paper
+        // across the middle of the picture. It fades for the duration of the
+        // drag -- its height never changes, so nothing re-lays out.
+        if (sourceBar != null) {
+            sourceBar.animate().cancel();
+            sourceBar.animate().alpha(0f).setDuration(170).start();
+        }
+        // **The row turns white and stays exactly where it is.** No card behind
+        // it (a sheet of paper on a photograph, and its padding pushed the
+        // slider down out from under the finger) and no re-layout at all: the
+        // track, its ticks, its numbers and the label all change colour, which
+        // costs one invalidate.
+        dragBar = bar;
+        bar.light = true;
+        bar.invalidate();
+        // How much room there is between the canvas's own bottom and the row
+        // under the finger: that is how far the picture may travel down.
+        final int rowTop = dragRowTop();
+        dragPhotoLift = rowTop > 0
+                ? Math.max(0, rowTop - dp(10) - canvasStage.getHeight()) : 0;
+        setDragPhoto(true);
+        if (chain.size() > 1) tintRowWhite(chain.get(1));
+        dragPage = page;
+    }
+
+    /** Where the row under the finger starts, in the editor's coordinates. */
+    private int dragRowTop() {
+        if (dragRow == null) return -1;
+        int y = 0;
+        View v = dragRow;
+        while (v != null && v != editorRoot) {
+            y += v.getTop();
+            final android.view.ViewParent p = v.getParent();
+            if (p instanceof android.widget.ScrollView) {
+                y -= ((android.widget.ScrollView) p).getScrollY();
+            }
+            if (!(p instanceof View)) break;
+            v = (View) p;
+        }
+        return y;
+    }
+
+    /**
+     * **The picture slides down to the centre of what is left.**
+     *
+     * <p>While a row is held the panel is see-through, so the picture has the
+     * whole window -- but it was still pinned to the top of the canvas column
+     * and the lower half of the screen was empty canvas colour. It now travels
+     * down, over ~360 ms of the same deceleration, until it sits centred
+     * between the top bar and the slider under the finger; on release it goes
+     * back. Its **scale never changes** -- only where the same picture sits.
+     */
+    private void setDragPhoto(boolean on) {
+        final android.animation.ValueAnimator old = dragPhotoAnim;
+        dragPhotoAnim = null;
+        if (old != null) old.cancel();
+        final float target = on ? 1f : 0f;
+        final float from = dragPhoto;
+        if (Math.abs(target - from) < 0.002f) {
+            dragPhoto = target;
+            syncCanvasOverflow();
+            return;
+        }
+        dragPhotoAnim = android.animation.ValueAnimator.ofFloat(from, target);
+        dragPhotoAnim.setDuration(
+                Math.max(90L, Math.round(360f * Math.abs(target - from))));
+        dragPhotoAnim.setInterpolator(
+                new android.view.animation.PathInterpolator(0.32f, 0.72f, 0f, 1f));
+        dragPhotoAnim.addUpdateListener(a -> {
+            dragPhoto = (Float) a.getAnimatedValue();
+            syncCanvasOverflow();
+        });
+        dragPhotoAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                if (dragPhotoAnim != a) return;
+                dragPhoto = target;
+                syncCanvasOverflow();
+                dragPhotoAnim = null;
+            }
+        });
+        dragPhotoAnim.start();
+    }
+
+    /** Every TextView of a row goes white for the duration of a drag. */
+    private void tintRowWhite(View v) {
+        if (v instanceof android.widget.TextView) {
+            final android.widget.TextView tv = (android.widget.TextView) v;
+            dragTinted.add(new Object[]{tv, tv.getCurrentTextColor()});
+            tv.setTextColor(0xFFF6F3EA);
+        }
+        if (v instanceof android.view.ViewGroup) {
+            final android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); ++i) tintRowWhite(g.getChildAt(i));
+        }
+    }
+
+    /** Everything under `g` that is not on the keep-list gets `alpha`. */
+    private void fadeExcept(android.view.ViewGroup g, java.util.List<View> keep, float alpha) {
+        for (int i = 0; i < g.getChildCount(); ++i) {
+            final View c = g.getChildAt(i);
+            if (keep.contains(c)) {
+                if (c instanceof android.view.ViewGroup) fadeExcept((android.view.ViewGroup) c, keep, alpha);
+                continue;
+            }
+            if (c.getVisibility() != View.VISIBLE) continue;
+            dragFaded.add(new Object[]{c, c.getAlpha()});
+            c.setAlpha(alpha);
+            if (c instanceof android.view.ViewGroup) fadeExcept((android.view.ViewGroup) c, keep, alpha);
+        }
+    }
+
+    private void endDragFocus(DialBar bar) {
+        if (dragRow == null) return;
+        dragRow = null;
+        for (Object[] e : dragFaded) ((View) e[0]).setAlpha((Float) e[1]);
+        dragFaded.clear();
+        if (dragPage != null) dragPage.setBackground(dragPageBackground);
+        dragPage = null;
+        dragPageBackground = null;
+        if (canvasColumn != null) canvasColumn.setClipChildren(dragClipCanvas);
+        if (leftColumn != null) leftColumn.setClipChildren(dragClipLeft);
+        if (editorRoot instanceof android.view.ViewGroup) {
+            ((android.view.ViewGroup) editorRoot).setClipChildren(dragClipApp);
+        }
+        if (controls != null) {
+            if (dragControlsBackground != null) controls.setBackground(dragControlsBackground);
+            else controls.setBackgroundColor(UI_PAPER);
+        }
+        dragControlsBackground = null;
+        if (editorRoot != null) {
+            if (dragAppBackground != null) editorRoot.setBackground(dragAppBackground);
+            else editorRoot.setBackgroundColor(UI_PAPER);
+        }
+        dragAppBackground = null;
+        for (Object[] e : dragTinted) {
+            ((android.widget.TextView) e[0]).setTextColor((Integer) e[1]);
+        }
+        dragTinted.clear();
+        if (dragBar != null) {
+            dragBar.light = false;
+            dragBar.invalidate();
+            dragBar = null;
+        }
+        if (sourceBar != null) {
+            sourceBar.animate().cancel();
+            sourceBar.animate().alpha(1f).setDuration(180).start();
+        }
+        setDragPhoto(false);
     }
 
     private LinearLayout.LayoutParams cardLp() {
@@ -22722,24 +23362,10 @@ public class MainActivity extends Activity {
 
     /** Repaint the two entry cards. Cheap, so it runs on every state change. */
     private void refreshEdgeCards() {
-        if (edgeRoot == null || edgeRoot.getChildCount() == 0) return;
-        View home = edgeRoot.getChildAt(0);
-        if (!(home instanceof android.view.ViewGroup)) return;
-        android.view.ViewGroup group = (android.view.ViewGroup) home;
-        for (int i = 0; i < group.getChildCount(); ++i) {
-            View child = group.getChildAt(i);
-            if (child instanceof HorizontalScrollView) {
-                LinearLayout strip = (LinearLayout) ((HorizontalScrollView) child).getChildAt(0);
-                for (int c = 0; c < strip.getChildCount(); ++c) {
-                    View card = strip.getChildAt(c);
-                    Object tag = card.getTag();
-                    if (!(tag instanceof Object[])) continue;
-                    Object[] parts = (Object[]) tag;
-                    @SuppressWarnings("unchecked")
-                    java.util.function.Supplier<String> summary = (java.util.function.Supplier<String>) parts[0];
-                    ((TextView) parts[1]).setText(summary.get());
-                }
-            }
+        for (Object[] ref : edgeCardRefs) {
+            @SuppressWarnings("unchecked")
+            final java.util.function.Supplier<String> summary = (java.util.function.Supplier<String>) ref[0];
+            ((TextView) ref[1]).setText(summary.get());
         }
     }
 
@@ -22782,6 +23408,37 @@ public class MainActivity extends Activity {
         return "film".equals(pfKind) || "film-positive".equals(pfKind);
     }
 
+    /**
+     * **The gauge a fotufilm stock is coated on** -- official
+     * `FilmFormat.nativeID(forStockID:)`, read out of the stock packs' own
+     * `nativeFormatID`. Everything not named here is 35 mm still film; the
+     * motion stocks are Super 35, and the two Instax films are their own sheet.
+     */
+    private static final String[][] FOTU_NATIVE_GAUGE = {
+            {"doublex5222", "super35"}, {"eterna500", "super35"},
+            {"eternavivid500", "super35"}, {"f64d", "super35"},
+            {"reala500d", "super35"}, {"verita200d", "super35"},
+            {"vision250d", "super35"}, {"vision500t", "super35"},
+            {"instaxmini", "instax-mini"}, {"instaxwide", "instax-wide"}};
+
+    /** The film's name, where a sheet or a toast has to say which stock this is. */
+    private String filmLabel(String stock) {
+        if (stock == null) return "原图";
+        final String id = FotuFilm.idOf(stock);
+        final FotuFilm.Stock fs = fotuStocks.get(id);
+        if (fs != null) return fs.name;
+        final int i = filmIds.indexOf(stock);
+        return i >= 0 && i < filmLabels.size() ? filmLabels.get(i) : id;
+    }
+
+    /** The gauge of a fotufilm stock, by id (`fotu:c200` or `c200`). */
+    private static String fotuGaugeOf(String stock) {
+        if (stock == null) return "135";
+        final String id = FotuFilm.idOf(stock);
+        for (String[] row : FOTU_NATIVE_GAUGE) if (row[0].equals(id)) return row[1];
+        return "135";
+    }
+
     /** fotufilm's gauges: the host draws the strip, not the engine's overscan. */
     private static final String[] PF_FILM_GAUGES = {
             "super35", "16mm", "super8", "4x5",
@@ -22792,8 +23449,6 @@ public class MainActivity extends Activity {
         for (String g : PF_FILM_GAUGES) if (g.equals(id)) return true;
         return false;
     }
-
-    private boolean pfGaugeIsPrintFrame() { return isPrintFrameGauge(overscanFormat); }
 
     /**
      * 半格对真的在生效。
@@ -22847,11 +23502,42 @@ public class MainActivity extends Activity {
 
     private String pfSummary() {
         if (pfKind == null || "none".equals(pfKind)) return "未开启 · 点进去设置";
-        return pfLabel() + (pfNeedsMargin() ? " · 边 " + fmt1(pfMargin) + " mm" : "");
+        final StringBuilder b = new StringBuilder(pfLabel());
+        if (pfNeedsMargin()) b.append(" · 边 ").append(fmt1(pfMargin)).append(" mm");
+        if (pfIsFilm() && pfFrames > 1 && pfGaugeSpansFrames()) b.append(" · ").append(pfFrames).append(" 格");
+        if (pfIsFilm() && pfGaugeOpensEdges() && "mediumFormatBack".equals(pfCamera)) b.append(" · 中画幅后背");
+        return b.toString();
+    }
+
+    /** Film Border's camera, as the official menu words it. */
+    private String pfCameraLabel() {
+        return "mediumFormatBack".equals(pfCamera) ? "中画幅后背" : "135 / 全景相机";
+    }
+
+    private String pfFramesLabel() {
+        return pfFrames + " 格";
+    }
+
+    /** Which film gauges the camera applies to: 135 runs horizontally, so a
+     *  taller gate can expose it across the perforations. */
+    private boolean pfGaugeOpensEdges() {
+        final int at = gateIndex(overscanFormat);
+        return at >= 0 && at <= 2;          // 135, 135 半格, XPan
+    }
+
+    /** Which film gauges can span frames: roll film that runs across them. */
+    private boolean pfGaugeSpansFrames() {
+        final int at = gateIndex(overscanFormat);
+        return at >= 0 && (at <= 2 || (at >= 3 && at <= 9));
     }
 
     private void refreshPfRows() {
+        // `self.frame = available ? frame : .none`: a border the film and the
+        // paper cannot carry falls back here, so nothing downstream has to ask
+        // again -- a Look restored onto a different film lands on `none`.
+        if (!pfAvailable(pfKind)) pfKind = "none";
         final boolean off = pfKind == null || "none".equals(pfKind);
+        final boolean film = !off && pfIsFilm();
         if (pfValue != null) pfValue.setText(pfLabel());
         if (pfMarginBar != null) {
             final boolean use = !off && pfNeedsMargin();
@@ -22860,33 +23546,416 @@ public class MainActivity extends Activity {
         }
         if (pfFxBar != null) { pfFxBar.setEnabled(!off); pfFxBar.setAlpha(off ? 0.38f : 1f); }
         if (pfFyBar != null) { pfFyBar.setEnabled(!off); pfFyBar.setAlpha(off ? 0.38f : 1f); }
+        // **Only a film border has a camera and a frame count.** A paper sheet,
+        // a mount and a posting canvas have one frame and no gate, so the two
+        // cells hide rather than sit there doing nothing.
+        // Shown only where it applies -- see the comment above. Hidden rather
+        // than dimmed: a Camera cell on a paper sheet is not "disabled", it is
+        // a control the material does not have.
+        if (pfCameraCell != null) {
+            final boolean show = film && pfGaugeOpensEdges();
+            pfCameraCell.setVisibility(show ? View.VISIBLE : View.GONE);
+            pfCameraCell.setEnabled(show);
+            pfCameraCell.setAlpha(1f);
+        }
+        if (pfFramesCell != null) {
+            final boolean show = film && pfGaugeSpansFrames();
+            pfFramesCell.setVisibility(show ? View.VISIBLE : View.GONE);
+            pfFramesCell.setEnabled(show);
+            pfFramesCell.setAlpha(1f);
+        }
+        if (pfCameraValue != null) pfCameraValue.setText(pfCameraLabel());
+        if (pfFramesValue != null) pfFramesValue.setText(pfFramesLabel());
+    }
+
+    private void showPfCameraPicker() {
+        if (pfKind == null || "none".equals(pfKind) || !pfIsFilm()) return;
+        if (!pfGaugeOpensEdges()) {
+            showInAppToast("相机只对 135 的片边有效");
+            return;
+        }
+        showChoiceSheet("相机",
+                java.util.Arrays.asList("135 / 全景相机", "中画幅后背"),
+                java.util.Arrays.asList(
+                        "画面在两条齿孔之间，和 35mm / 全景相机的片门一样",
+                        "135 装在中画幅相机上：画面横跨齿孔，一直到片的边"),
+                pfCameraLabel(), null, picked -> {
+                    pfCamera = "中画幅后背".equals(picked) ? "mediumFormatBack" : "panoramic";
+                    refreshPfRows();
+                    refreshEdgeCards();
+                    onEdgeChanged();
+                });
+    }
+
+    private void showPfFramesPicker() {
+        if (pfKind == null || "none".equals(pfKind) || !pfIsFilm()) return;
+        if (!pfGaugeSpansFrames()) {
+            showInAppToast("帧数只对 135 / 120 的卷片有效");
+            return;
+        }
+        showChoiceSheet("帧数",
+                java.util.Arrays.asList("1 格", "2 格", "3 格", "4 格"),
+                (java.util.List<String>) null,
+                pfFramesLabel(), null, picked -> {
+                    pfFrames = Math.max(1, Math.min(4, picked.charAt(0) - '0'));
+                    refreshPfRows();
+                    refreshEdgeCards();
+                    onEdgeChanged();
+                });
+    }
+
+    /** A gauge that is a real film: a roll, a sheet or an integral instant cut. */
+    private static boolean pfFilmGauge(String gauge) {
+        if (gauge == null) return false;
+        if (gauge.startsWith("instax")) return true;
+        switch (gauge) {
+            case "135": case "135_half": case "135_xpan": case "120_6x6":
+            case "super35": case "16mm": case "super8": case "4x5":
+                return true;
+            default: return false;
+        }
+    }
+
+    /** The medium is a reflection paper -- what an easel print is printed on. */
+    private static boolean pfReflectiveMedium(String medium) {
+        return "crystal-archive".equals(medium) || "ektacolor-edge".equals(medium)
+                || "endura-premier".equals(medium);
+    }
+
+    /** Ilfochrome: a positive paper, whose dark rebate holds no image. */
+    private static boolean pfPositivePaper(String medium) {
+        return medium != null && medium.startsWith("ilfochrome");
     }
 
     /**
-     * **A film print frame lives only on the seven gauges the host lays out.**
+     * Official {@code PrintFrameConfiguration.init}: which border this film and
+     * this paper can actually carry.
      *
-     * <p>On a 135 or 120 gate the host refuses it outright -- "film borders on
-     * this gauge are drawn by the rebate module" -- and the whole render comes
-     * back rc=2: a blank canvas and a toast. A gate the rebate can print
-     * therefore retires the film kind. The 相纸 kinds carry no gauge, so they
-     * are left alone, and so is a look already sitting on a print-frame gauge.
+     * <p>A film border needs a film gauge. The positive scan needs a negative on
+     * a roll or a sheet. A slide mount needs a transparency in 35 mm or 120. A
+     * carrier needs a negative printed on a reflection paper. The unexposed edge
+     * needs a roll or a sheet that is not integral instant film. The four paper
+     * sheets need a reflection paper. The mounts and the posting canvases need
+     * nothing at all.
      */
-    private void retireFilmPrintFrame() {
-        if (isPrintFrameGauge(overscanFormat)) return;
-        if (!"film".equals(pfKind) && !"film-positive".equals(pfKind)) return;
-        pfKind = "none";
-        refreshPfRows();
+    private boolean pfAvailable(String kind) {
+        if (kind == null || "none".equals(kind)) return true;
+        switch (kind) {
+            case "white-mount": case "black-mount":
+            case "social-square": case "social-portrait": case "social-story":
+                return true;
+            default:
+                break;
+        }
+        // The first engine has no finishing compositor at all, so there is no
+        // material to judge against: the border is simply not drawn. Keeping it
+        // "available" means switching to a first-engine film for a comparison
+        // does not wipe the border out of the Look.
+        if (!isFotuStock(filmStock)) return true;
+        final FotuFilm.Stock st = fotuStocks.get(FotuFilm.idOf(filmStock));
+        if (st == null) return true;
+        final String gauge = overscanFormat == null ? "135" : overscanFormat;
+        final boolean instant = st.reflection || gauge.startsWith("instax");
+        final boolean rollOrSheet = pfFilmGauge(gauge) && !gauge.startsWith("instax");
+        final boolean reflective = pfReflectiveMedium(printStock);
+        switch (kind) {
+            case "film":          return pfFilmGauge(gauge);
+            case "film-positive": return !st.reversal && !instant && rollOrSheet;
+            case "slide-mount":   return st.reversal && !instant;
+            case "carrier":       return reflective && !pfPositivePaper(printStock)
+                                         && !st.reversal && !instant;
+            case "emulsion":      return !instant && rollOrSheet;
+            default:              return kind.startsWith("paper-") && reflective;
+        }
+    }
+
+    /** Why a border is not available, in the official's own words. */
+    private String pfUnavailable(String kind) {
+        if (kind == null) return "";
+        switch (kind) {
+            case "film":
+                return "需要一张有画幅的胶片（135 / 120 / 电影片 / 页片 / Instax）";
+            case "film-positive":
+                return "需要负片，画幅是卷片或页片";
+            case "slide-mount":
+                return "需要 135 或 120 的反转片";
+            case "carrier":
+                return "需要负片 + 一张反射相纸（Crystal Archive / Ektacolor / Endura）";
+            case "emulsion":
+                return "需要卷片或页片（一次成像没有乳剂边）";
+            default:
+                return "需要一张反射相纸（Crystal Archive / Ektacolor / Endura）";
+        }
+    }
+
+    // --- 画框（模板） -------------------------------------------------------
+    /** The chosen card, or null. */
+    private FrameTemplate.Spec frameSpec() {
+        return FrameTemplate.byId(this, frameTemplate);
+    }
+
+    private boolean frameTemplateOn() {
+        return frameSpec() != null;
+    }
+
+    /**
+     * The designed card around `src`, or `src` itself when none is chosen.
+     *
+     * <p>A template's own size is the print size, so the composite *replaces*
+     * the render rather than sitting on top of it -- see `FrameTemplate`.
+     */
+    private Bitmap frameApply(Bitmap src) {
+        final FrameTemplate.Spec spec = frameSpec();
+        if (spec == null || src == null || src.isRecycled()) return src;
+        try {
+            final Bitmap out = FrameTemplate.compose(this, spec, src,
+                    frameFilmName(), frameFormatText());
+            if (out != null) return out;
+        } catch (Throwable t) {
+            DebugSink.text("frame", "compose failed: " + describe(t));
+        }
+        return src;
+    }
+
+    /**
+     * The film's name as the card prints it.
+     *
+     * <p>Uppercase brand + model, because that is what a film edge carries --
+     * and because the artwork's own lettering was "KODAK PORTRA 300", which is
+     * a lie the moment a Fuji stock is loaded.
+     */
+    private String frameFilmName() {
+        if (filmStock == null) return "";
+        final String id = FotuFilm.idOf(filmStock);
+        final FotuFilm.Stock fs = fotuStocks.get(id);
+        String s = filmLabel(filmStock);
+        // **A film edge prints a product name, nothing else.** The label carries
+        // the app's own process tag -- 「· 负片」/「· 黑白」/「· 反转」 -- and a
+        // Chinese word on a 35 mm rebate is exactly the give-away the artwork is
+        // not supposed to have.
+        final int cut = s.indexOf(" · ");
+        if (cut > 0) s = s.substring(0, cut);
+        s = latinOnly(s).trim();
+        if (fs != null && fs.brand != null && !fs.brand.isEmpty()
+                && !s.toLowerCase(java.util.Locale.US)
+                        .startsWith(fs.brand.toLowerCase(java.util.Locale.US))) {
+            s = fs.brand + " " + s;
+        }
+        while (s.contains("  ")) s = s.replace("  ", " ");
+        s = s.trim().toUpperCase(java.util.Locale.US);
+        return s.isEmpty() ? id.toUpperCase(java.util.Locale.US) : s;
+    }
+
+    /**
+     * The letters a film edge can carry, and nothing else.
+     *
+     * <p>Done character by character rather than with a unicode-escape regex:
+     * Java resolves those escapes in the compiler and again in Pattern, so a
+     * stray backslash quietly eats ordinary letters. Same three ranges as
+     * `isCjk`.
+     */
+    private static String latinOnly(String s) {
+        final StringBuilder b = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); ++i) {
+            final char c = s.charAt(i);
+            final boolean cjk = (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0x3000 && c <= 0x303F)
+                    || (c >= 0xFF00 && c <= 0xFF65);
+            b.append(cjk ? ' ' : c);
+        }
+        return b.toString();
+    }
+
+    /** The gauge as the film edge prints it. */
+    private String frameFormatText() {
+        return FrameTemplate.formatLabel(overscanFormat);
+    }
+
+    private String frameSummary() {
+        final FrameTemplate.Spec s = frameSpec();
+        return s == null ? "不套画框" : s.name + " · " + s.w + "×" + s.h;
+    }
+
+    private void refreshFrameRows() {
+        if (frameValue != null) frameValue.setText(frameSummary());
+        if (frameSize != null) {
+            final FrameTemplate.Spec s = frameSpec();
+            frameSize.setText(s == null ? "—" : s.w + " × " + s.h);
+        }
+    }
+
+    private void showFramePicker() {
+        final java.util.List<String> labels = new java.util.ArrayList<>();
+        final java.util.List<String> notes = new java.util.ArrayList<>();
+        final java.util.List<String> ids = new java.util.ArrayList<>();
+        labels.add("不套画框");
+        notes.add("只输出引擎渲染的画面");
+        ids.add("");
+        for (FrameTemplate.Spec s : FrameTemplate.all(this)) {
+            labels.add(s.name);
+            notes.add("出片 " + s.w + "×" + s.h + " · 照片放进 " + s.ww + "×" + s.wh + " 的窗口");
+            ids.add(s.id);
+        }
+        final int now = Math.max(0, ids.indexOf(frameTemplate == null ? "" : frameTemplate));
+        showChoiceSheet("画框（模板）", labels, notes, labels.get(now), i -> true, picked -> {
+            final int i = labels.indexOf(picked);
+            if (i < 0) return;
+            final String want = ids.get(i);
+            if (want.equals(frameTemplate == null ? "" : frameTemplate)) return;
+            frameTemplate = want;
+            FrameTemplate.forget();
+            refreshFrameRows();
+            schedulePersist();
+            // The card is applied after the render, so the engine does not have to
+            // run again -- recompose from what it already produced.
+            if (filmStock == null || showingOriginal) {
+                // Nothing developed to wrap; the card shows on the next render.
+                refreshFrameRows();
+            } else if (isFotuStock(filmStock)) {
+                if (lastFotuPlain != null) recomposeFotu(); else renderFotu();
+            } else if (session != null) {
+                renderImage();
+            }
+        });
+    }
+
+    private void buildFramePage() {
+        framePage = new LinearLayout(this);
+        framePage.setOrientation(LinearLayout.VERTICAL);
+        framePage.addView(pageHead("画框 / FRAME"), new LinearLayout.LayoutParams(-1, dp(38)));
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        TextView note = label("模板自带尺寸和窗口：照片裁进窗口，装饰压在照片上。"
+                + "两个引擎都能用，出片尺寸就是模板的尺寸 —— 它是一张印好的卡纸，不是缩放旋钮。",
+                7.5f, UI_MUTED, tfHan);
+        note.setPadding(dp(2), 0, dp(2), dp(6));
+        body.addView(note, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        frameValue = choiceCell(row, "画框", frameSummary(), tv -> showFramePicker());
+        body.addView(row, new LinearLayout.LayoutParams(-1, dp(46)));
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        frameSize = choiceCell(row2, "出片尺寸", "—", tv -> showInAppToast(
+                "画框的尺寸由模板决定；照片放在它的窗口里"));
+        body.addView(row2, new LinearLayout.LayoutParams(-1, dp(46)));
+        framePage.addView(cappedScroll(body, 240), new LinearLayout.LayoutParams(-1, -2));
+        refreshFrameRows();
+    }
+
+    /**
+     * A designed card writes itself.
+     *
+     * <p>Only JPEG: the composite is 8-bit, and TIFF / DNG are the masters that
+     * go to a desktop, where a printed card would be in the way.
+     */
+    private void exportFramed(String format, final Runnable onDone) {
+        if (!"jpeg".equals(format)) {
+            // Two paragraphs, joined at run time: an escaped blank line inside a
+            // literal is what the translation table cannot match.
+            showErrorDialog("画框只能导出 JPEG",
+                    "画框是印在画面上的装饰，出片尺寸由模板决定（" + frameSummary() + "）。"
+                            + PARA + "TIFF / DNG 是给电脑上的 Lightroom 的母版，不套画框。");
+            if (onDone != null) onDone.run();
+            return;
+        }
+        final Bitmap cur = lastRenderedBitmap;
+        if (cur == null || cur.isRecycled()) {
+            showInAppToast("还没有成片 —— 先等这一帧渲染完");
+            if (onDone != null) onDone.run();
+            return;
+        }
+        final Bitmap src = cur.copy(Bitmap.Config.ARGB_8888, false);
+        if (src == null) {
+            showInAppToast("这张画框读不出来，重新渲染一次再导");
+            if (onDone != null) onDone.run();
+            return;
+        }
+        final int fw = src.getWidth(), fh = src.getHeight();
+        new Thread(() -> {
+            final long t0 = nowMs();
+            final java.io.File tmp = new java.io.File(getCacheDir(),
+                    "export_framed_" + System.currentTimeMillis() + ".jpg");
+            boolean ok;
+            try {
+                ok = SpektraLabEngine.writeBitmapJpeg(src, tmp.getAbsolutePath(), 95);
+                if (!ok) {
+                    try (java.io.OutputStream o = new java.io.FileOutputStream(tmp)) {
+                        ok = src.compress(Bitmap.CompressFormat.JPEG, 95, o);
+                    }
+                }
+            } catch (Throwable t) {
+                ok = false;
+            } finally {
+                src.recycle();
+            }
+            try {
+                if (!ok || !tmp.isFile() || tmp.length() < 128) {
+                    throw new java.io.IOException("JPEG 写出失败");
+                }
+                try (java.io.InputStream in = new java.io.FileInputStream(tmp)) {
+                    final byte[] head = new byte[2];
+                    if (in.read(head) != 2 || (head[0] & 0xFF) != 0xFF || (head[1] & 0xFF) != 0xD8) {
+                        throw new java.io.IOException("写出来的文件不是 JPEG");
+                    }
+                }
+                final Uri outUri = writeExportFile(tmp,
+                        "SpektraLab_FRAME_" + System.currentTimeMillis() + ".jpg",
+                        ".jpg", "image/jpeg");
+                final long bytes = tmp.length();
+                final long secs = Math.max(1, (nowMs() - t0) / 1000);
+                final String sizeLabel = String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0);
+                runOnUiThread(() -> {
+                    lastExportUri = outUri;
+                    lastExportMime = "image/jpeg";
+                    showInAppToast("已保存 " + fw + "x" + fh + " · " + sizeLabel);
+                    statusText.setText("已导出画框 " + fw + "x" + fh + " · " + sizeLabel
+                            + "（" + secs + " 秒）");
+                    hideBusy();
+                    setStep(2);
+                });
+                try {
+                    DebugSink.text("export-framed", frameSummary() + " " + fw + "x" + fh
+                            + " bytes=" + bytes);
+                } catch (Throwable ignored) { }
+            } catch (Throwable t) {
+                final String why = describe(t);
+                runOnUiThread(() -> {
+                    showErrorDialog("导出失败", why);
+                    hideBusy();
+                });
+                try { DebugSink.send("export-framed", "failed: " + why); } catch (Throwable ignored) { }
+            } finally {
+                if (tmp.isFile()) tmp.delete();
+                if (onDone != null) runOnUiThread(onDone);
+            }
+        }, "export-framed").start();
     }
 
     private void showPfPicker() {
-        showChoiceSheet("印刷边框", java.util.Arrays.asList(PF_LABELS), pfLabel(), picked -> {
-            final int i = java.util.Arrays.asList(PF_LABELS).indexOf(picked);
-            if (i < 0) return;
-            pfKind = PF_IDS[i];
-            refreshPfRows();
-            refreshEdgeCards();
-            onEdgeChanged();
-        });
+        // **The official menu lists every border and greys what the film cannot
+        // carry.** `PrintFrameConfiguration.init` answers `available` per case
+        // and explains it, so the sheet does the same rather than hiding rows:
+        // a user who wonders why a slide mount is unavailable gets the reason on
+        // the row instead of an empty list.
+        final java.util.List<String> labels = new java.util.ArrayList<>();
+        final java.util.List<String> notes = new java.util.ArrayList<>();
+        final java.util.List<Boolean> can = new java.util.ArrayList<>();
+        for (int i = 0; i < PF_IDS.length; ++i) {
+            final boolean on = pfAvailable(PF_IDS[i]);
+            labels.add(PF_LABELS[i]);
+            notes.add(on ? null : "不可用 · " + pfUnavailable(PF_IDS[i]));
+            can.add(on);
+        }
+        showChoiceSheet("印刷边框", labels, notes, pfLabel(),
+                i -> i >= 0 && i < can.size() && can.get(i),
+                picked -> {
+                    final int i = labels.indexOf(picked);
+                    if (i < 0 || !can.get(i)) return;
+                    pfKind = PF_IDS[i];
+                    refreshPfRows();
+                    refreshEdgeCards();
+                    onEdgeChanged();
+                });
     }
 
     /** The print frame: what happens after the picture is formed. */
@@ -22919,6 +23988,25 @@ public class MainActivity extends Activity {
         // half of the screen whatever the font scale does.
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
+
+        // **Film Border's two remaining controls**, straight from the official
+        // `PrintFrameConfiguration`: one picture across 1-4 frames' length of
+        // the roll (a panoramic camera advances the film between exposures),
+        // and the camera a 135 cut was exposed in -- a medium-format back's
+        // gate is taller than the film and exposes it to both edges.
+        LinearLayout filmRow = new LinearLayout(this);
+        filmRow.setOrientation(LinearLayout.HORIZONTAL);
+        pfCameraValue = choiceCell(filmRow, "相机", pfCameraLabel(), tv -> {
+            pfCameraValue = tv;
+            showPfCameraPicker();
+        });
+        pfFramesValue = choiceCell(filmRow, "帧数", pfFramesLabel(), tv -> {
+            pfFramesValue = tv;
+            showPfFramesPicker();
+        });
+        pfCameraCell = (View) pfCameraValue.getParent();
+        pfFramesCell = (View) pfFramesValue.getParent();
+        body.addView(filmRow, new LinearLayout.LayoutParams(-1, dp(46)));
 
         pfMarginBar = rangeRow(body, "纸边宽", "相纸 / 片夹的留白，毫米；按这张纸的实际尺寸",
                 0.5f, 20f, pfMargin, 0.5f, v -> pfMargin = v, 3.0f);
@@ -23001,10 +24089,12 @@ public class MainActivity extends Activity {
         {
             final int at = edgeIds.indexOf(overscanFormat);
             final String current = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
-            choiceCell(gateRow, "片门格式", current, tv -> {
-                edgeValue = tv;
-                showEdgePicker();
-            });
+            // **The field is the cell's text, taken when the cell is built.**
+            // It used to be assigned inside the tap lambda, so until the first
+            // tap `edgeValue` was null and every programmatic gate change --
+            // `applyGate`, `refreshEdgeFormats`, the fotufilm stock's own
+            // gauge -- left the row naming the gate it had before.
+            edgeValue = choiceCell(gateRow, "片门格式", current, tv -> showEdgePicker());
         }
         // **方向, where the user looks for it.** A rebate is cut by a gate and a
         // gate's shape is fixed -- the film runs along the picture's short edge
@@ -23234,6 +24324,8 @@ public class MainActivity extends Activity {
         edgeRoot.addView(datePage, new LinearLayout.LayoutParams(-1, -2));
         buildPrintFramePage();
         edgeRoot.addView(pfPage, new LinearLayout.LayoutParams(-1, -2));
+        buildFramePage();
+        edgeRoot.addView(framePage, new LinearLayout.LayoutParams(-1, -2));
     }
 
     /** Wrap-content up to `maxDp`, scrollable past it. A plain ScrollView
@@ -23246,7 +24338,7 @@ public class MainActivity extends Activity {
     }
 
     private static final class CappedScroll extends ScrollView {
-        private final int cap;
+        private int cap;
 
         /** The most this box will ever ask for, in px. */
         int cap() { return cap; }
@@ -23255,6 +24347,13 @@ public class MainActivity extends Activity {
             super(context);
             this.cap = cap;
             setVerticalScrollBarEnabled(false);
+        }
+
+        /** The page's own header and cells are outside this box: see `capPanel`. */
+        void setCap(int px) {
+            if (px == cap) return;
+            cap = px;
+            requestLayout();
         }
 
         @Override protected void onMeasure(int widthSpec, int heightSpec) {
@@ -23406,7 +24505,12 @@ public class MainActivity extends Activity {
         hideRebateRow(frameNoBar, drawn);
         if (edgeCardDate != null) edgeCardDate.setVisibility(drawn ? View.GONE : View.VISIBLE);
         if (edgeCardPf != null) edgeCardPf.setVisibility(drawn ? View.VISIBLE : View.GONE);
-        if (drawn && edgePageIndex == 1) openEdgePage(-1);
+        // **One border card per engine.** fotufilm's gauge follows the film and
+        // its strip is the host's PrintFrame, so the rebate page had nothing on
+        // it but rows that did nothing -- while the page that *does* apply was
+        // next to it. The rebate card goes with the rebate.
+        if (edgeCardRebate != null) edgeCardRebate.setVisibility(drawn ? View.GONE : View.VISIBLE);
+        if (drawn && (edgePageIndex == 0 || edgePageIndex == 1)) openEdgePage(-1);
         // 片边模式 and 片门形状 choose how the engine *cuts* the mask -- the
         // sprocket profile and the gate's lip. A drawn strip has one of each.
         if (edgeShapeRow != null) edgeShapeRow.setVisibility(drawn ? View.GONE : View.VISIBLE);
@@ -23490,10 +24594,6 @@ public class MainActivity extends Activity {
         if (at < 0) return;
         final String before = overscanFormat;
         overscanFormat = id;
-        // Choosing one of the seven gauges IS asking for a print frame; any
-        // other gate is asking for the rebate, and the film kind retires.
-        pfChosen = isPrintFrameGauge(id);
-        retireFilmPrintFrame();
         // **A pair lives on one gate.** `overscan_pair` with any other format is
         // an error the engine refuses outright, so switching gates retires it.
         if (!"135_half".equals(id)) overscanPair = false;
@@ -23536,9 +24636,6 @@ public class MainActivity extends Activity {
         // looks like from the other side of the screen.
         if (!edgeIds.contains(id)) {
             overscanFormat = edgeIds.isEmpty() ? before : edgeIds.get(0);
-            // The pick did not take: whatever the gate is now is what was asked
-            // for, and a print frame that never arrived is not "chosen".
-            pfChosen = isPrintFrameGauge(overscanFormat);
             // **The scale page follows the gate back.** Leaving `formatIndex`
             // on the refused gate is how `rgate:` used to name a gauge the
             // rebate has no layout for.
@@ -23549,17 +24646,6 @@ public class MainActivity extends Activity {
             showInAppToast("这张照片裁不成 " + EDGE_LABELS[at] + " 的比例，片门仍是 "
                     + gateLabelsFallback(overscanFormat));
         } else {
-            // **A print-frame gauge is drawn by the print frame, not by the
-            // rebate.** Choosing one used to set `overscanOn` alone -- which is
-            // the rebate's switch -- so a Super 35 / 16 mm / Super 8 / 4x5 /
-            // Instax gate cropped the picture and then drew nothing at all:
-            // "选了片边但是预览和导出都没有，只生效了裁切". The border has to be
-            // asked for by the control that owns it.
-            if (isFotuStock(filmStock) && isPrintFrameGauge(id) && !pfIsFilm()) {
-                pfKind = "film";
-                refreshPfRows();
-                refreshEdgeCards();
-            }
             if (isFotuStock(filmStock)) renderFotu(); else onEdgeChanged();
             showInAppToast((cropped ? "画面已裁成 " + gateRatioLabel(at) + " · " : "")
                     + "片门 → " + EDGE_LABELS[at]);
@@ -23569,6 +24655,19 @@ public class MainActivity extends Activity {
     }
 
     private void showEdgePicker() {
+        // **On a fotufilm frame there is nothing to pick.** The gauge is the
+        // film's (official `FilmFormat.nativeID`), so the row only reports it;
+        // the picture is cover-cropped into that gate when a border is drawn.
+        if (isFotuStock(filmStock)) {
+            final String gauge = fotuGaugeOf(filmStock);
+            showSheetBody("片门格式 · 跟随胶片",
+                    "fotufilm 的片门由胶片本身决定：35mm 胶片是 135（36 × 24），"
+                    + "Vision3 / Eterna / Double-X 这些电影片是 Super 35，"
+                    + "Instax 两支是它们自己的相纸尺寸。要换片门，换一支别的画幅的胶片。\n\n"
+                    + "现在的胶片：" + filmLabel(filmStock) + " · " + gateLabelsFallback(gauge),
+                    new String[]{"知道了"}, i -> { }, null, null);
+            return;
+        }
         // **Every gate is usable, because choosing one now gives the picture
         // that shape.** This sheet used to grey out every gate the frame did
         // not already match, so a 3:2 picture offered exactly two rows and both
@@ -23581,14 +24680,15 @@ public class MainActivity extends Activity {
         final java.util.List<String> labels = new java.util.ArrayList<>();
         final java.util.List<String> notes = new java.util.ArrayList<>();
         String selectedLabel = null;
+        // The last seven entries are fotufilm's print-frame gauges. They are
+        // reached through the film stock now, never through this sheet, so the
+        // list is the rebate's own ten.
         for (int i = 0; i < EDGE_IDS.length; ++i) {
+            if (isPrintFrameGauge(EDGE_IDS[i])) continue;
             final boolean fits = aspect > 0
                     && Math.abs(aspect / gateRatioAt(i) - 1.0) <= 0.045;
             labels.add(EDGE_LABELS[i]);
-            notes.add(isPrintFrameGauge(EDGE_IDS[i])
-                    ? "电影片 / 页片的画框（印刷边框），不是片边；会裁成 "
-                      + gateRatioLabel(i)
-                    : (fits ? null : "选它会居中裁成 " + gateRatioLabel(i) + "，片边就能印了"));
+            notes.add(fits ? null : "选它会居中裁成 " + gateRatioLabel(i) + "，片边就能印了");
             if (EDGE_IDS[i].equals(overscanFormat)) selectedLabel = EDGE_LABELS[i];
         }
         showChoiceSheet("选择片门格式", labels, notes, selectedLabel, null,
@@ -23793,7 +24893,7 @@ public class MainActivity extends Activity {
             final int k = i;
             if (kind == 1) taps[i] = () -> showFotuGroup(k);
             else if (kind == 3) taps[i] = () -> showPrintGroup(k);
-            else taps[i] = () -> showViewPage(k);
+            else taps[i] = () -> { closeCurveTool(); showViewPage(k); };
         }
         subRow = new ChipRow(names, 9f, dp(SUB_BAR_DP), UI_BLUE, UI_MUTED, taps);
         subRowHost.addView(subRow, new android.widget.FrameLayout.LayoutParams(
@@ -23901,6 +25001,102 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * **The cap is the page, not the scroll inside it.**
+     *
+     * <p>Every panel is 「表头 + 一排格子 + 一个 CappedScroll」, and only the
+     * scroll was capped -- so 冲印 came out at 38 + 46 + 300 = 384 dp and
+     * 「还是没限高」was exactly right. This measures the page once it has laid
+     * out and hands the excess back to the scroll, so the page lands on
+     * `PANEL_CAP_DP` whatever its header is.
+     */
+    private void capPanel(final View page) {
+        // 边框 has its own line (`EDGE_SUBPAGE_CAP_DP`, 400 dp): its date page is
+        // 340 dp of controls and capping it here would cut the page in half.
+        if (page == null || (panels[5] != null && page == panels[5])) return;
+        page.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+            if (landscapeMode) return;
+            final int cap = dp(PANEL_CAP_DP);
+            // **The page's own height is the first thing to clamp.** After an
+            // entrance the height is an explicit `lp.height` (see
+            // `animateHeightTo`), and a LinearLayout hands its child an
+            // EXACTLY spec -- so the CappedScroll inside obeys it and its own
+            // cap never applies. Fixing only the scroll left 冲印 at 38 + 240.
+            final android.view.ViewGroup.LayoutParams lp = v.getLayoutParams();
+            if (lp != null && lp.height > cap) {
+                final int was = v.getHeight();
+                lp.height = cap;
+                v.setLayoutParams(lp);
+                Probe.log("ui", "capPanel " + was + " -> " + cap);
+                return;
+            }
+            final int over = v.getHeight() - cap;
+            if (over <= dp(4)) return;
+            final CappedScroll scroll = biggestScroll(v);
+            if (scroll == null) return;
+            final int want = Math.max(dp(72), scroll.cap() - over);
+            if (want < scroll.cap()) scroll.setCap(want);
+        });
+    }
+
+    private CappedScroll biggestScroll(View v) {
+        CappedScroll best = null;
+        if (v instanceof CappedScroll) best = (CappedScroll) v;
+        if (v instanceof android.view.ViewGroup) {
+            final android.view.ViewGroup g = (android.view.ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); ++i) {
+                final CappedScroll c = biggestScroll(g.getChildAt(i));
+                if (c != null && (best == null || c.cap() > best.cap())) best = c;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * **The canvas runs under the bars.** Lightroom's picture reaches the bottom
+     * of the window and the panel sits on it; ours stopped at the panel's top
+     * edge, which is why a folded shelf left 62 dp of blue under the photograph.
+     *
+     * <p>The `compare` view is given a negative bottom margin equal to the bar
+     * stack's height, so its layout box reaches the bottom of the window; the
+     * bars are drawn after it and cover it. Nothing else moves.
+     */
+    private void syncCanvasOverflow() {
+        if (compare == null || controls == null || sourceBar == null) return;
+        final android.view.ViewParent par = compare.getParent();
+        if (par instanceof android.view.ViewGroup) {
+            final android.view.ViewGroup g = (android.view.ViewGroup) par;
+            if (g.getClipChildren()) g.setClipChildren(false);
+        }
+        // **The picture's box is the whole column plus the panel.** With a
+        // *fit* scale that is what lets the panel open onto the photograph
+        // instead of onto a sheet of paper -- the picture is not resized by any
+        // of it, it is only revealed. The strip lives inside the column now,
+        // so it is not counted twice. The bars are drawn after it and cover it.
+        final int under = landscapeMode ? 0 : controls.getHeight();
+        final android.view.ViewGroup.LayoutParams raw = compare.getLayoutParams();
+        if (!(raw instanceof android.widget.FrameLayout.LayoutParams)) return;
+        final android.widget.FrameLayout.LayoutParams lp =
+                (android.widget.FrameLayout.LayoutParams) raw;
+        final int want = -Math.max(0, under);
+        if (lp.bottomMargin != want) {
+            lp.bottomMargin = want;
+            compare.setLayoutParams(lp);
+        }
+        // Where the picture may sit: under the top bar, above the panel at
+        // rest; the whole window while a slider is held (see `setDragPhoto`).
+        // The *scale* is untouched either way -- `pictureTop` only chooses the
+        // y of a picture whose size is already decided by the fit.
+        if (canvasStage != null && compare != null) {
+            final int stageH = canvasStage.getHeight();
+            final int topBar = editorTopBar != null && editorTopBar.getHeight() > 0
+                    ? editorTopBar.getHeight() : dp(64);
+            final int bottom = stageH + Math.round(dragPhotoLift * dragPhoto);
+            final int top = Math.round(topBar * dragPhoto);
+            compare.setAnchor(top, bottom);
+        }
+    }
+
     /** The panel on screen right now, for the expand cascade to walk. */
     private View currentPanel() {
         if (activeTabIndex == 1 && fotuPanel != null && isFotuStock(filmStock)) return fotuPanel;
@@ -23921,6 +25117,9 @@ public class MainActivity extends Activity {
      * user's side this is the same event: rows of controls, one after another.
      */
     private void setPanelCollapsed(boolean collapsed) {
+        // A tab or a fold can land while a row is still held; the row's own
+        // release is not coming, so the panel would stay transparent.
+        endDragFocus(null);
         // 横屏没有「收起」这回事：右栏是定高的，面板收起来也换不回画面。
         if (landscapeMode) {
             panelCollapsed = false;
@@ -25160,14 +26359,123 @@ public class MainActivity extends Activity {
     /** Paint the switch from `shelfEngine`. Two 1 dp boxes, the live one accented. */
     private void refreshEngineSwitch() {
         final boolean fotu = "fotu".equals(shelfEngine);
+        final boolean none = shelfEngine.isEmpty();
+        final boolean nudge = none && engineNudge;
         if (engineSpkCell != null) {
-            engineSpkCell.setTextColor(fotu ? UI_MUTED : UI_BLUE);
-            engineSpkCell.setBackground(thinBox(!fotu));
+            engineSpkCell.setTextColor(none || fotu ? UI_MUTED : UI_BLUE);
+            engineSpkCell.setBackground(nudge ? engineGlowBox(true) : thinBox(!fotu && !none));
         }
         if (engineFotuCell != null) {
-            engineFotuCell.setTextColor(fotu ? UI_BLUE : UI_MUTED);
-            engineFotuCell.setBackground(thinBox(fotu));
+            engineFotuCell.setTextColor(none || !fotu ? UI_MUTED : UI_BLUE);
+            engineFotuCell.setBackground(nudge ? engineGlowBox(false) : thinBox(fotu));
         }
+        glowEngineCells(nudge);
+    }
+
+    private EngineGlowBox engineGlowBox(boolean spk) {
+        EngineGlowBox box = spk ? engineSpkGlow : engineFotuGlow;
+        if (box == null) {
+            box = new EngineGlowBox();
+            if (spk) engineSpkGlow = box; else engineFotuGlow = box;
+        }
+        return box;
+    }
+
+    /** The halo breathes while it is on, and is stopped the moment an engine is picked. */
+    private void glowEngineCells(boolean on) {
+        if (!on) {
+            if (engineGlowAnim != null) {
+                engineGlowAnim.cancel();
+                engineGlowAnim = null;
+            }
+            if (engineSpkGlow != null) { engineSpkGlow.glow = 0f; engineSpkGlow.invalidateSelf(); }
+            if (engineFotuGlow != null) { engineFotuGlow.glow = 0f; engineFotuGlow.invalidateSelf(); }
+            return;
+        }
+        if (engineGlowAnim != null) return;
+        engineGlowAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        engineGlowAnim.setDuration(900);
+        engineGlowAnim.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+        engineGlowAnim.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+        engineGlowAnim.addUpdateListener(a -> {
+            final float f = (Float) a.getAnimatedValue();
+            if (engineSpkGlow != null) { engineSpkGlow.glow = f; engineSpkGlow.invalidateSelf(); }
+            if (engineFotuGlow != null) { engineFotuGlow.glow = f; engineFotuGlow.invalidateSelf(); }
+        });
+        engineGlowAnim.start();
+    }
+
+    /**
+     * **A square 1 dp box with a red halo.** The two engine switches wear it
+     * while the shelf has no engine: the halo breathes (a ValueAnimator on
+     * `glow`), it is drawn as four nested strokes because a Drawable gets no
+     * `setShadowLayer` under hardware acceleration, and the box itself turns
+     * accent-red so the pair reads as one control asking to be pressed.
+     */
+    private final class EngineGlowBox extends android.graphics.drawable.Drawable {
+        private final android.graphics.Paint p =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.RectF r = new android.graphics.RectF();
+        float glow;
+
+        @Override public void draw(android.graphics.Canvas c) {
+            final android.graphics.Rect b = getBounds();
+            if (glow > 0.02f) {
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                for (int i = 1; i <= 4; ++i) {
+                    final float out = dp(i * 1.8f);
+                    p.setStrokeWidth(dp(2.2f));
+                    p.setColor(0xFFFF3B30);
+                    p.setAlpha((int) (glow * 46f / i));
+                    r.set(b.left - out, b.top - out, b.right + out, b.bottom + out);
+                    c.drawRoundRect(r, out, out, p);
+                }
+            }
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(1f, dp(1)));
+            p.setColor(glow > 0.02f ? 0xFFFF3B30 : UI_LINE);
+            r.set(b.left + 0.5f, b.top + 0.5f, b.right - 0.5f, b.bottom - 0.5f);
+            c.drawRect(r, p);
+        }
+
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    /**
+     * **Which engine develops this film?** Asked once, on the first card tap of
+     * a session that has no engine yet. A film only one engine ships says so on
+     * the other row instead of being offered and then failing.
+     */
+    private void showEngineChooser(String cardId, int index) {
+        final String spk = cardId.startsWith(FotuFilm.PREFIX)
+                ? FOTU_TWIN_SPK.get(cardId.substring(FotuFilm.PREFIX.length())) : cardId;
+        final boolean spkOk = spk != null && filmIds.contains(spk);
+        final String twin = cardId.startsWith(FotuFilm.PREFIX) ? null : fotuTwinOf(cardId);
+        final boolean fotuOk = cardId.startsWith(FotuFilm.PREFIX)
+                ? fotuIds.contains(cardId.substring(FotuFilm.PREFIX.length())) : twin != null;
+        // **A question with one answer is not a question.** Twenty-nine films
+        // are sold by one engine only; asking which engine, with the other row
+        // greyed, is a tap that carries no decision.
+        if (spkOk && !fotuOk) { setShelfEngine("spk"); pickFilmCard(cardId, index); return; }
+        if (!spkOk && fotuOk) { setShelfEngine("fotu"); pickFilmCard(cardId, index); return; }
+        if (!spkOk) { showInAppToast(otherEngineNote()); return; }
+        final java.util.List<String> labels = new java.util.ArrayList<>();
+        final java.util.List<String> notes = new java.util.ArrayList<>();
+        labels.add("SpektraLab 引擎");
+        notes.add("完整流程 · 片边 / 日期 / 裁切 / TIF" + (fotuOk ? "" : " · 这支胶片只有它有"));
+        labels.add("fotufilm 引擎");
+        notes.add("光谱实测 · 12 种输出介质" + (spkOk ? "" : " · 这支胶片只有它有"));
+        engineNudge = true;
+        refreshEngineSwitch();
+        showChoiceSheet("用哪个引擎冲印这张？", labels, notes, null,
+                i -> i == 0 ? spkOk : fotuOk,
+                pick -> {
+                    final String engine = labels.indexOf(pick) == 0 ? "spk" : "fotu";
+                    setShelfEngine(engine);
+                    if (!shelfEngine.isEmpty()) pickFilmCard(cardId, index);
+                });
     }
 
     /** What a greyed card says when it is tapped. */
@@ -25198,12 +26506,15 @@ public class MainActivity extends Activity {
     private void setShelfEngine(String e) {
         if (e == null || e.equals(shelfEngine)) return;
         shelfEngine = e;
+        engineNudge = false;
+        // Not saved: the choice belongs to this photograph (see onCreate).
         final boolean fotu = "fotu".equals(e);
         // The id this frame's film has in the new engine; null when it has none.
         final String mapped = filmStock == null ? null : engineIdOf(filmStock);
         // Every picture on the shelf is the other engine's render now.
         stopPrefetch();
         clearShelfCache();
+        prefetchRetries = 0;
         refreshEngineSwitch();
         try {
             DebugSink.text("engine", "shelf=" + e + " film=" + filmStock + " -> " + mapped);
@@ -25505,15 +26816,24 @@ public class MainActivity extends Activity {
         setBarProgress(pairShadowKneeBar, -6f, 6f, pairShadowKnee);
         setBarProgress(pairShadowRoomBar, 0f, 8f, pairShadowRoom);
         refreshPairRows();
-        // **A print frame is part of the frame, and the reset owns it.** These
-        // three were left alone, so a Super 8 / 4×5 / Instax gauge kept being
-        // drawn with `overscanOn` off (`pfByGauge` reads `pfChosen`), kept
-        // naming itself on the gate row, and kept the window it had cut the
-        // picture to -- "重置也还是那个片边，切换片边也还是". A reset puts the
-        // frame page back on the rebate's own ten and gives the picture its own
-        // shape back; a window a *rebate* gate cut is a composition and stays.
-        if (isPrintFrameGauge(overscanFormat)) {
-            pfChosen = false;
+        // **A print frame is part of the frame, and the reset owns it.**
+        // On a fotufilm frame the gauge cannot be reset to another one -- it is
+        // the film's -- so the reset gives the picture its own shape back and
+        // leaves the stock's gauge in place.
+        pfCamera = "panoramic";
+        pfFrames = 1;
+        refreshPfRows();
+        if (isFotuStock(filmStock)) {
+            final String gauge = fotuGaugeOf(filmStock);
+            overscanFormat = gauge;
+            formatIndex = Math.max(0, gateIndex(gauge));
+            filmFormatMm = EDGE_MM[formatIndex];
+            final float own = originalAspect();
+            if (own > 0f) cropToRatio(own);
+            refreshEdgeFormats();
+            rebuildFormatCards();
+            if (edgeValue != null) edgeValue.setText(gateLabelsFallback(gauge));
+        } else if (isPrintFrameGauge(overscanFormat)) {
             pfKind = "none";
             overscanFormat = "135";
             formatIndex = 0;
@@ -25857,6 +27177,28 @@ public class MainActivity extends Activity {
      */
     private boolean refreshEdgeFormats(boolean quiet) {
         boolean rebateClosed = false;
+        // **On a fotufilm frame the gauge is the film's, not the picture's.**
+        // Official `FilmFormat.nativeID(forStockID:)`: choosing a stock chooses
+        // its gauge, and the host cover-crops the photograph into that gate --
+        // so this list is not a choice and must never be re-picked from the
+        // frame's aspect (a 4:3 photograph of a 6x6 film is still 6x6).
+        if (isFotuStock(filmStock)) {
+            final String gauge = fotuGaugeOf(filmStock);
+            overscanFormat = gauge;
+            formatIndex = Math.max(0, gateIndex(gauge));
+            filmFormatMm = EDGE_MM[formatIndex];
+            edgeIds.clear();
+            edgeLabels.clear();
+            edgeIds.add(gauge);
+            edgeLabels.add(gateLabelsFallback(gauge));
+            overscanPair = false;
+            if (edgeValue != null) edgeValue.setText(gateLabelsFallback(gauge));
+            refreshPairRows();
+            // The camera and the frame count follow the gauge: a Super 35 or an
+            // Instax cut has neither.
+            refreshPfRows();
+            return false;
+        }
         edgeLabels.clear();
         edgeIds.clear();
         // **The cropped frame, not the source.** The engine checks the shape of
@@ -25874,10 +27216,10 @@ public class MainActivity extends Activity {
             // for a phone DNG) went to Super 35 and a 13:9 to Super 8, both
             // inside the 5 % window. The host then drew a whole Super 8 frame --
             // picture cropped to 1.44, one perforation, no edge print -- where
-            // the rebate should have been, and "片边看起来坏了". It may *keep*
-            // the gauge the user picked; it must never hand one out.
-            if (isPrintFrameGauge(EDGE_IDS[i]) && !EDGE_IDS[i].equals(overscanFormat))
-                continue;
+            // the rebate should have been, and "片边看起来坏了". Since the gauge
+            // follows the film these seven are not the rebate's business at all:
+            // a restored look sitting on one falls back to a fitting rebate gate.
+            if (isPrintFrameGauge(EDGE_IDS[i])) continue;
             final double error = aspect <= 0 ? 0.0 : Math.abs(aspect / gateRatioAt(i) - 1.0);
             if (aspect > 0 && error > 0.045) continue;
             edgeLabels.add(EDGE_LABELS[i]);
@@ -25909,9 +27251,6 @@ public class MainActivity extends Activity {
                 if (!quiet) showInAppToast("这张照片的比例与任何片门都不符，片边已关闭");
             }
         }
-        // The gate is settled: if it is one the rebate can print, a film print
-        // frame would be refused by the host (rc=2) and must go.
-        retireFilmPrintFrame();
         if (edgeValue != null) {
             final int selected = edgeIds.indexOf(overscanFormat);
             edgeValue.setText(selected >= 0 ? edgeLabels.get(selected) : "无可用片门");
@@ -25982,6 +27321,12 @@ public class MainActivity extends Activity {
         // not the export's.
         if (batchExportRunning) return;
         if (session == null || beforeBitmap == null) return;
+        // **A neutral shelf still previews.** The cards are "what this film
+        // does to your photograph", and one of the two engines is what draws
+        // that -- so with no engine chosen the first engine draws them. The
+        // switch stays neutral (a preview is not a decision), every card is a
+        // real option, and the choice is made once, on the first tap.
+        final String passEngine = shelfEngine.isEmpty() ? "spk" : shelfEngine;
         // **Every card the shelf's engine can draw**, in shelf order, the
         // visible brand first. A card the engine does not ship is greyed and is
         // not queued: there is nothing to render for it.
@@ -25991,7 +27336,11 @@ public class MainActivity extends Activity {
             final Object tag = filmCards.get(i).getTag();
             if (!(tag instanceof String)) continue;
             final String id = (String) tag;
-            if (!engineHas(id)) continue;
+            // `original` is not a stock: it has no profile, and asking for one
+            // threw `no profile 'original'` on the first card of every pass,
+            // which cost a retry round and a log line per launch.
+            if ("original".equals(id)) continue;
+            if (!engineHasFor(id, passEngine)) continue;
             final String key = cardKeyFor(id);
             if (filmThumbs.containsKey(key)) continue;
             // It already said "无法预览"; a tap is the next attempt, not a pass.
@@ -26006,9 +27355,10 @@ public class MainActivity extends Activity {
         prefetchMissing = new java.util.ArrayList<>(pending);
         prefetchRunning = true;
         prefetchSpkRunning = true;          // one worker, whichever engine it is
-        markFile("prefetch start engine=" + shelfEngine + " cards=" + pending.size()
+        markFile("prefetch start engine=" + passEngine + (shelfEngine.isEmpty() ? " (neutral)" : "")
+                + " cards=" + pending.size()
                 + " sess=" + (session != null) + " before=" + (beforeBitmap != null));
-        prefetchThread = new Thread(() -> prefetchPass(pending, generation), "film-prefetch");
+        prefetchThread = new Thread(() -> prefetchPass(pending, generation, passEngine), "film-prefetch");
         prefetchThread.setPriority(Thread.MIN_PRIORITY);
         prefetchThread.start();
     }
@@ -26021,9 +27371,9 @@ public class MainActivity extends Activity {
      * the photograph again on its own chain for every card, so it waits a
      * canvas render out before it starts one.
      */
-    private void prefetchPass(java.util.List<String> pending, int generation) {
+    private void prefetchPass(java.util.List<String> pending, int generation, String passEngine) {
         final SpektraLabEngine prefetchEngine = engine;
-        final boolean fotu = "fotu".equals(shelfEngine);
+        final boolean fotu = "fotu".equals(passEngine);
         int sinceTrim = 0;
         try {
             if (!fotu) {
@@ -26958,7 +28308,18 @@ public class MainActivity extends Activity {
     /** The old four-step ribbon is gone; the render state is in the canvas foot. */
     private void setStep(int active) { }
 
+    /**
+     * **A tool is left by leaving it.** The curve lives on the canvas, so
+     * switching pages without pressing 完成 used to leave the board hanging
+     * over the next page for ever; every way out now goes through here, and
+     * the edit is already applied -- closing it *is* saving it.
+     */
+    private void closeCurveTool() {
+        if (curveStage != null) closeViewTool();
+    }
+
     private void setTab(int active) {
+        closeCurveTool();
         // **Two pages exist in both engines, and 构图 is the third.** Scale,
         // optics and border are the SpektraLab model (a session, a gate, a
         // rebate); fotufilm has none of them, and a page of controls that
@@ -28178,10 +29539,14 @@ public class MainActivity extends Activity {
             // that only reads if the picture's own edges are on screen. So the
             // composition shrinks here, and returns to full size on the next
             // page -- which is also what the editor in the reference does.
-            final float scale = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight()) * zoom
-                    * (rotateMode ? ROTATE_SHRINK : 1f);
+            // **Fit, never cover.** 「不要裁切」: the picture fills the canvas by
+            // its *width* and is allowed to run past the panel's top edge; a
+            // cover scale would crop the frame, and a crop that changes when a
+            // panel opens is exactly the thing that was wrong.
+            final float fill = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight());
+            final float scale = fill * zoom * (rotateMode ? ROTATE_SHRINK : 1f);
             final float w = bmp.getWidth() * scale, h = bmp.getHeight() * scale;
-            final float left = (vw - w) / 2f + panX, top = (vh - h) / 2f + panY;
+            final float left = (vw - w) / 2f + panX, top = pictureTop(h) + panY;
             dst.set(left, top, left + w, top + h);
             if (previewRotation == 0f) {
                 canvas.drawBitmap(bmp, null, dst, paint);
@@ -28215,6 +29580,33 @@ public class MainActivity extends Activity {
          * on the axis that needs more: 1.65x at 45 degrees on a 3:4 frame, and
          * exactly 1 at rest, where the whole path is skipped.
          */
+        /**
+         * **The band the picture lives in: under the top bar, above the panel.**
+         *
+         * <p>Set by the editor whenever the canvas column changes size. The
+         * picture is centred in it when it fits and pinned to its top when it
+         * does not -- the rule Lightroom uses, and the reason a 3:4 frame at
+         * full width starts right under the bar instead of leaving a gap above
+         * it. `0` means "the whole view".
+         */
+        private int anchorTop, anchorBottom;
+
+        void setAnchor(int top, int bottom) {
+            top = Math.max(0, top);
+            if (top == anchorTop && bottom == anchorBottom) return;
+            anchorTop = top;
+            anchorBottom = bottom;
+            invalidate();
+        }
+
+        /** The picture's top edge, for a picture `h` px tall. */
+        private float pictureTop(float h) {
+            final float a = anchorTop;
+            final float b = anchorBottom > a ? Math.min(anchorBottom, getHeight()) : getHeight();
+            if (h <= b - a) return a + (b - a - h) / 2f;
+            return a;
+        }
+
         private float coverScale(float w, float h, float deg) {
             if (w <= 0f || h <= 0f) return 1f;
             final double a = Math.toRadians(deg);
@@ -30164,6 +31556,12 @@ public class MainActivity extends Activity {
         // The frame's own look, stated before any session is built: a chip
         // returns to a photograph *and* to what was done to it; a pick from ＋
         // starts with no film at all.
+        // **The frame on screen keeps what was done to it.** An import does
+        // not go through `reopenFrame`, which is the only other place that
+        // folds the editor's fields back into its Frame -- so the last edits
+        // made before a ＋ lived only in memory until the 1.2 s debounce, and
+        // a kill in that window lost them.
+        if (reopenIndex != currentFrame) saveLookIntoFrames();
         if (reopenIndex >= 0 && reopenIndex < frames.size()) {
             applyLook(frames.get(reopenIndex).look);
         } else {
@@ -30274,6 +31672,11 @@ public class MainActivity extends Activity {
             // The previous file's unpacked plane is not this frame's problem.
             try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
             clearShelfCache();
+            // **A new photograph gets a new budget.** Six self-healing passes
+            // is a lot per photo, and they are spent by the user's own renders
+            // cutting a pass short -- carrying that debt into the next import
+            // left its cards spinning with no retry left.
+            prefetchRetries = 0;
             // The canvas is not a control. `setOriginalVisual` only paints the
             // 原图 button; what CompareView holds is `after` (the last render)
             // and it survives a new session. That was the whole "I changed the
@@ -30491,6 +31894,14 @@ public class MainActivity extends Activity {
             showingOriginal = true;
             lastRenderedBitmap = null;
             setOriginalVisual(true);
+            // **A new photograph has not chosen an engine.** Only a chip coming
+            // back keeps the shelf where it was; a fresh import lands neutral,
+            // so the switch never reads as a decision made on the user's behalf.
+            if (reopenIndex < 0) {
+                shelfEngine = "";
+                engineNudge = false;
+            }
+            refreshEngineSwitch();
             rebuildFilmCards();
             final boolean stayOnOriginal = reopenToOriginal;
             reopenToOriginal = false;
@@ -30528,6 +31939,10 @@ public class MainActivity extends Activity {
                 // 同一个理由的第二件事：现在有画面了，开着的辉光要落到它上面。
                 refreshGlowForCurrentView();
             }
+            // **The queue gets one more chance, after the UI has settled.** The
+            // call above declines while a render still holds `rendering`; this
+            // is what turns that into a kick instead of a shelf of loaders.
+            uiHandler.postDelayed(this::ensureShelfQueue, 600);
         } catch (Throwable t) {
             hideBusy();
             lastImportError = describeImportFailure(t);
@@ -33701,12 +35116,30 @@ public class MainActivity extends Activity {
         // 两套材料、两套参数，混着发就是两种片边叠在一张图上。
         final String pfKindHere = (pfKind == null || "none".equals(pfKind)) ? "film" : pfKind;
         final boolean pfFilmHere = "film".equals(pfKindHere) || "film-positive".equals(pfKindHere);
-        final boolean pfDraw = withRebate && (overscanOn
-                || (pfKind != null && !"none".equals(pfKind)));
+        // A border this film and paper cannot carry is never sent: the host
+        // would have no definition or no gauge to lay it on.
+        // **On fotufilm the border's own row is the switch.** `overscanOn` is
+        // the first engine's rebate flag: keeping it in this condition meant a
+        // fotufilm frame could only be given a border by visiting 片边 -- the
+        // one page that does nothing for this engine.
+        final boolean pfDraw = withRebate
+                && (isFotuStock(filmStock)
+                        ? (pfKind != null && !"none".equals(pfKind))
+                        : (overscanOn || (pfKind != null && !"none".equals(pfKind))))
+                && pfAvailable(pfKindHere);
         if (pfDraw) {
             if (b.length() > 0) b.append(';');
             b.append("pf:").append(pfKindHere);
-            if (pfFilmHere) b.append(";pfg:").append(overscanFormat);
+            if (pfFilmHere) {
+                b.append(";pfg:").append(overscanFormat);
+                // **Always, including at 1.** The host keeps `--pfframes` in a
+                // file-level global that outlives one render, so leaving the slot
+                // out meant "1" never reached it: going back from 2 was a no-op
+                // and the frame count was stuck.
+                b.append(";pffr:").append(pfFrames);
+                b.append(";pfcam:").append("mediumFormatBack".equals(pfCamera)
+                        ? "mediumFormatBack" : "panoramic");
+            }
             // 厂印：官方那张表里有的才画（`edge_print_for`）。
             if (pfFilmHere && edgeTextOn) b.append(";etext:1");
             if (pfNeedsMargin())
@@ -34018,7 +35451,7 @@ public class MainActivity extends Activity {
                 glowInPlace(bmp);
                 lastFotuPlain = bmp;
                 fotuGateHealed = false;
-                final Bitmap shown = fotuWithRebate(bmp);
+                final Bitmap shown = frameApply(fotuWithRebate(bmp));
                 lastRenderedBitmap = shown;
                 showingOriginal = false;
                 setOriginalVisual(false);
@@ -34203,7 +35636,7 @@ public class MainActivity extends Activity {
      */
     private void recomposeFotu() {
         if (lastFotuPlain == null) return;
-        final Bitmap shown = fotuWithRebate(lastFotuPlain);
+        final Bitmap shown = frameApply(fotuWithRebate(lastFotuPlain));
         if (shown == lastRenderedBitmap) return;
         lastRenderedBitmap = shown;
         if (compare != null) compare.setAfter(shown);
@@ -35040,7 +36473,7 @@ public class MainActivity extends Activity {
         // `fotuBody`'s own height, which is hidden behind this cap. Raising the
         // cap buys nothing (光晕 at 314 dp against its own 312 is two pixels) and
         // costs the photograph 60 dp of height, so it stays at 250.
-        final CappedScroll scroll = new CappedScroll(this, dp(250));
+        final CappedScroll scroll = new CappedScroll(this, dp(PANEL_CAP_DP));
         scroll.addView(fotuBody, new android.widget.FrameLayout.LayoutParams(-1, -2));
         panel.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
 
@@ -35672,7 +37105,8 @@ public class MainActivity extends Activity {
                         flatStreak = 0;
                     }
                     showingOriginal = false;
-                    compare.setAfter(bmp);
+                    final Bitmap framed = frameApply(bmp);
+                    compare.setAfter(framed);
                     // **The pill follows the canvas, not the frame list.** Every
                     // successful render passes through here, and this is the
                     // line that actually turns `showingOriginal` off -- the
@@ -35705,7 +37139,7 @@ public class MainActivity extends Activity {
                     // trimming destroys buffers and waits on the device.
                     new Thread(MainActivity.this::trimPoolIfBloated, "pool-trim").start();
                     setStep(2);
-                    lastRenderedBitmap = bmp;
+                    lastRenderedBitmap = framed;
                     // The histogram describes what the canvas shows, so it moves
                     // with the render, not with the tab that displays it.
                     if (histogram != null) histogram.setBitmap(bmp);
@@ -38302,6 +39736,16 @@ public class MainActivity extends Activity {
 
     private void exportImage(String format, String tier, final Runnable onDone) {
         CrashTrail.mark(this, "export:begin");
+        // **A designed card owns the whole write path.** Its own size is the
+        // print size and the canvas already holds the composite, so there is
+        // nothing to render again and nothing to upscale.
+        // **Only over a developed picture.** With no film the canvas holds the
+        // original, which has no window to sit in -- and the normal path already
+        // answers that case (including its own export of the original).
+        if (frameTemplateOn() && filmStock != null && !batchExportRunning) {
+            exportFramed(format, onDone);
+            return;
+        }
         // **Read once, at the door.** Every early return below -- an export
         // already running, no session, no film -- would otherwise leave the live
         // request armed, and the *next* export, whatever it is, would attach a
@@ -39547,6 +40991,9 @@ public class MainActivity extends Activity {
         // moment the state is most likely to have drifted: the app was in the
         // background while a decode, a batch or a rotation finished.
         refreshPanelLocks();
+        // Same reason, for the shelf: coming back is a moment when a pass may
+        // have been retired by an import that landed while we were away.
+        ensureShelfQueue();
     }
 
     /**
@@ -39661,6 +41108,7 @@ public class MainActivity extends Activity {
 
     /** True when back closed one level inside the app, false when there is nothing left. */
     private boolean backOneLevel() {
+        if (curveStage != null) { closeViewTool(); return true; }
         if (settingsOpen) { closeSettings(); return true; }
         if (negMode) { leaveNegative(); return true; }
         if (edgePageIndex >= 0) { openEdgePage(-1); return true; }

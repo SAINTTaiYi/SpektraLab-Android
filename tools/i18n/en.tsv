@@ -1144,3 +1144,58 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 尺子 · 刻度在固定指针下滑动	Ruler · marks slide under a fixed pointer
 轨道 · 拇指跟手，刻度印在下面	Track · thumb follows the finger, scale printed below
 所有滑杆和刻度盘都用这一套。\n尺子是原来的样子；轨道在下面印一排刻度，偶数位带数字。	Every slider and dial uses this.\nThe ruler is the original look; the track prints a scale below, with a number on every other mark.
+135 / 全景相机	35mm / Panoramic Camera
+中画幅后背	Medium-Format Back
+相机	Camera
+帧数	Frames
+1 格	1 frame
+2 格	2 frames
+3 格	3 frames
+4 格	4 frames
+相机只对 135 的片边有效	Camera applies to 135 film borders only
+帧数只对 135 / 120 的卷片有效	Frames applies to 135 and 120 roll film only
+画面在两条齿孔之间，和 35mm / 全景相机的片门一样	The picture stands between the perforations, as a 35mm or panoramic camera's gate exposes it.
+135 装在中画幅相机上：画面横跨齿孔，一直到片的边	135 in a medium-format camera: the picture runs across the perforations to the film's edges.
+一张照片横跨片子的几格：全景相机在每次曝光之间把片走一格	One picture across several frames of the roll: a panoramic camera advances the film between exposures.
+片门格式 · 跟随胶片	Film gate · follows the film
+fotufilm 的画幅跟着胶片走 —— 换一支别的画幅的胶片	fotufilm's format follows the film — pick a stock of another format
+135 XPan	135 XPan
+645	645
+6×6	6×6
+6×7	6×7
+6×8	6×8
+6×9	6×9
+6×12	6×12
+6×17	6×17
+Super 35	Super 35
+Super 8	Super 8
+Instax mini	Instax mini
+Instax SQ	Instax SQ
+Instax wide	Instax wide
+fotufilm：片边是它自己的印刷边框 —— 光箱下的片基、齿孔、厂标（官方那张表里有的才印），和画面一起过颗粒与相纸。雾、漏光、张数、日期是第一引擎的 rebate，这边没有。	fotufilm: the rebate is its own print frame -- the base under a light box, the perforations, the factory edge print (only what the official table records), developed together with the picture. Fog, leaks, frame number and date belong to the first engine's rebate and are not here.
+第二引擎没有「重解」这一步：色温和色调是乘在解码结果上的增益，以 5500 K 为中性，RAW 和 JPEG 都能用。	The second engine has no re-decode step: temperature and tint are gains multiplied onto the decoded result, with 5500 K as neutral, and they work on RAW and JPEG alike.
+拖动控制点；空白处点一下加点（最多 8 个）；双击一个点删掉它	Drag a control point; tap empty space to add one (up to 8); double-tap a point to delete it.
+需要一张有画幅的胶片（135 / 120 / 电影片 / 页片 / Instax）	Needs a film with a gauge (135 / 120 / motion picture / sheet / Instax)
+需要负片，画幅是卷片或页片	Needs a negative on a roll or a sheet
+需要 135 或 120 的反转片	Needs a transparency in 135 or 120
+需要负片 + 一张反射相纸（Crystal Archive / Ektacolor / Endura）	Needs a negative and a reflection paper (Crystal Archive / Ektacolor / Endura)
+需要卷片或页片（一次成像没有乳剂边）	Needs a roll or a sheet (instant film has no emulsion edge)
+需要一张反射相纸（Crystal Archive / Ektacolor / Endura）	Needs a reflection paper (Crystal Archive / Ektacolor / Endura)
+画框	Frame
+模板自带尺寸和窗口：照片裁进窗口，装饰压在照片上。两个引擎都能用，出片尺寸就是模板的尺寸 —— 它是一张印好的卡纸，不是缩放旋钮。	The template brings its own size and window: the photograph is cropped into the window and the printing goes over it. Both engines can use it, and the output size is the template's -- it is a printed card, not a zoom control.
+画框（模板）	Frame (template)
+不套画框	No frame
+只输出引擎渲染的画面	The engine's render, unframed
+画框的尺寸由模板决定；照片放在它的窗口里	The template decides the size; the photograph sits in its window
+画框只能导出 JPEG	A frame exports as JPEG only
+还没有成片 —— 先等这一帧渲染完	Nothing to export yet -- wait for this frame to finish
+这张画框读不出来，重新渲染一次再导	This card would not read back; render once more and export
+画廊白卡	Gallery card
+35mm 胶片	35 mm film
+一次成像卡	Instant card
+暗房漏光	Darkroom leak
+编辑海报	Editorial poster
+出片尺寸	Output size
+画框 / FRAME	Frame
+画框是印在画面上的装饰，出片尺寸由模板决定（	A frame is printing over the picture and the template sets the size (
+TIFF / DNG 是给电脑上的 Lightroom 的母版，不套画框。	TIFF and DNG are the masters that go to Lightroom on a desktop, where a printed card would be in the way.

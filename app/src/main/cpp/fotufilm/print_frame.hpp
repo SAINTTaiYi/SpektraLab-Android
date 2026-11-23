@@ -68,8 +68,18 @@ struct Request {
     double film_light[3] = {0.975, 0.960, 0.940};
     // 片边上的印字：同一套密度取 0.72 档（官方的 `edgeDensities`）。
     double film_ink[3]   = {0.055, 0.050, 0.046};
-    double card_rgb[3]  = {0.880, 0.872, 0.855};   // slide mount card
-    double black_rgb[3] = {0.055, 0.052, 0.050};   // Black Mount
+    // The DX number, on the same strip and through the same light box: a
+    // negative's bars are 0.5 denser than its rebate (official `edgeDensities`).
+    double film_bar[3]   = {0.55, 0.40, 0.32};
+    /// Negatives carry a DX code; a transparency's edge has none
+    /// (`edgeBars` is empty when `stock.isReversal`).
+    bool draws_bars = true;
+    /// `printFrameEdgePrinting`: off leaves the strip bare.
+    bool shows_print = true;
+    // 印出来的相纸最大密度（Carrier 的片夹边）：官方 `rebateRGB`。
+    double paper_dense[3] = {0.060, 0.055, 0.050};
+    double card_rgb[3]  = {0.940, 0.940, 0.940};   // slide mount card (0.86 linear)
+    double black_rgb[3] = {0.155, 0.155, 0.155};   // Black Mount (0.02 linear)
     bool stipple = true;                       // paper micro-texture
 };
 
@@ -85,6 +95,11 @@ struct Layout {
     bool square = false;
     /// The film was turned a quarter turn to match a portrait picture.
     bool rotated = false;
+    /// How many frames' length of the roll the picture was exposed across
+    /// (`FilmBorderGeometry.spanning`); 1 unless the gauge spans frames.
+    int frames = 1;
+    /// The aperture ran across the whole film (a medium-format back).
+    bool exposes_edges = false;
 };
 
 bool layout(const Request& req, int src_w, int src_h, Layout& out, std::string& error);
