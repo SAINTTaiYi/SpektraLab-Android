@@ -68,7 +68,6 @@ Negative · 负片	Negative · the negative itself
 OPTICS / 光学调整	OPTICS
 ORIGINAL · RAW 原始数据（未调色，选胶片后才成片）	ORIGINAL · RAW data (unprocessed; pick a film to develop it)
 PRINT / 胶片冲印参数	PRINT / Film printing
-QQ 一群（已满）· 优先扫上面的二群	QQ group 1 (full) · prefer group 2 above
 RAW / JPEG / HEIC · 任意文件（保留 EXIF）	RAW / JPEG / HEIC · any file (keeps EXIF)
 RAW 加载失败	RAW load failed
 RAW 已载入，原图预览未生成	RAW loaded, no original preview generated
@@ -158,7 +157,6 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 一套参数（胶片、曝光、光学、构图、片边、日期）。分享出去是一段文本，对方粘贴导入即可。	One set of settings (film, exposure, optics, compose, rebate, date). Sharing gives you a block of text the other side pastes in.
 一层自己的抑制剂回敬自己多少；1 是实测，往上边缘更硬、细节更冲	How much a layer's own inhibitor feeds back on itself; 1 is as measured, higher gives harder edges and punchier detail
 一次成像	Instant
-一群已满 · 扫码加入二群	Group 1 is full · scan to join group 2
 上下内边距	Inset U/D
 上传失败	Upload failed
 上次启动异常退出	Last run exited abnormally
@@ -168,7 +166,6 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 上面两个旋钮的 CC 刻度。太小了看不出效果	The CC scale for the two knobs above. Too small and you can't see it
 下载地址	Download address
 下载地址  spektralab.workshop.skin/download	Download address  spektralab.workshop.skin/download
-不再自动弹出	Don't show this automatically
 不印边框	No frame
 不推拉	No push/pull
 不是你操作的问题——重装没用；请点「复制」把下面这段完整发给我，我按名字就能定位	it's not something you did — reinstalling won't help; tap "Copy" and send me the block below, I can identify it by name
@@ -491,7 +488,6 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 已从观片台移除（文件还在相册里）	Removed from the light table (the file stays in your gallery)
 已保存到相册：	Saved to your gallery: 
 已保存预设「	Saved preset "
-已关闭，仍可在「关于」里找到反馈群	Closed. You can still find the groups under About.
 已删除	Deleted
 已取消	Cancelled
 已复制	Copied
@@ -558,7 +554,6 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 往右暖，往左冷	Right is warmer, left is cooler
 待生效	pending
 很亮 · +1.6 档	Very bright · +1.6 stops
-微信扫码加入	Scan with WeChat to join
 微信群	WeChat group
 微信群 / QQ 群	WeChat / QQ
 恢复放大机	Restore enlarger
@@ -892,7 +887,6 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 给光晕留的高光余量，单位挡。越大越不容易糊成一片	Headroom kept for halation, in stops. Higher is harder to wash out
 给被裁掉的高光补能量。只让光晕更亮，不改变它的范围	Adds energy to the highlights that got clipped. Brightens the halation only, doesn't widen it
 继续	Continue
-维修二群	Repair group 2
 维护 · SUPPORT	SUPPORT / Support
 绿	Green
 绿-品红轴。日光灯发绿就往正值拖	Green–magenta axis. Fluorescent light goes green: drag towards positive
@@ -1199,3 +1193,11 @@ fotufilm：片边是它自己的印刷边框 —— 光箱下的片基、齿孔�
 画框 / FRAME	Frame
 画框是印在画面上的装饰，出片尺寸由模板决定（	A frame is printing over the picture and the template sets the size (
 TIFF / DNG 是给电脑上的 Lightroom 的母版，不套画框。	TIFF and DNG are the masters that go to Lightroom on a desktop, where a printed card would be in the way.
+
+微信一群	WeChat group 1
+微信二群	WeChat group 2
+一群已满，扫下面的二群	Group 1 is full · scan group 2 below
+二维码会过期，失效就加下面的 QQ 群	Codes expire; if this one stops working, join the QQ group below
+扫码加入	Scan to join
+QQ 群 · 没满，直接加	QQ group · not full, join here
+先在「胶片与相纸」右上角选引擎（SPK / FOTU），再点胶片	Pick an engine (SPK / FOTU) at the top right of Film and paper first, then tap a film

@@ -3266,6 +3266,9 @@ public class MainActivity extends Activity {
     private static final String DEBUG_BAND_CAP = "band_cap";
     private static final String PROMO_PREFS = "promo";
     private static final String PROMO_SEEN_CODE = "qq_group_seen_code";
+    /** Retired: 「不再自动弹出」 is gone, and the card shows once per build
+     *  regardless. Kept so an old install's value can never be mistaken for a
+     *  setting this build reads. */
     private static final String PROMO_MUTED = "qq_group_muted";
 
     // **One shelf, both engines.** The second engine used to get a tab of its
@@ -25988,17 +25991,18 @@ public class MainActivity extends Activity {
 
     /** The feedback group, in the app's own card rather than a system dialog.
      *
-     *  <p>Auto-shown once per build: a group nobody can find is useless, and a
-     *  card on every launch is a card people learn to dismiss without reading.
-     *  The About sheet carries a permanent entry, so the way back never depends
-     *  on this having appeared. */
+     *  <p>Shown once per build -- **unconditionally**. 「不再自动弹出」 used to be
+     *  honoured across updates, and a build that arrived after it never
+     *  introduced the groups at all; the owner's rule now is that every update
+     *  mentions them exactly once, so `PROMO_MUTED` is deliberately not read any
+     *  more (the key stays for old installs). The About sheet keeps a permanent
+     *  entry, so the way back never depends on this having appeared. */
     private void maybeShowFeedbackGroup() {
         final android.content.SharedPreferences p = getSharedPreferences(PROMO_PREFS, MODE_PRIVATE);
-        if (p.getBoolean(PROMO_MUTED, false)) return;
         if (p.getInt(PROMO_SEEN_CODE, 0) == UpdateCheck.versionCode(this)) return;
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
             if (isFinishing() || !uiReady) return;
-            showFeedbackGroup(true);
+            showFeedbackGroup();
         }, 1800);
     }
 
@@ -26040,7 +26044,7 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    void showFeedbackGroup(final boolean auto) {
+    void showFeedbackGroup() {
         if (isFinishing()) return;
         final android.content.SharedPreferences p = getSharedPreferences(PROMO_PREFS, MODE_PRIVATE);
         final android.app.Dialog dialog = new android.app.Dialog(this);
@@ -26083,16 +26087,18 @@ public class MainActivity extends Activity {
         groupLp.topMargin = dp(16);
         body.addView(groupRow(
                 getResources().getIdentifier("wechat_qr", "drawable", getPackageName()),
-                "微信群", "微信扫码加入", "二维码会过期，失效就用下面的 QQ 群"), groupLp);
+                "微信一群", "一群已满，扫下面的二群", "二维码会过期，失效就加下面的 QQ 群"), groupLp);
 
-        // **维修二群.** The first room filled up, so the invite that still works
-        // has to be the second one, and the card has to say so -- otherwise a
-        // newcomer scans the first code, is refused, and has nowhere to go.
+        // **The second WeChat room.** The first one filled up, so the invite
+        // that still works has to be the second one, and the card has to say so
+        // -- otherwise a newcomer scans the first code, is refused, and has
+        // nowhere to go. (It is a WeChat group, not a "repair" group: the label
+        // said 维修二群, which is simply the wrong word.)
         final int qr2 = getResources().getIdentifier("group_qr_2", "drawable", getPackageName());
         if (qr2 != 0) {
             LinearLayout.LayoutParams group2Lp = new LinearLayout.LayoutParams(-1, -2);
             group2Lp.topMargin = dp(12);
-            body.addView(groupRow(qr2, "维修二群", "一群已满 · 扫码加入二群", null), group2Lp);
+            body.addView(groupRow(qr2, "微信二群", "扫码加入", null), group2Lp);
         }
 
         View divider = new View(this);
@@ -26106,7 +26112,9 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams numberLp = new LinearLayout.LayoutParams(-1, -2);
         numberLp.topMargin = dp(16);
         body.addView(number, numberLp);
-        TextView hint = label("QQ 一群（已满）· 优先扫上面的二群", 9, UI_MUTED, tfHan);
+        // **The QQ room is not full.** It was labelled 「已满」, which sent people
+        // away from the one door that always works.
+        TextView hint = label("QQ 群 · 没满，直接加", 9, UI_MUTED, tfHan);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(-1, -2);
         hintLp.topMargin = dp(5);
         body.addView(hint, hintLp);
@@ -26154,18 +26162,8 @@ public class MainActivity extends Activity {
         actions.addView(copy, new LinearLayout.LayoutParams(0, dp(42), 1.45f));
         card.addView(actions, new LinearLayout.LayoutParams(-1, -2));
 
-        if (auto) {
-            TextView mute = label("不再自动弹出", 8.5f, UI_MUTED, tfHan);
-            mute.setGravity(android.view.Gravity.CENTER);
-            mute.setPaintFlags(mute.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
-            mute.setPadding(0, 0, 0, dp(14));
-            mute.setOnClickListener(v -> {
-                p.edit().putBoolean(PROMO_MUTED, true).apply();
-                dialog.dismiss();
-                showInAppToast("已关闭，仍可在「关于」里找到反馈群");
-            });
-            card.addView(mute, new LinearLayout.LayoutParams(-1, dp(30)));
-        }
+        // **No 「不再自动弹出」 any more.** The card reappears once per update by
+        // design (see `maybeShowFeedbackGroup`), so the button could only lie.
 
         dialog.setContentView(card);
         dialog.setCanceledOnTouchOutside(true);
@@ -30714,7 +30712,7 @@ public class MainActivity extends Activity {
         // **上传步骤与仓库都归「关于与诊断」。** 一个是出问题才用，一个看一次就
         // 够；根页只留每天会碰的那几行，这页才不会变成第二条动作单。
         settingsAdd(settingsRow("反馈群", "微信群 / QQ 群", null, true,
-                () -> showFeedbackGroup(false)));
+                () -> showFeedbackGroup()));
         settingsRule();
         settingsAdd(settingsRow("开源许可", "引擎、移植与字体", null, true,
                 () -> showSettings("licence")));
