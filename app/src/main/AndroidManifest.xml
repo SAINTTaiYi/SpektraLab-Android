@@ -2,8 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="app.spektralab"
-    android:versionCode="816"
-    android:versionName="1.7.3l">
+    android:versionCode="817"
+    android:versionName="1.7.3m">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" tools:ignore="GradleOverrides"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>

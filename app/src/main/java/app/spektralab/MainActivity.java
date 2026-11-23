@@ -1159,45 +1159,45 @@ public class MainActivity extends Activity {
     private LinearLayout paperDock;
     private View filmPaperRow;
     /** 货架卡片的容器：竖屏装着那个横向滚动器，横屏直接装两列网格。 */
-    private LinearLayout filmShelfHost;
+    private android.widget.FrameLayout filmShelfHost;
 
     // ------------------------------------------------------- 胶片货架：网格视图
     //
-    // **一张横条装不下五十四支胶片。** 横条对拇指是对的，对「找一支片」是错的：
-    // 屏上永远是四张，其余五十张在一次滑动之后、在一个看不出顺序的顺序里。网格
-    // 是同一批卡片、同一套筛选、同一份缩略图缓存 —— 只有父亲和列数变了 —— 而它
-    // 从屏幕底部升起来，所以挑片的时候照片还在上面。
+    // **不新建面板。** 展开的是 `filmShelfHost` 自己：它从单行的 111 dp 长到
+    // 三行，标题、分类条、相纸行、页签全都留在原位 —— 上面那一列（画布）跟着
+    // 缩，下面那些钉在屏底。没有遮罩、没有第二棵树。
     //
-    // **这里没有一帧在排版。** 面板是定高的 FrameLayout，只动 `translationY`；
-    // 网格在里面再走 14 dp 并淡入。一帧只写这两个属性。
-    private static final float SHEET_FRAC = 0.64f;
-    /** 320 ms：`MS_SHEET` 是别的面板的 360，这一张要更利索一点。 */
-    private static final int MS_GRID = 320;
-    /** 网格里一列卡片的目标宽度 —— 和竖向横条上那张卡一样宽。 */
+    // **一帧只做两件事**：写 `filmShelfHost` 的高度，和交叉淡入的 alpha。
+    // 卡片只在两端各重建一次，动画里一张都不动。
+
+    /** 拉高 / 收回这一段：主人的曲线，320 ms。 */
+    private static final int MS_SHELF = 320;
+    /** 收起态：一条横条的高度（卡片 94 + 上下 padding）。 */
+    private static final int SHELF_BAR_DP = 111;
+    /** 网格里一行的高度：96 dp 的卡 + 10 dp 的行距。 */
+    private static final int SHELF_ROW_DP = 106;
+    /** 交叉淡入占整段的比例：0.42 × 320 ms ≈ 134 ms。 */
+    private static final float SHELF_CROSS_SHARE = 0.42f;
+    /** 网格一列卡片的自然宽度 —— 和竖向横条上那张一样宽。 */
     private static final int SHEET_CARD_DP = 84;
 
-    private android.widget.FrameLayout filmSheet;
-    private android.widget.ScrollView filmSheetScroll;
-    private ChevronToggle filmSheetClose;
+    /** 标题栏那颗箭头：位置固定，只转 180°。 */
     private ChevronToggle filmHeadOpen;
-    /** 标题所在那一行：分类条要回到它下面。 */
-    private LinearLayout filmHeadRow;
-    /** `brandScroll` 原来是局部变量；网格要借它，所以它有名字了。 */
-    private HorizontalScrollView brandScrollView;
+    /** 网格的滚动容器：和 `filmScroll` 占同一个位置，两者只露一个。 */
+    private android.widget.ScrollView filmGridScroll;
+    /** 换形态那一刻的旧样子，盖在上面淡出（见 `swapShelfShape`）。 */
+    private ImageView shelfCross;
     private boolean shelfExpanded;
-    /** 0 = 横条的形状，1 = 网格。两个箭头都读它。 */
-    private float shelfExpand;
-    private android.animation.ValueAnimator shelfExpandAnim;
+    private android.animation.ValueAnimator shelfHeightAnim;
+    /** 照片栏收到 82 % 时要跑的那件事（两段式的第二段）。 */
+    private Runnable shelfFoldChain;
     /** 3..5，由宽度决定：网格一行放几张卡。 */
     private int sheetCols = 4;
-    /** 展开态的高度（px）。开的时候算一次 —— 动画里 `getHeight()` 还是 0。 */
-    private int sheetHeight;
+    /** 卡片现在是不是那面网格。没换过形态就不要走一遍"收回"。 */
+    private boolean shelfShapeIsGrid;
     /** 向上轻扫展开网格的起点。 */
     private float shelfSwipeX, shelfSwipeY;
     private boolean shelfSwipeArmed;
-    /** 在纸面上往下抹收起网格的起点。 */
-    private float sheetDownX, sheetDownY;
-    private boolean sheetDownArmed;
     private View editorRule;
     /** 两栏之间那根 1 px 的线，横屏才有。 */
     private boolean landscapeMode;
@@ -14032,7 +14032,7 @@ public class MainActivity extends Activity {
         // **转一下就落回收起态。** 网格是竖屏的形状（右栏本来就是两列），
         // 而且这一列马上要被整棵拆开重装 —— 条子得先回到 `filmScroll` 的
         // 名下，`applyFilmShelfMode` 才有东西可排。
-        if (shelfExpanded) forceCloseShelfSheet();
+        if (shelfExpanded) collapseShelfInstantly();
         final boolean land = isLandscapeNow();
         landscapeMode = land;
         try {
@@ -14162,32 +14162,41 @@ public class MainActivity extends Activity {
     private void applyFilmShelfMode() {
         if (filmShelfHost == null || filmCardStrip == null || filmScroll == null) return;
         // **网格是竖屏的形状，开着的时候条子归它。** 转屏会先走
-        // `forceCloseShelfSheet`，所以走到这里还是展开态只可能是别人乱调 ——
-        // 那时候从纸里把条子抢走，纸就只剩一个空滚动区了。
+        // `collapseShelfInstantly`，所以走到这里还是展开态只可能是别人乱调。
         if (shelfExpanded) return;
         filmCols = landscapeMode ? 2 : 1;
         final android.view.ViewParent p = filmCardStrip.getParent();
         if (p instanceof android.view.ViewGroup) ((android.view.ViewGroup) p).removeView(filmCardStrip);
-        if (filmScroll.getParent() instanceof android.view.ViewGroup) {
-            ((android.view.ViewGroup) filmScroll.getParent()).removeView(filmScroll);
+        filmScroll.removeAllViews();
+        filmScroll.setAlpha(1f);
+        if (filmGridScroll != null) {
+            filmGridScroll.removeAllViews();
+            filmGridScroll.setAlpha(1f);
         }
-        filmShelfHost.removeAllViews();
+        if (shelfCross != null) shelfCross.setVisibility(View.GONE);
         filmGridRow = null;
         if (filmCols > 1) {
             filmCardStrip.setOrientation(LinearLayout.VERTICAL);
+            filmCardStrip.setGravity(android.view.Gravity.TOP);
             filmCardStrip.setPadding(0, dp(4), 0, dp(8));
-            filmShelfHost.addView(filmCardStrip, new LinearLayout.LayoutParams(-1, -2));
+            // 横屏：条子直接坐在容器里，容器按内容高。
+            filmShelfHost.removeView(filmCardStrip);
+            filmShelfHost.addView(filmCardStrip,
+                    new android.widget.FrameLayout.LayoutParams(-1, -2));
+            filmScroll.setVisibility(View.GONE);
         } else {
             filmCardStrip.setOrientation(LinearLayout.HORIZONTAL);
+            filmCardStrip.setGravity(android.view.Gravity.TOP);
             filmCardStrip.setPadding(0, dp(9), 0, dp(8));
-            filmScroll.removeAllViews();
             filmScroll.addView(filmCardStrip, new android.widget.FrameLayout.LayoutParams(-2, -1));
-            filmShelfHost.addView(filmScroll, new LinearLayout.LayoutParams(-1, -1));
+            filmScroll.setVisibility(View.VISIBLE);
+            if (filmGridScroll != null) filmGridScroll.setVisibility(View.GONE);
         }
         if (filmShelfHost.getLayoutParams() instanceof LinearLayout.LayoutParams) {
             final LinearLayout.LayoutParams sl =
                     (LinearLayout.LayoutParams) filmShelfHost.getLayoutParams();
-            sl.height = filmCols > 1 ? android.view.ViewGroup.LayoutParams.WRAP_CONTENT : dp(111);
+            sl.height = filmCols > 1
+                    ? android.view.ViewGroup.LayoutParams.WRAP_CONTENT : dp(SHELF_BAR_DP);
             filmShelfHost.setLayoutParams(sl);
         }
         rebuildFilmCards();
@@ -16219,6 +16228,9 @@ public class MainActivity extends Activity {
     private void setShelfCollapsed(boolean collapsed) {
         // 没有照片就没有可收的东西：收起以后屏上只剩一个把手，点开也没有内容。
         if (collapsed && frames.isEmpty()) return;
+        // **胶片栏开着的时候展开照片栏 = 让胶片栏先让路。** 两头同时往上挤会把
+        // 画布夹死；这两个动作一个缩一个长，同步走反而正好。
+        if (!collapsed && shelfExpanded) setShelfExpanded(false);
         final float target = collapsed ? 1f : 0f;
         if (shelfCollapsed == collapsed && Math.abs(shelfFoldTarget - target) < 0.001f
                 && shelfFoldAnim != null && shelfFoldAnim.isRunning()) return;
@@ -16333,6 +16345,13 @@ public class MainActivity extends Activity {
         shelfFoldAnim.addUpdateListener(a -> {
             shelfFold = (Float) a.getAnimatedValue();
             applyShelfFold(shelfFold);
+            // **两段式的接缝。** 照片栏收到 82 %（还差 0.18）时，胶片栏开始
+            // 拉高：等它落定会看出一次停顿，更早会撞车。
+            if (shelfFoldChain != null && Math.abs(shelfFold - shelfFoldTarget) <= 0.18f) {
+                final Runnable r = shelfFoldChain;
+                shelfFoldChain = null;
+                r.run();
+            }
         });
         shelfFoldAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator a) {
@@ -16340,6 +16359,11 @@ public class MainActivity extends Activity {
                 shelfFold = shelfFoldTarget;
                 applyShelfFold(shelfFold);
                 shelfFoldAnim = null;
+                if (shelfFoldChain != null) {
+                    final Runnable r = shelfFoldChain;
+                    shelfFoldChain = null;
+                    r.run();
+                }
                 Probe.log("shelf", "fold=" + (shelfFoldTarget > 0.5f ? 1 : 0)
                         + " frames=" + frames.size());
             }
@@ -16874,42 +16898,39 @@ public class MainActivity extends Activity {
     }
 
 
-    // ============================================================ 胶片货架：网格
+
+    // ======================================================== 胶片货架：网格视图
     //
-    // **一张横条装不下五十四支胶片。** 横条对拇指是对的，对「找一支片」是错的：
-    // 屏上永远是四张，其余五十张在一次滑动之后、在一个看不出顺序的顺序里。网格
-    // 是同一批卡片、同一套筛选、同一份缩略图缓存 —— 只有父亲和列数变了 —— 而它
-    // 从屏幕底部升起来，所以挑片的时候照片还在上面。
+    // **不新建面板。** 展开的是 `filmShelfHost` 自己：它从单行的 111 dp 长到
+    // 三行，标题、分类条、相纸行、页签全都留在原位 —— 上面那一列（画布）跟着
+    // 缩，下面那些钉在屏底。没有遮罩、没有第二棵树。
     //
-    // **这里没有一帧在排版。** 面板是定高的 FrameLayout，只动 `translationY`；
-    // 网格在里面再走 14 dp 并淡入。一帧只写这两个属性。
+    // **一帧只做两件事**：写 `filmShelfHost` 的高度，和交叉淡入的 alpha。
+    // 卡片只在两端各重建一次，动画里一张都不动。
 
     /**
-     * **展开态的高度：编辑器可用高度的 64 %，且至少给照片留三成。**
+     * 展开态的高度：三行卡片，且照片区至少还剩屏高的三分之一。
      *
-     * <p>用 `editorRoot.getHeight()` 而不是屏幕高度：`uiRoot` 有系统栏的
-     * padding，这一列真正能用的就是 app 那棵树。
-     *
-     * <p>1280x2772（394x853 dp，density 3.25）实测：app 813 dp、面板 **520 dp
-     * （64.0 %）**、照片可见 **293 dp（34.3 % 屏高）**、滚动区 435 dp、
-     * 4 列 × 81.5 dp 的卡片、一屏 **4.04 行**。这个数和「占屏 60–68 %、
-     * 顶上至少 30 % 照片」是同一组。
+     * <p>除了这一个容器，panel 里其余的家具都钉住不动：标题 46、分类 38、
+     * 相纸 35，加下面的页签 58。1280x2772（394x853 dp）实测：三行 324 dp，
+     * 照片还剩 312 dp = 36.6 % 屏高。
      */
-    private int sheetHeightPx() {
-        final int room = (editorRoot != null && editorRoot.getHeight() > 0)
+    private int shelfOpenHeightPx() {
+        final int screenH = getResources().getDisplayMetrics().heightPixels;
+        final int appH = (editorRoot != null && editorRoot.getHeight() > 0)
                 ? editorRoot.getHeight()
-                : Math.max(dp(400), getResources().getDisplayMetrics().heightPixels - dp(40));
-        final int h = Math.round(room * SHEET_FRAC);
-        final int ceiling = room - Math.round(room * 0.30f);
-        return Math.max(dp(220), Math.min(h, ceiling));
+                : Math.max(dp(400), screenH - dp(40));
+        final int fixed = dp(46 + 38 + 35 + 58);
+        final int room = appH - fixed - Math.round(screenH * 0.33f);
+        return Math.max(dp(2 * SHELF_ROW_DP), Math.min(dp(3 * SHELF_ROW_DP + 6), room));
     }
 
     /**
      * 一列 84 dp，**每张卡右边还有 9 dp 的空** —— 这两笔都要算进去，否则五列
      * 会把卡片压到 67 dp，名字就只剩一行半。
      *
-     * <p>实测：320 dp 三列（87 dp 一张）、360 dp 三列（100）、393 dp 四列（79）、
-     * 412 dp 四列（84）、430 dp 四列（88）。
+     * <p>实测：320 dp 三列（87 dp 一张）、360 dp 三列（100）、393 dp 四列（81）、
+     * 412 dp 四列（86）、430 dp 四列（90）。
      */
     private int sheetColsFor(int widthPx) {
         final int usable = Math.max(dp(200), widthPx - dp(32));
@@ -16919,268 +16940,272 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * **建一次，之后只是被借走。**
+     * 展开 / 收起胶片栏。
      *
-     * <p>展开时它装的是货架自己的 `filmCardStrip` 和分类条 —— 卡片、缩略图、
-     * 选中描边、点击回调全都是屏幕下方那一批对象，所以不存在「两份货架要保持
-     * 同步」这件事。建一次也意味着第一次展开付视图的钱，之后每次只是平移。
-     */
-    private void buildFilmSheet() {
-        if (filmSheet != null || uiRoot == null) return;
-        filmSheet = new android.widget.FrameLayout(this);
-        filmSheet.setBackgroundColor(UI_PAPER);
-        // **落在它身上的手势归它。** 一张能被画布看穿的纸，画布的双指缩放和
-        // 长按比较也会够到。
-        filmSheet.setClickable(true);
-        filmSheet.setFocusable(false);
-
-        final LinearLayout body = new LinearLayout(this);
-        body.setOrientation(LinearLayout.VERTICAL);
-        filmSheet.addView(body, new android.widget.FrameLayout.LayoutParams(-1, -1));
-
-        final View edge = new View(this);
-        edge.setBackgroundColor(UI_LINE);
-        body.addView(edge, new LinearLayout.LayoutParams(-1, Math.max(1, dp(0.6f))));
-
-        final LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        head.setPadding(dp(16), 0, dp(16), 0);
-        final TextView title = mixedLabel("胶片与相纸", 8.5f, UI_INK);
-        title.setLetterSpacing(0.06f);
-        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
-        filmSheetClose = new ChevronToggle();
-        filmSheetClose.setContentDescription("收起胶片网格");
-        filmSheetClose.setOnClickListener(v -> setShelfExpanded(false));
-        head.addView(filmSheetClose, new LinearLayout.LayoutParams(dp(24), dp(24)));
-        body.addView(head, new LinearLayout.LayoutParams(-1, dp(46)));
-
-        // **分类条住在滚动区外面**，所以它天然吸顶：切分类只是重排网格，
-        // 条子一个像素都不会动。
-        filmSheetScroll = new android.widget.ScrollView(this);
-        filmSheetScroll.setVerticalScrollBarEnabled(false);
-        filmSheetScroll.setClipToPadding(false);
-        body.addView(filmSheetScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        // **在纸上往下抹 = 收起**，和横条上的向上轻扫对称。它挂在纸上，
-        // 所以只有点到标题、顶边线这类没人消费的地方才算 —— 卡片和滚动区
-        // 照样先拿到自己的手势。
-        filmSheet.setOnTouchListener((v, ev) -> onSheetPullDown(ev));
-
-        filmSheet.setVisibility(View.GONE);
-        filmSheet.setTranslationY(dp(2000));
-        uiRoot.addView(filmSheet, new android.widget.FrameLayout.LayoutParams(
-                -1, dp(320), android.view.Gravity.BOTTOM));
-    }
-
-    /**
-     * 展开 / 收起。
-     *
-     * <p>横屏没有这个手势：右栏本来就是两列网格，一张盖在它上面的面板会把
-     * 它要列的东西全挡住。
+     * <p>**两段式**：照片栏还开着的时候，先让它按自己的动效收起来，收到 82 %
+     * 时再开始拉高 —— 两个动作首尾相接，而不是同时把画布从两头挤。照片栏已经
+     * 收起（或者根本没有照片）时零延迟。
      */
     private void setShelfExpanded(boolean on) {
         if (shelfExpanded == on) return;
         if (on && landscapeMode) return;
         shelfExpanded = on;
-        if (on) {
-            buildFilmSheet();
-            if (filmSheet == null) { shelfExpanded = false; return; }
-            final int appW = (editorRoot != null && editorRoot.getWidth() > 0)
-                    ? editorRoot.getWidth()
-                    : getResources().getDisplayMetrics().widthPixels;
-            sheetCols = sheetColsFor(appW);
-            final int h = sheetHeightPx();
-            sheetHeight = h;
-            final android.view.ViewGroup.LayoutParams lp = filmSheet.getLayoutParams();
-            if (lp != null) {
-                lp.height = h;
-                filmSheet.setLayoutParams(lp);
-            }
-            filmSheet.setVisibility(View.VISIBLE);
-            // 高度在画第一帧之前就写好了，所以起点是精确的：面板不会先在
-            // 屏底下「露一头」再开始动。
-            filmSheet.setTranslationY(h);
-            filmSheet.setAlpha(1f);
-            borrowShelfViewsIntoSheet();
-            // **先把最贵的那一步做完再起动画。** 重建五十四张卡是这次转场里
-            // 唯一的重活；它在面板还在屏幕下面时发生，于是动画本身只剩下搬一帧。
-            filmSheet.post(() -> {
-                if (!shelfExpanded) return;
-                animateShelfExpand(1f);
-                scrollSheetToSelected();
-            });
-        } else {
-            animateShelfExpand(0f);
-        }
         refreshShelfChevrons();
+        if (on) {
+            if (!shelfCollapsed && !frames.isEmpty() && shelfFold < 0.18f) {
+                shelfFoldChain = this::openShelfNow;
+                setShelfCollapsed(true);
+                // `setShelfCollapsed` 在没有照片时早退、不会起动画：兜底。
+                if (shelfFoldChain != null && shelfFoldAnim == null) {
+                    final Runnable r = shelfFoldChain;
+                    shelfFoldChain = null;
+                    r.run();
+                }
+            } else {
+                openShelfNow();
+            }
+        } else {
+            closeShelfNow();
+        }
     }
 
-    /**
-     * **卡片条和分类条换父亲，别的一概不动。**
-     *
-     * <p>这就是网格不是「第二份货架」的全部原因：选中描边、缩略图、置灰的卡、
-     * 点击回调，都是原来那一批。
-     */
-    private void borrowShelfViewsIntoSheet() {
-        if (filmCardStrip == null || brandScrollView == null || filmSheet == null) return;
-        final android.view.ViewParent cp = filmCardStrip.getParent();
-        if (cp instanceof android.view.ViewGroup) ((android.view.ViewGroup) cp).removeView(filmCardStrip);
-        final android.view.ViewParent bp = brandScrollView.getParent();
-        if (bp instanceof android.view.ViewGroup) ((android.view.ViewGroup) bp).removeView(brandScrollView);
-
-        final LinearLayout body = (LinearLayout) filmSheet.getChildAt(0);
-        body.removeView(brandScrollView);
-        body.addView(brandScrollView,
-                Math.max(0, body.indexOfChild(filmSheetScroll)),
-                new LinearLayout.LayoutParams(-1, dp(38)));
-
-        filmSheetScroll.removeAllViews();
-        filmCols = sheetCols;
-        filmGridRow = null;
-        filmCardStrip.setOrientation(LinearLayout.VERTICAL);
-        filmCardStrip.setGravity(android.view.Gravity.TOP);
-        filmCardStrip.setPadding(dp(16), dp(6), dp(16), dp(20));
-        filmCardStrip.setTranslationY(0f);
-        filmCardStrip.setAlpha(1f);
-        filmSheetScroll.addView(filmCardStrip,
-                new android.widget.FrameLayout.LayoutParams(-1, -2));
-        rebuildFilmCards();
+    private void openShelfNow() {
+        shelfFoldChain = null;
+        if (!shelfExpanded || landscapeMode) return;
+        // **这一页必须按内容测高。** `enterPanel` 会给它留一个定高（≤ cap），
+        // 定高之下 `filmShelfHost` 长多高都会被裁掉。
+        if (panels.length > 0 && panels[0] != null) {
+            final android.view.ViewGroup.LayoutParams plp = panels[0].getLayoutParams();
+            if (plp != null && plp.height != android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+                plp.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+                panels[0].setLayoutParams(plp);
+            }
+        }
+        final int appW = (editorRoot != null && editorRoot.getWidth() > 0)
+                ? editorRoot.getWidth()
+                : getResources().getDisplayMetrics().widthPixels;
+        sheetCols = sheetColsFor(appW);
+        final int opened = shelfOpenHeightPx();
+        final int from = filmShelfHost == null || filmShelfHost.getHeight() <= 0
+                ? dp(SHELF_BAR_DP) : filmShelfHost.getHeight();
+        swapShelfShape(true);
+        markFile("shelf expand from=" + from + " to=" + opened
+                + " cols=" + sheetCols + " frames=" + frames.size());
+        animateShelfHeight(from, opened);
+        scrollGridToSelected();
     }
 
-    /**
-     * **一个数、一个动画、可打断。** 半路再点只改目标，从当前所在的位置接着走，
-     * 时长按剩下的距离缩 —— 连点两下就原地掉头，既不跳也不停（和
-     * `beginShelfFold` 同一个形状）。
-     */
-    private void animateShelfExpand(final float target) {
-        final android.animation.ValueAnimator old = shelfExpandAnim;
-        shelfExpandAnim = null;
-        if (old != null) old.cancel();
-        final float from = shelfExpand;
-        if (Math.abs(target - from) < 0.002f) {
-            shelfExpand = target;
-            applyShelfExpand(target);
-            if (target <= 0f) settleShelfSheetClosed();
+    private void closeShelfNow() {
+        shelfFoldChain = null;
+        // 还没换过形态（比如照片栏收到一半又被点回来）：没有东西要收。
+        if (!shelfShapeIsGrid) {
+            if (filmShelfHost != null && filmShelfHost.getHeight() > dp(SHELF_BAR_DP) + 1) {
+                animateShelfHeight(filmShelfHost.getHeight(), dp(SHELF_BAR_DP));
+            }
             return;
         }
-        final long ms = Math.max(120L, Math.round(MS_GRID * Math.abs(target - from)));
-        shelfExpandAnim = android.animation.ValueAnimator.ofFloat(from, target);
-        shelfExpandAnim.setDuration(ms);
-        // **主人的曲线，不过冲。** `cubic-bezier(0.22, 1, 0.36, 1)` 第一帧
-        // （16 ms）就走了 6 %，末端平着落地 —— 这个尺寸上会回弹的弹簧读起来
-        // 像面板装松了，而不是像快。
-        shelfExpandAnim.setInterpolator(
-                new android.view.animation.PathInterpolator(0.22f, 1f, 0.36f, 1f));
-        shelfExpandAnim.addUpdateListener(a -> {
-            shelfExpand = (Float) a.getAnimatedValue();
-            applyShelfExpand(shelfExpand);
+        final int from = filmShelfHost == null || filmShelfHost.getHeight() <= 0
+                ? shelfOpenHeightPx() : filmShelfHost.getHeight();
+        swapShelfShape(false);
+        markFile("shelf collapse from=" + from + " to=" + dp(SHELF_BAR_DP));
+        animateShelfHeight(from, dp(SHELF_BAR_DP));
+    }
+
+    /**
+     * **换形态，并且把旧形态留下当影子。**
+     *
+     * <p>单行横滑和四列网格是两种布局，中间必须重建一次卡片 —— 那是唯一不能
+     * 放进动画里的工作。所以它发生在第一帧之前；为了不让这一下跳变被看见，
+     * 旧的那一帧被拍成一张位图盖在上面（`shelfCross`），在头 134 ms 里淡出，
+     * 新形态同时淡入。
+     *
+     * <p>`filmShelfHost` 是 `FrameLayout` 且 `clipChildren = true`，所以拉高
+     * 的过程就是「抽屉被拉开」：第 2、3 行从下沿被裁出来，不是凭空出现。
+     */
+    private void swapShelfShape(boolean intoGrid) {
+        swapShelfShape(intoGrid, true);
+    }
+
+    private void swapShelfShape(boolean intoGrid, boolean withCross) {
+        if (filmShelfHost == null || filmCardStrip == null) return;
+        if (withCross) snapshotShelfHost();
+        else if (shelfCross != null) shelfCross.setVisibility(View.GONE);
+        final android.view.ViewParent p = filmCardStrip.getParent();
+        if (p instanceof android.view.ViewGroup) ((android.view.ViewGroup) p).removeView(filmCardStrip);
+        if (filmGridScroll != null) {
+            filmGridScroll.removeAllViews();
+            filmGridScroll.setAlpha(1f);
+        }
+        if (filmScroll != null) {
+            filmScroll.removeAllViews();
+            filmScroll.setAlpha(1f);
+        }
+        filmGridRow = null;
+        if (intoGrid && filmGridScroll != null) {
+            filmCols = sheetCols;
+            filmCardStrip.setOrientation(LinearLayout.VERTICAL);
+            filmCardStrip.setGravity(android.view.Gravity.TOP);
+            filmCardStrip.setPadding(dp(16), dp(4), dp(16), dp(16));
+            filmGridScroll.addView(filmCardStrip,
+                    new android.widget.FrameLayout.LayoutParams(-1, -2));
+            filmGridScroll.setVisibility(View.VISIBLE);
+            filmGridScroll.setAlpha(0f);
+            filmGridScroll.scrollTo(0, 0);
+            if (filmScroll != null) filmScroll.setVisibility(View.GONE);
+        } else {
+            filmCols = 1;
+            filmCardStrip.setOrientation(LinearLayout.HORIZONTAL);
+            filmCardStrip.setGravity(android.view.Gravity.TOP);
+            filmCardStrip.setPadding(0, dp(9), 0, dp(8));
+            if (filmScroll != null) {
+                filmScroll.addView(filmCardStrip,
+                        new android.widget.FrameLayout.LayoutParams(-2, -1));
+                filmScroll.setVisibility(View.VISIBLE);
+                filmScroll.setAlpha(0f);
+            }
+            if (filmGridScroll != null) filmGridScroll.setVisibility(View.GONE);
+        }
+        shelfShapeIsGrid = intoGrid;
+        rebuildFilmCards();
+        if (withCross && shelfCross != null) {
+            shelfCross.setVisibility(View.VISIBLE);
+            shelfCross.setAlpha(1f);
+            shelfCross.bringToFront();
+        }
+    }
+
+    /** 把容器当前的样子拍成一张位图，贴在它自己身上（`swapShelfShape` 用）。 */
+    private void snapshotShelfHost() {
+        if (filmShelfHost == null) return;
+        final int w = filmShelfHost.getWidth(), h = filmShelfHost.getHeight();
+        if (w <= 0 || h <= 0) return;
+        try {
+            if (shelfCross != null) shelfCross.setVisibility(View.GONE);
+            final Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            filmShelfHost.draw(new Canvas(bmp));
+            if (shelfCross == null) {
+                shelfCross = new ImageView(this);
+                shelfCross.setScaleType(ImageView.ScaleType.FIT_XY);
+                shelfCross.setClickable(false);
+                shelfCross.setFocusable(false);
+            }
+            shelfCross.setImageBitmap(bmp);
+            shelfCross.setLayoutParams(new android.widget.FrameLayout.LayoutParams(
+                    -1, h, android.view.Gravity.TOP));
+            if (shelfCross.getParent() == null) filmShelfHost.addView(shelfCross);
+        } catch (Throwable t) {
+            DebugSink.text("shelf", "snapshot failed: " + t);
+        }
+    }
+
+    /**
+     * 高度走 320 ms 的 `cubic-bezier(0.22, 1, 0.36, 1)`，无回弹；交叉淡入只占
+     * 前 134 ms，并且用的是**线性**进度（`getAnimatedFraction`）—— 淡出是时间
+     * 的函数，不是位移的函数。
+     */
+    private void animateShelfHeight(final int from, final int to) {
+        final android.animation.ValueAnimator old = shelfHeightAnim;
+        shelfHeightAnim = null;
+        if (old != null) old.cancel();
+        if (from == to) {
+            setShelfHostHeight(to);
+            settleShelfCross();
+            return;
+        }
+        final android.animation.ValueAnimator a = android.animation.ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(MS_SHELF);
+        a.setInterpolator(new android.view.animation.PathInterpolator(0.22f, 1f, 0.36f, 1f));
+        a.addUpdateListener(an -> {
+            final float f = an.getAnimatedFraction();
+            final float e = (Float) an.getAnimatedValue();
+            setShelfHostHeight(from + Math.round((to - from) * e));
+            applyShelfCross(Math.min(1f, f / SHELF_CROSS_SHARE));
         });
-        shelfExpandAnim.addListener(new android.animation.AnimatorListenerAdapter() {
-            @Override public void onAnimationEnd(android.animation.Animator a) {
-                if (shelfExpandAnim != a) return;
-                shelfExpandAnim = null;
-                shelfExpand = target;
-                applyShelfExpand(target);
-                if (target <= 0f) settleShelfSheetClosed();
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator x) {
+                if (shelfHeightAnim != x) return;
+                shelfHeightAnim = null;
+                setShelfHostHeight(to);
+                settleShelfCross();
+                if (!shelfExpanded) scrollShelfToSelected();
             }
         });
-        shelfExpandAnim.start();
+        shelfHeightAnim = a;
+        a.start();
+    }
+
+    private void setShelfHostHeight(int h) {
+        if (filmShelfHost == null) return;
+        final android.view.ViewGroup.LayoutParams lp = filmShelfHost.getLayoutParams();
+        if (lp == null) return;
+        final int want = Math.max(0, h);
+        if (lp.height == want) return;
+        lp.height = want;
+        filmShelfHost.setLayoutParams(lp);
+    }
+
+    private void applyShelfCross(float p) {
+        final boolean haveShadow = shelfCross != null
+                && shelfCross.getVisibility() == View.VISIBLE;
+        if (haveShadow) shelfCross.setAlpha(1f - p);
+        final View shown = (filmGridScroll != null && filmGridScroll.getVisibility() == View.VISIBLE)
+                ? filmGridScroll
+                : ((filmScroll != null && filmScroll.getVisibility() == View.VISIBLE) ? filmScroll : null);
+        // 没有影子的时候不能把新形态也淡进来 —— 那会是一段空纸。
+        if (shown != null) shown.setAlpha(haveShadow ? p : 1f);
+    }
+
+    private void settleShelfCross() {
+        if (shelfCross != null) {
+            shelfCross.setVisibility(View.GONE);
+            shelfCross.setAlpha(1f);
+        }
+        if (filmGridScroll != null) filmGridScroll.setAlpha(1f);
+        if (filmScroll != null) filmScroll.setAlpha(1f);
     }
 
     /**
-     * **只有 transform 和 alpha。** 不写高度、不增删子视图、不 `requestLayout`
-     * —— 五十四张卡在网格里各自待着，滑上去的只是那张纸。
+     * 立刻落回收起态，不播动画 —— 转屏（视图树要被拆开重装）和设置页（整页
+     * 要盖上来）用。它不换形态：调用方之后一定会走到 `applyFilmShelfMode`，
+     * 那里才是决定卡片住在哪的地方。
      */
-    private void applyShelfExpand(float t) {
-        if (filmSheet == null) return;
-        final int h = sheetHeight > 0 ? sheetHeight
-                : (filmSheet.getHeight() > 0 ? filmSheet.getHeight() : dp(320));
-        filmSheet.setTranslationY(h * (1f - t));
-        // 网格比纸慢半拍，并在后半段淡进来：面板是一张纸先到，卡片落在纸上。
-        if (filmCardStrip != null) {
-            final float g = Math.max(0f, Math.min(1f, (t - 0.10f) / 0.90f));
-            filmCardStrip.setTranslationY(dp(14) * (1f - g));
-            filmCardStrip.setAlpha(g);
-        }
-        if (filmSheetClose != null) filmSheetClose.setTurn(t);
-        if (filmHeadOpen != null) filmHeadOpen.setTurn(t);
-    }
-
-    /** 面板已经落到屏底：把视图还回去，然后藏起来。 */
-    private void settleShelfSheetClosed() {
-        if (shelfExpanded) return;
-        if (filmSheet != null) {
-            filmSheet.setVisibility(View.GONE);
-            filmSheet.setTranslationY(dp(2000));
-        }
-        if (filmCardStrip != null) {
-            filmCardStrip.setTranslationY(0f);
-            filmCardStrip.setAlpha(1f);
-        }
-        if (filmShelfHost != null) filmShelfHost.setAlpha(1f);
-        returnBrandScroll();
-        // `applyFilmShelfMode` 把条子装回 `filmScroll`、按竖屏的列数重建，
-        // 并且会把选中的那张滚进来。
-        applyFilmShelfMode();
-        scrollShelfToSelected();
-        refreshShelfChevrons();
+    private void collapseShelfInstantly() {
+        collapseShelfInstantly(false);
     }
 
     /**
-     * 不播动画地落回收起态 —— 视图树正在被重排（转屏）或者要被整页盖住
-     * （设置页）的时候用。它不重建卡片：调用方之后一定会走到
-     * `applyFilmShelfMode`，那里才是决定条子住在哪的地方。
+     * @param reshape 把卡片也放回单行。转屏时传 false —— `applyEditorLayout`
+     *                之后一定会走到 `applyFilmShelfMode`，那里才是决定卡片
+     *                住在哪的地方；切页签 / 开设置时传 true，因为没有人会
+     *                替这一页重排。
      */
-    private void forceCloseShelfSheet() {
+    private void collapseShelfInstantly(boolean reshape) {
+        final boolean was = shelfExpanded;
         shelfExpanded = false;
-        shelfExpand = 0f;
-        final android.animation.ValueAnimator a = shelfExpandAnim;
-        shelfExpandAnim = null;
+        shelfFoldChain = null;
+        final android.animation.ValueAnimator a = shelfHeightAnim;
+        shelfHeightAnim = null;
         if (a != null) a.cancel();
-        if (filmSheet != null) {
-            filmSheet.setVisibility(View.GONE);
-            filmSheet.setTranslationY(dp(2000));
-        }
-        if (filmCardStrip != null) {
-            filmCardStrip.setTranslationY(0f);
-            filmCardStrip.setAlpha(1f);
-            // 还在纸里就先摘下来，否则 `applyFilmShelfMode` 会把一个错父亲的
-            // 条子当成「已经装好了」。
-            final android.view.ViewParent p = filmCardStrip.getParent();
-            if (p instanceof android.view.ViewGroup && p != filmScroll) {
-                ((android.view.ViewGroup) p).removeView(filmCardStrip);
+        if (filmShelfHost != null) {
+            final android.view.ViewGroup.LayoutParams lp = filmShelfHost.getLayoutParams();
+            if (lp != null && lp.height != dp(SHELF_BAR_DP)) {
+                lp.height = dp(SHELF_BAR_DP);
+                filmShelfHost.setLayoutParams(lp);
             }
         }
-        if (filmSheetScroll != null) filmSheetScroll.removeAllViews();
-        if (filmShelfHost != null) filmShelfHost.setAlpha(1f);
-        returnBrandScroll();
-        if (filmSheetClose != null) filmSheetClose.setTurn(0f);
-        if (filmHeadOpen != null) filmHeadOpen.setTurn(0f);
-    }
-
-    /** 分类条回到标题下面。它只离开过一次，所以这里只认「不在家」这一种情况。 */
-    private void returnBrandScroll() {
-        if (brandScrollView == null || filmHeadRow == null) return;
-        if (panels.length == 0 || !(panels[0] instanceof LinearLayout)) return;
-        final LinearLayout page = (LinearLayout) panels[0];
-        if (brandScrollView.getParent() == page) return;
-        final android.view.ViewParent p = brandScrollView.getParent();
-        if (p instanceof android.view.ViewGroup) ((android.view.ViewGroup) p).removeView(brandScrollView);
-        page.addView(brandScrollView,
-                Math.max(0, page.indexOfChild(filmHeadRow) + 1),
-                new LinearLayout.LayoutParams(-1, dp(38)));
+        if (reshape && was) swapShelfShape(false, false);
+        else if (shelfCross != null) shelfCross.setVisibility(View.GONE);
+        settleShelfCross();
+        refreshShelfChevrons();
     }
 
     private void refreshShelfChevrons() {
-        final float t = shelfExpanded ? 1f : 0f;
-        if (filmHeadOpen != null) {
-            // 横屏没有网格可开：右栏本来就是两列。
-            filmHeadOpen.setVisibility(landscapeMode
-                    ? android.view.View.GONE : android.view.View.VISIBLE);
-            filmHeadOpen.setTurn(t);
-        }
-        if (filmSheetClose != null) filmSheetClose.setTurn(t);
+        if (filmHeadOpen == null) return;
+        // 横屏没有网格可开：右栏本来就是两列。
+        filmHeadOpen.setVisibility(landscapeMode
+                ? android.view.View.GONE : android.view.View.VISIBLE);
+        filmHeadOpen.setTurn(shelfExpanded ? 1f : 0f, true);
+        filmHeadOpen.setContentDescription(shelfExpanded ? "收起胶片网格" : "展开胶片网格");
     }
 
     /** 现在载入的那支胶片是哪张卡（`updateFilmSelection` 用的同一套判断）。 */
@@ -17196,23 +17221,23 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    /** 展开时让网格停在当前这支胶片上，而不是从头开始找。 */
-    private void scrollSheetToSelected() {
-        if (filmSheetScroll == null) return;
+    /** 展开后网格停在当前这支胶片上，而不是从头开始让人自己找。 */
+    private void scrollGridToSelected() {
+        if (filmGridScroll == null || filmGridScroll.getVisibility() != View.VISIBLE) return;
         final View sel = selectedShelfCard();
         if (sel == null) return;
-        // 90 ms：展开的动画还在走，但布局已经落地 —— 于是网格滑上来的时候
-        // 已经停在当前这支胶片上，而不是从第一张开始让人自己找。
-        filmSheetScroll.postDelayed(() -> {
+        // 40 ms：布局已经落地、动画才走了 1/8。用 `scrollTo` 而不是
+        // `smoothScrollTo` —— 网格一出现就应该已经在那一行，不该再滚一下。
+        filmGridScroll.postDelayed(() -> {
             int y = 0;
             View v = sel;
-            while (v != null && v != filmSheetScroll) {
+            while (v != null && v != filmGridScroll) {
                 y += v.getTop();
                 final android.view.ViewParent up = v.getParent();
                 v = up instanceof View ? (View) up : null;
             }
-            filmSheetScroll.smoothScrollTo(0, Math.max(0, y - dp(8)));
-        }, 90);
+            filmGridScroll.scrollTo(0, Math.max(0, y - dp(4)));
+        }, 40);
     }
 
     /**
@@ -17265,43 +17290,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 纸面上的一次下滑 —— 28 dp、且压过横向，和展开那条同一条线。 */
-    private boolean onSheetPullDown(android.view.MotionEvent ev) {
-        switch (ev.getActionMasked()) {
-            case android.view.MotionEvent.ACTION_DOWN:
-                sheetDownX = ev.getX();
-                sheetDownY = ev.getY();
-                sheetDownArmed = shelfExpanded;
-                return false;
-            case android.view.MotionEvent.ACTION_MOVE:
-                if (!sheetDownArmed) return false;
-                final float dy = ev.getY() - sheetDownY;
-                if (dy > dp(28) && dy > Math.abs(ev.getX() - sheetDownX) * 1.8f) {
-                    sheetDownArmed = false;
-                    setShelfExpanded(false);
-                    return true;
-                }
-                return false;
-            case android.view.MotionEvent.ACTION_UP:
-            case android.view.MotionEvent.ACTION_CANCEL:
-                sheetDownArmed = false;
-                return false;
-            default:
-                return false;
-        }
-    }
-
     /**
      * **24 dp 的方框，里面一个箭头，别的什么都没有。**
      *
-     * <p>草图里是一个 `⊞`；主人要的是箭头，而箭头也是这两个里唯一能「转」的
-     * 那个。一个形状、一个属性：`turn` 把它转 180 度，于是开和关读起来是同一
-     * 件东西的两个位置，而不是两个图标。
+     * <p>它原地转 180 度：一个形状、一个属性，开和关读起来是同一件东西的两个
+     * 位置，而不是两个图标。
      */
     private final class ChevronToggle extends View {
         private final android.graphics.Paint ink = new android.graphics.Paint(
                 android.graphics.Paint.ANTI_ALIAS_FLAG);
         private float turn;
+        private android.animation.ValueAnimator turnAnim;
 
         ChevronToggle() {
             super(MainActivity.this);
@@ -17312,11 +17311,28 @@ public class MainActivity extends Activity {
         }
 
         /** 0 = 朝上（展开），1 = 朝下（收起）。 */
-        void setTurn(float t) {
+        void setTurn(float t, boolean animate) {
             final float v = Math.max(0f, Math.min(1f, t));
             if (Math.abs(v - turn) < 0.001f) return;
-            turn = v;
-            invalidate();
+            if (turnAnim != null) {
+                final android.animation.ValueAnimator a = turnAnim;
+                turnAnim = null;
+                a.cancel();
+            }
+            if (!animate) {
+                turn = v;
+                invalidate();
+                return;
+            }
+            turnAnim = android.animation.ValueAnimator.ofFloat(turn, v);
+            turnAnim.setDuration(MS_SHELF);
+            turnAnim.setInterpolator(
+                    new android.view.animation.PathInterpolator(0.22f, 1f, 0.36f, 1f));
+            turnAnim.addUpdateListener(a -> {
+                turn = (Float) a.getAnimatedValue();
+                invalidate();
+            });
+            turnAnim.start();
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -17346,7 +17362,6 @@ public class MainActivity extends Activity {
         // signpost in a page that is already titled; what belongs beside it are
         // the two controls the page cannot answer for itself.
         final LinearLayout filmHead = sectionHead("胶片与相纸", this::resetFilmPanel);
-        filmHeadRow = filmHead;
         // **Which engine develops the shelf.** The two machines are not
         // interchangeable, and eighteen films are sold by both of them: asking
         // "which engine" on every one of those cards was a sheet before every
@@ -17416,17 +17431,16 @@ public class MainActivity extends Activity {
         // carries the extra 8 (see there).
         panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        // **The tabs are a field, not a local.** The grid borrows them while it
-        // is open (they sit above its scroller, sticky by construction), so the
-        // two places that hold them are this page and the sheet.
-        brandScrollView = new HorizontalScrollView(this);
-        brandScrollView.setHorizontalScrollBarEnabled(false);
-        brandScrollView.setFillViewport(false);
+        // **分类条不动。** 网格长在它下面，它一个像素都不挪 —— 所以两种形状
+        // 读起来是同一张货架，只是多铺了几行。
+        final HorizontalScrollView brandScroll = new HorizontalScrollView(this);
+        brandScroll.setHorizontalScrollBarEnabled(false);
+        brandScroll.setFillViewport(false);
         brandRow = new LinearLayout(this);
         brandRow.setOrientation(LinearLayout.HORIZONTAL);
         brandRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        brandScrollView.addView(brandRow, new android.widget.FrameLayout.LayoutParams(-2, dp(38)));
-        panel.addView(brandScrollView, new LinearLayout.LayoutParams(-1, dp(38)));
+        brandScroll.addView(brandRow, new android.widget.FrameLayout.LayoutParams(-2, dp(38)));
+        panel.addView(brandScroll, new LinearLayout.LayoutParams(-1, dp(38)));
 
         filmScroll = new HorizontalScrollView(this);
         filmScroll.setHorizontalScrollBarEnabled(false);
@@ -17440,13 +17454,21 @@ public class MainActivity extends Activity {
         // **One host, two shapes.** Portrait holds the horizontal scroller,
         // landscape holds the same strip as a two-column grid; `applyFilmShelfMode`
         // hands the strip over when the phone turns.
-        filmShelfHost = new LinearLayout(this);
-        filmShelfHost.setOrientation(LinearLayout.VERTICAL);
-        filmShelfHost.addView(filmScroll, new LinearLayout.LayoutParams(-1, -1));
+        // **一只容器，两种形状。** 竖屏收起时里面是那条横条，展开时是同一位置
+        // 上的一面网格；两者都填满这只盒子，靠可见性切换（见 `swapShelfShape`）。
+        // `clipChildren` 让高度变化变成「抽屉被拉开」：多出来的行从下沿被裁出。
+        filmShelfHost = new android.widget.FrameLayout(this);
+        filmShelfHost.setClipChildren(true);
+        filmShelfHost.addView(filmScroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        filmGridScroll = new android.widget.ScrollView(this);
+        filmGridScroll.setVerticalScrollBarEnabled(false);
+        filmGridScroll.setClipToPadding(false);
+        filmGridScroll.setVisibility(View.GONE);
+        filmShelfHost.addView(filmGridScroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
         // 向上轻扫 = 展开网格（见 `onShelfSwipe`）。监听挂在滚动条上，因为
         // `OnTouchListener` 先于 `HorizontalScrollView` 自己的处理跑。
         filmScroll.setOnTouchListener((v, ev) -> onShelfSwipe(ev));
-        panel.addView(filmShelfHost, new LinearLayout.LayoutParams(-1, dp(111)));
+        panel.addView(filmShelfHost, new LinearLayout.LayoutParams(-1, dp(SHELF_BAR_DP)));
 
         // **One bar, and a list behind it.** The shelf of paper boxes was the
         // wrong shape for this row: two or three boxes fit, the rest needed a
@@ -25853,6 +25875,9 @@ public class MainActivity extends Activity {
         if (page == null || (panels[5] != null && page == panels[5])) return;
         page.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
             if (landscapeMode) return;
+            // **展开的胶片栏不受这个上限管。** 它按自己的三行高度长，画布跟着
+            // 缩 —— 在这里压回 230 dp 就是把刚拉起来的那一截重新切掉。
+            if (shelfExpanded && panels.length > 0 && v == panels[0]) return;
             final int cap = dp(PANEL_CAP_DP);
             // **The page's own height is the first thing to clamp.** After an
             // entrance the height is an explicit `lp.height` (see
@@ -29353,6 +29378,9 @@ public class MainActivity extends Activity {
         // engine. Left as a bounds check because an out-of-range index would
         // index `panels[]` blind.
         if (active < 0 || active >= panels.length) return;
+        // **胶片栏还开着的时候切到别的页，它先回去。** 否则切回来时
+        // `enterPanel` 会按 230 dp 的 cap 重排这一页，刚拉起来的那一截就没了。
+        if (shelfExpanded && active != 0) collapseShelfInstantly(true);
         activeTabIndex = active;
         // **The print page is rebuilt on entry, not just revealed.** Its rows
         // are created with `printLatitude` baked in (a gated row is born
@@ -31231,7 +31259,7 @@ public class MainActivity extends Activity {
         if (uiRoot == null) return;
         // 设置是整页的，而且它和网格住在同一个 FrameLayout 里、后加的在上：
         // 一张还开着的网格会画在设置页上面。
-        if (shelfExpanded) forceCloseShelfSheet();
+        if (shelfExpanded) collapseShelfInstantly(true);
         // 上一段转场还没走完就又被叫醒：先落到它自己的终态（`settingsOpen`
         // 此刻还是**旧的**，用它判断该落在「开」还是「关」）。
         if (settingsCorner != null) finishSettingsCorner(!settingsOpen, false);
@@ -42328,9 +42356,9 @@ public class MainActivity extends Activity {
         // holds them), and clearing on entry would erase the evidence for that
         // one before it happened.
         CrashTrail.markNow(this, "app:onDestroy");
-        if (shelfExpandAnim != null) {
-            final android.animation.ValueAnimator a = shelfExpandAnim;
-            shelfExpandAnim = null;
+        if (shelfHeightAnim != null) {
+            final android.animation.ValueAnimator a = shelfHeightAnim;
+            shelfHeightAnim = null;
             a.cancel();
         }
         stopPrefetch();
