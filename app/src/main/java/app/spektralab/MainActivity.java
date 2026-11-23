@@ -1174,12 +1174,18 @@ public class MainActivity extends Activity {
     private static final int MS_SHELF = 320;
     /** 收起态：一条横条的高度（卡片 94 + 上下 padding）。 */
     private static final int SHELF_BAR_DP = 111;
-    /** 网格里一行的高度：96 dp 的卡 + 10 dp 的行距。 */
-    private static final int SHELF_ROW_DP = 106;
+    /** 收起态那张卡的宽与高：86 x 94 dp（内容 67 图的 + 27 名字）。 */
+    private static final float CARD_W_DP = 86f;
+    private static final float CARD_H_DP = 94f;
+    /** 卡内两条带的比例，和上面那张卡完全同源。 */
+    private static final float CARD_IMG_DP = 67f;
+    private static final float CARD_NAME_DP = 27f;
+    /** 网格里一行之间的距离。 */
+    private static final int SHELF_ROW_GAP_DP = 10;
     /** 交叉淡入占整段的比例：0.42 × 320 ms ≈ 134 ms。 */
     private static final float SHELF_CROSS_SHARE = 0.42f;
-    /** 网格一列卡片的自然宽度 —— 和竖向横条上那张一样宽。 */
-    private static final int SHEET_CARD_DP = 84;
+    /** 网格一列卡片的目标宽度 —— 竖屏三列时落在 100 dp 上下。 */
+    private static final int SHEET_CARD_DP = 104;
 
     /** 标题栏那颗箭头：位置固定，只转 180°。 */
     private ChevronToggle filmHeadOpen;
@@ -1191,8 +1197,20 @@ public class MainActivity extends Activity {
     private android.animation.ValueAnimator shelfHeightAnim;
     /** 照片栏收到 82 % 时要跑的那件事（两段式的第二段）。 */
     private Runnable shelfFoldChain;
-    /** 3..5，由宽度决定：网格一行放几张卡。 */
-    private int sheetCols = 4;
+    /** 胶片栏收到 82 % 时要跑的那件事（收起时的逆向第二段）。 */
+    private Runnable shelfHeightChain;
+    /**
+     * **照片栏是不是「我替你收的」。**
+     *
+     * <p>点 ^ 时如果照片栏开着，它必须先让路 —— 但那是用户自己的状态，收起
+     * 胶片栏时要还回去。它为 true 就说明欠着一次展开，为 false 就说明照片栏
+     * 是用户自己收的（或者本来就没有），不许擅自弹回来。
+     */
+    private boolean autoCollapsedPhotoBar;
+    /** 3..8，由宽度决定：竖屏手机三列，平板按 104 dp 一列往上加。 */
+    private int sheetCols = 3;
+    /** 这一趟重建里，网格中一张卡的宽与高（像素，已经按比例算好）。 */
+    private int shelfCellW, shelfCellH;
     /** 卡片现在是不是那面网格。没换过形态就不要走一遍"收回"。 */
     private boolean shelfShapeIsGrid;
     /** 向上轻扫展开网格的起点。 */
@@ -16228,9 +16246,14 @@ public class MainActivity extends Activity {
     private void setShelfCollapsed(boolean collapsed) {
         // 没有照片就没有可收的东西：收起以后屏上只剩一个把手，点开也没有内容。
         if (collapsed && frames.isEmpty()) return;
-        // **胶片栏开着的时候展开照片栏 = 让胶片栏先让路。** 两头同时往上挤会把
-        // 画布夹死；这两个动作一个缩一个长，同步走反而正好。
-        if (!collapsed && shelfExpanded) setShelfExpanded(false);
+        if (!collapsed) {
+            // **用户自己把照片栏放回来了**，那"我替你收的"就作废了 —— 否则
+            // 下次收起胶片栏会再弹一次，把用户刚做的动作翻回去。
+            autoCollapsedPhotoBar = false;
+            // 胶片栏开着时展开照片栏 = 让胶片栏先让路。两头同时往上挤会把
+            // 画布夹死；这两个动作一个缩一个长，同步走反而正好。
+            if (shelfExpanded) setShelfExpanded(false);
+        }
         final float target = collapsed ? 1f : 0f;
         if (shelfCollapsed == collapsed && Math.abs(shelfFoldTarget - target) < 0.001f
                 && shelfFoldAnim != null && shelfFoldAnim.isRunning()) return;
@@ -16908,12 +16931,18 @@ public class MainActivity extends Activity {
     // **一帧只做两件事**：写 `filmShelfHost` 的高度，和交叉淡入的 alpha。
     // 卡片只在两端各重建一次，动画里一张都不动。
 
+    /** 网格里一行的高度 = 卡片高 + 行距（卡片高随宽度走，见 `measureShelfCell`）。 */
+    private int shelfRowHeightPx() {
+        return shelfCellH + dp(SHELF_ROW_GAP_DP);
+    }
+
     /**
-     * 展开态的高度：三行卡片，且照片区至少还剩屏高的三分之一。
+     * 展开态的高度：**三行**，但照片区至少还剩三成半的屏高。
      *
      * <p>除了这一个容器，panel 里其余的家具都钉住不动：标题 46、分类 38、
-     * 相纸 35，加下面的页签 58。1280x2772（394x853 dp）实测：三行 324 dp，
-     * 照片还剩 312 dp = 36.6 % 屏高。
+     * 相纸 35，加下面的页签 58。393 dp 宽、853 dp 高的屏上三行要 380 dp，
+     * 而「照片留 35 %」只给到 337 —— 于是停在 337 dp，正好露出 2.8 行，
+     * 那个半行就是「下面还有」的暗示。
      */
     private int shelfOpenHeightPx() {
         final int screenH = getResources().getDisplayMetrics().heightPixels;
@@ -16921,22 +16950,49 @@ public class MainActivity extends Activity {
                 ? editorRoot.getHeight()
                 : Math.max(dp(400), screenH - dp(40));
         final int fixed = dp(46 + 38 + 35 + 58);
-        final int room = appH - fixed - Math.round(screenH * 0.33f);
-        return Math.max(dp(2 * SHELF_ROW_DP), Math.min(dp(3 * SHELF_ROW_DP + 6), room));
+        final int rowH = shelfRowHeightPx();
+        final int want = dp(4 + 16) + 3 * rowH;
+        final int room = appH - fixed - Math.round(screenH * 0.35f);
+        return Math.max(2 * rowH, Math.min(want, room));
     }
 
     /**
-     * 一列 84 dp，**每张卡右边还有 9 dp 的空** —— 这两笔都要算进去，否则五列
-     * 会把卡片压到 67 dp，名字就只剩一行半。
+     * **可用宽度要减两笔 16 dp，不是一笔。**
      *
-     * <p>实测：320 dp 三列（87 dp 一张）、360 dp 三列（100）、393 dp 四列（81）、
-     * 412 dp 四列（86）、430 dp 四列（90）。
+     * <p>`panelHolder` 左右各 16，`filmCardStrip` 自己又左右各 16 —— 只减一笔
+     * 会让一列被高估 10 % 左右。上一版就是这样：393 dp 的屏算出四列，卡片
+     * 实际只有 73 dp 宽，而高度还是写死的 96 dp，于是每一张都是细长条。
+     *
+     * <p>竖屏手机三列（393 dp → 329 dp 可用 → 一张 100.7 dp），平板按 104 dp
+     * 一列往上加：600 dp 五列、768 dp 六列。
      */
     private int sheetColsFor(int widthPx) {
-        final int usable = Math.max(dp(200), widthPx - dp(32));
+        final int usable = Math.max(dp(200), widthPx - dp(64));
         final int gap = dp(9);
-        final int cols = Math.round((usable - gap) / (float) (dp(SHEET_CARD_DP) + gap));
-        return Math.max(3, Math.min(5, cols));
+        final int cols = Math.round((usable + gap) / (float) (dp(SHEET_CARD_DP) + gap));
+        return Math.max(3, Math.min(8, cols));
+    }
+
+    /** 网格内容区的宽度：容器宽减掉 `filmCardStrip` 自己的左右各 16 dp。 */
+    private int gridRowWidthPx() {
+        final int hostW = (filmShelfHost != null && filmShelfHost.getWidth() > 0)
+                ? filmShelfHost.getWidth()
+                : getResources().getDisplayMetrics().widthPixels - dp(32);
+        return Math.max(dp(160), hostW - dp(32));
+    }
+
+    /**
+     * **这一趟里一张网格卡的宽与高。**
+     *
+     * <p>宽度是「行宽减掉每一列的 9 dp 间隔再平分」；高度**只由宽度决定**，
+     * 用的是横条上那张卡本来的 86 : 94。所以 100.7 dp 宽的一列是 110 dp 高，
+     * 里面 67 : 27 的两条带跟着一起放大 —— 展开前后是同一张卡，只是变大了。
+     */
+    private void measureShelfCell() {
+        final int cols = Math.max(1, filmCols);
+        final int usable = gridRowWidthPx();
+        shelfCellW = Math.max(1, (usable - dp(9) * cols) / cols);
+        shelfCellH = Math.max(1, Math.round(shelfCellW * CARD_H_DP / CARD_W_DP));
     }
 
     /**
@@ -16953,6 +17009,8 @@ public class MainActivity extends Activity {
         refreshShelfChevrons();
         if (on) {
             if (!shelfCollapsed && !frames.isEmpty() && shelfFold < 0.18f) {
+                // 是我替用户把它收起来的 —— 记下来，收起胶片栏时要还回去。
+                autoCollapsedPhotoBar = true;
                 shelfFoldChain = this::openShelfNow;
                 setShelfCollapsed(true);
                 // `setShelfCollapsed` 在没有照片时早退、不会起动画：兜底。
@@ -16962,6 +17020,8 @@ public class MainActivity extends Activity {
                     r.run();
                 }
             } else {
+                // 照片栏本来就没开（或者没有照片）：不欠任何东西。
+                autoCollapsedPhotoBar = false;
                 openShelfNow();
             }
         } else {
@@ -16985,6 +17045,11 @@ public class MainActivity extends Activity {
                 ? editorRoot.getWidth()
                 : getResources().getDisplayMetrics().widthPixels;
         sheetCols = sheetColsFor(appW);
+        // **先量格子再量高度**：`shelfOpenHeightPx` 读的是 `shelfCellH`，而它
+        // 平时只在 `rebuildFilmCards` 里算 —— 第一次展开时还是 0，高度会掉到
+        // 两行的下限。
+        filmCols = sheetCols;
+        measureShelfCell();
         final int opened = shelfOpenHeightPx();
         final int from = filmShelfHost == null || filmShelfHost.getHeight() <= 0
                 ? dp(SHELF_BAR_DP) : filmShelfHost.getHeight();
@@ -17002,12 +17067,29 @@ public class MainActivity extends Activity {
             if (filmShelfHost != null && filmShelfHost.getHeight() > dp(SHELF_BAR_DP) + 1) {
                 animateShelfHeight(filmShelfHost.getHeight(), dp(SHELF_BAR_DP));
             }
+            // 照片栏刚收到一半就被点回来：直接反向，不留一张半开的条子。
+            if (autoCollapsedPhotoBar) {
+                autoCollapsedPhotoBar = false;
+                if (!frames.isEmpty() && shelfCollapsed) setShelfCollapsed(false);
+            }
             return;
         }
         final int from = filmShelfHost == null || filmShelfHost.getHeight() <= 0
                 ? shelfOpenHeightPx() : filmShelfHost.getHeight();
         swapShelfShape(false);
-        markFile("shelf collapse from=" + from + " to=" + dp(SHELF_BAR_DP));
+        markFile("shelf collapse from=" + from + " to=" + dp(SHELF_BAR_DP)
+                + " restoreBar=" + autoCollapsedPhotoBar);
+        // **逆向的第二段**：收到 82 % 时把「我替你收起来的那条照片栏」放回去。
+        // 标记为 false 就什么都不做 —— 那条是用户自己收的。
+        if (autoCollapsedPhotoBar && !frames.isEmpty() && shelfCollapsed) {
+            shelfHeightChain = () -> {
+                if (!autoCollapsedPhotoBar) return;
+                autoCollapsedPhotoBar = false;
+                if (!landscapeMode && shelfCollapsed) setShelfCollapsed(false);
+            };
+        } else {
+            autoCollapsedPhotoBar = false;
+        }
         animateShelfHeight(from, dp(SHELF_BAR_DP));
     }
 
@@ -17120,6 +17202,12 @@ public class MainActivity extends Activity {
             final float e = (Float) an.getAnimatedValue();
             setShelfHostHeight(from + Math.round((to - from) * e));
             applyShelfCross(Math.min(1f, f / SHELF_CROSS_SHARE));
+            // **对称的接缝**：收起时照片栏在这一刻弹回来，两段首尾相接。
+            if (shelfHeightChain != null && f >= 0.82f) {
+                final Runnable r = shelfHeightChain;
+                shelfHeightChain = null;
+                r.run();
+            }
         });
         a.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator x) {
@@ -17127,6 +17215,11 @@ public class MainActivity extends Activity {
                 shelfHeightAnim = null;
                 setShelfHostHeight(to);
                 settleShelfCross();
+                if (shelfHeightChain != null) {
+                    final Runnable r = shelfHeightChain;
+                    shelfHeightChain = null;
+                    r.run();
+                }
                 if (!shelfExpanded) scrollShelfToSelected();
             }
         });
@@ -17183,6 +17276,7 @@ public class MainActivity extends Activity {
         final boolean was = shelfExpanded;
         shelfExpanded = false;
         shelfFoldChain = null;
+        shelfHeightChain = null;
         final android.animation.ValueAnimator a = shelfHeightAnim;
         shelfHeightAnim = null;
         if (a != null) a.cancel();
@@ -17197,6 +17291,19 @@ public class MainActivity extends Activity {
         else if (shelfCross != null) shelfCross.setVisibility(View.GONE);
         settleShelfCross();
         refreshShelfChevrons();
+    }
+
+    /**
+     * 立刻收起胶片栏，**并且把它替你收起来的照片栏还回去**。
+     *
+     * <p>切页签、开设置时用 —— 用户离开了这一页，那张照片栏不该被留在收起
+     * 状态等他回来再找。
+     */
+    private void collapseShelfAndRestore() {
+        final boolean restore = autoCollapsedPhotoBar;
+        autoCollapsedPhotoBar = false;
+        collapseShelfInstantly(true);
+        if (restore && !frames.isEmpty() && shelfCollapsed) setShelfCollapsed(false);
     }
 
     private void refreshShelfChevrons() {
@@ -18135,6 +18242,9 @@ public class MainActivity extends Activity {
 
     private void rebuildFilmCards() {
         if (filmCardStrip == null) return;
+        // 这一趟每一格的宽高都按当前列数算好，`addFilmCard` / `addShelfCard`
+        // 都读它 —— 卡片尺寸只有一个来源。
+        measureShelfCell();
         final int keepScroll = filmScroll == null ? 0 : filmScroll.getScrollX();
         filmCardStrip.removeAllViews();
         filmCards.clear();
@@ -18360,12 +18470,20 @@ public class MainActivity extends Activity {
         // **A grid card is a bigger card.** Two columns of the right-hand
         // column are ~140 dp wide; 96 + 34 keeps the picture area's proportion
         // and gives the name two readable lines.
-        // **Two columns is the landscape rail; three and up is the sheet.** A
-        // rail card is ~140 dp wide and keeps 96 + 34; a sheet card is 84 dp and
-        // keeps the shelf's own 67 + 27, which is the proportion the cards were
-        // drawn at -- so the grid is the strip, only wrapped.
-        final int cardImgH = dp(filmCols == 2 ? 96 : 67);
-        final int cardNameH = dp(filmCols == 2 ? 34 : 27);
+        // **两张形状，一个比例。** 横屏右栏的卡是另一个东西（宽 140），保持
+        // 96 + 34；竖屏的横条和网格是同一张卡，尺寸全部由 `shelfCellW/H` 来，
+        // 里面 67 : 27 的两条带按比例分 —— 只改宽度不改高度就是「细长条」。
+        final boolean rail = filmCols == 2;
+        final int cardImgH;
+        final int cardNameH;
+        if (rail) {
+            cardImgH = dp(96);
+            cardNameH = dp(34);
+        } else {
+            final int innerH = Math.max(2, shelfCellH - dp(2));
+            cardImgH = Math.max(1, Math.round(innerH * CARD_IMG_DP / (CARD_IMG_DP + CARD_NAME_DP)));
+            cardNameH = Math.max(1, innerH - cardImgH);
+        }
         card.addView(imageBox, new LinearLayout.LayoutParams(-1, cardImgH));
 
         TextView name = label(text, 7.5f, active ? UI_BLUE : (available ? UI_INK : UI_MUTED), tfHan);
@@ -18374,8 +18492,10 @@ public class MainActivity extends Activity {
         name.setBackgroundColor(UI_PAPER);
         name.setPadding(dp(6), dp(4), dp(5), dp(2));
         // 横屏的卡片高，名字在栏里居中才不会顶出一条空带。
-        name.setGravity(filmCols == 2 ? android.view.Gravity.CENTER_VERTICAL
+        name.setGravity(rail ? android.view.Gravity.CENTER_VERTICAL
                 : android.view.Gravity.TOP);
+        // 名字行只有 27 条的比例那么高，上下内边距要跟着收，否则两行字贴不到底。
+        name.setPadding(dp(5), dp(3), dp(4), dp(1));
         card.addView(name, new LinearLayout.LayoutParams(-1, cardNameH));
 
         card.setClickable(true);
@@ -18401,7 +18521,7 @@ public class MainActivity extends Activity {
     private void addShelfCard(View card) {
         if (filmCols <= 1) {
             final LinearLayout.LayoutParams lp =
-                    new LinearLayout.LayoutParams(dp(86), dp(94));
+                    new LinearLayout.LayoutParams(shelfCellW, shelfCellH);
             lp.rightMargin = dp(9);
             filmCardStrip.addView(card, lp);
             return;
@@ -18412,9 +18532,12 @@ public class MainActivity extends Activity {
             filmGridRow.setGravity(android.view.Gravity.TOP);
             filmCardStrip.addView(filmGridRow, new LinearLayout.LayoutParams(-1, -2));
         }
-        final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+        // 网格里的卡是**定宽**的：宽度自己算，高度按同一比例跟出来。用
+        // weight 分配会让第一次 measure 拿不到最终宽度，比例就没法锁。
+        final LinearLayout.LayoutParams lp =
+                new LinearLayout.LayoutParams(shelfCellW, shelfCellH);
         lp.rightMargin = dp(9);
-        lp.bottomMargin = dp(10);
+        lp.bottomMargin = dp(SHELF_ROW_GAP_DP);
         filmGridRow.addView(card, lp);
     }
 
@@ -29380,7 +29503,8 @@ public class MainActivity extends Activity {
         if (active < 0 || active >= panels.length) return;
         // **胶片栏还开着的时候切到别的页，它先回去。** 否则切回来时
         // `enterPanel` 会按 230 dp 的 cap 重排这一页，刚拉起来的那一截就没了。
-        if (shelfExpanded && active != 0) collapseShelfInstantly(true);
+        // 而且它替你收起来的照片栏要在这里还回去 —— 切页签和点 v 是同一件事。
+        if (shelfExpanded && active != 0) collapseShelfAndRestore();
         activeTabIndex = active;
         // **The print page is rebuilt on entry, not just revealed.** Its rows
         // are created with `printLatitude` baked in (a gated row is born
@@ -31259,7 +31383,7 @@ public class MainActivity extends Activity {
         if (uiRoot == null) return;
         // 设置是整页的，而且它和网格住在同一个 FrameLayout 里、后加的在上：
         // 一张还开着的网格会画在设置页上面。
-        if (shelfExpanded) collapseShelfInstantly(true);
+        if (shelfExpanded) collapseShelfAndRestore();
         // 上一段转场还没走完就又被叫醒：先落到它自己的终态（`settingsOpen`
         // 此刻还是**旧的**，用它判断该落在「开」还是「关」）。
         if (settingsCorner != null) finishSettingsCorner(!settingsOpen, false);
@@ -42356,6 +42480,8 @@ public class MainActivity extends Activity {
         // holds them), and clearing on entry would erase the evidence for that
         // one before it happened.
         CrashTrail.markNow(this, "app:onDestroy");
+        shelfFoldChain = null;
+        shelfHeightChain = null;
         if (shelfHeightAnim != null) {
             final android.animation.ValueAnimator a = shelfHeightAnim;
             shelfHeightAnim = null;
