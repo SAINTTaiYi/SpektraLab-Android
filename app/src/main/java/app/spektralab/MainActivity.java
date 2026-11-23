@@ -2099,8 +2099,8 @@ public class MainActivity extends Activity {
             paint.setTypeface(tfBody == null ? android.graphics.Typeface.DEFAULT : tfBody);
             paint.setFontFeatureSettings("tnum");
             paint.setTextAlign(android.graphics.Paint.Align.CENTER);
-            paint.setTextSize(9.5f * d);
-            final float baseline = h - 3f * d;
+            paint.setTextSize(8.5f * d);
+            final float baseline = h - 2f * d;
             float lastRight = -1e9f;
             for (int i = first; i <= last; i += kMajor) {
                 final float x = cx + (i - pos) * pitch;
@@ -2156,8 +2156,8 @@ public class MainActivity extends Activity {
             paint.setTypeface(tfBody == null ? android.graphics.Typeface.DEFAULT : tfBody);
             paint.setFontFeatureSettings("tnum");
             paint.setTextAlign(android.graphics.Paint.Align.CENTER);
-            paint.setTextSize(9.5f * d);
-            final float baseline = h - 3.5f * d;
+            paint.setTextSize(6.5f * d);
+            final float baseline = h - 3f * d;
             float lastRight = -1e9f;
             for (int i = 0; i <= segs; ++i) {
                 final float x = x0 + (x1 - x0) * i / segs;
@@ -5364,8 +5364,7 @@ public class MainActivity extends Activity {
         // to see.
         ring.setStroke(dp(1), UI_FAINT);
         cell.setBackground(ring);
-        final TextView mark = label("!", 9f, UI_MUTED, tfBody);
-        weight(mark, 600);
+        final TextView mark = label("!", 7.5f, UI_MUTED, tfBody);
         mark.setGravity(android.view.Gravity.CENTER);
         mark.setIncludeFontPadding(false);
         cell.addView(mark, new android.widget.FrameLayout.LayoutParams(-1, -1));
@@ -5758,7 +5757,7 @@ public class MainActivity extends Activity {
      * pushes the value off the row.
      */
     private TextView rowName(String title) {
-        final TextView n = label(title, 13, UI_INK, tfHan);
+        final TextView n = label(title, 9, UI_INK, tfHan);
         weight(n, 500);
         return n;
     }
@@ -5772,7 +5771,7 @@ public class MainActivity extends Activity {
         // **14.5 sp, 600.** The readout is the one number on a row and it was
         // 9 sp of Regular -- the same size as the name beside it, which is why
         // a panel of thirteen rows read as thirteen equal things.
-        final TextView t = label("", 13f, UI_MUTED, tfBody);
+        final TextView t = label("", 9, UI_MUTED, tfBody);
         t.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
         t.setSingleLine(true);
         t.setFontFeatureSettings("tnum");
@@ -15324,7 +15323,7 @@ public class MainActivity extends Activity {
         foot.setPadding(dp(16), 0, dp(16), 0);
         foot.setClickable(false);
 
-        fileLabel = label("未选择照片", 8.5f, uiOnCanvas(), tfHan);
+        fileLabel = label("未选择照片", 7, uiOnCanvas(), tfHan);
         canvasShadow(fileLabel);
         fileLabel.setAlpha(0.76f);
         fileLabel.setSingleLine(true);
@@ -15332,7 +15331,7 @@ public class MainActivity extends Activity {
         fileLabel.setShadowLayer(dp(2), 0, dp(1), 0x99000000);
         foot.addView(fileLabel, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        statusText = label("等待导入", 8.5f, uiOnCanvas(), tfHan);
+        statusText = label("等待导入", 7, uiOnCanvas(), tfHan);
         canvasShadow(statusText);
         statusText.setSingleLine(true);
         statusText.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -16968,7 +16967,7 @@ public class MainActivity extends Activity {
         // **A panel's own name, one tier above its rows.** At 8.5 sp it was the
         // same size as the row names under it and one weight lighter than the
         // numbers beside them, so the page had no top.
-        TextView titleView = mixedLabel(title, 12f, UI_INK);
+        TextView titleView = mixedLabel(title, 8.5f, UI_INK);
         weight(titleView, 500);
         titleView.setLetterSpacing(0.06f);
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -20609,7 +20608,7 @@ public class MainActivity extends Activity {
         // **The name stops at its own width and a spacer takes the rest**, so
         // the mark sits after the name instead of at the far end of the row.
         if (shortHint(hint)) {
-            final TextView note = label(Lang.t(hint), 11, UI_FAINT, tfHan);
+            final TextView note = label(Lang.t(hint), 9, UI_FAINT, tfHan);
             note.setPadding(dp(8), 0, 0, dp(1));
             line.addView(note, new LinearLayout.LayoutParams(-2, -2));
         } else if (hint != null && !hint.isEmpty()) {
@@ -20619,8 +20618,8 @@ public class MainActivity extends Activity {
         final TextView value = numberReadout();
         // Tap the number to type one, as Lightroom does.
         value.setOnClickListener(v -> editNumber(title, lo, hi, get.get(), set));
-        line.addView(value, new LinearLayout.LayoutParams(dp(76), -2));
-        box.addView(line, new LinearLayout.LayoutParams(-1, dp(22)));
+        line.addView(value, new LinearLayout.LayoutParams(dp(60), -2));
+        box.addView(line, new LinearLayout.LayoutParams(-1, dp(20)));
 
         final DialBar bar = new DialBar(this);
         bar.setMax(1000);
@@ -22427,9 +22426,9 @@ public class MainActivity extends Activity {
         // **The eyebrow, then the value.** 8 sp of L2 over 9 sp of L1 was one
         // weight of grey on another; 11.5 / 500 in L3 above 13.5 / 600 in L1 is
         // two tiers the eye can sort without reading.
-        final TextView eyebrow = label(title, 10.5f, UI_FAINT, tfHan);
+        final TextView eyebrow = label(title, 8f, UI_FAINT, tfHan);
         cell.addView(eyebrow, new LinearLayout.LayoutParams(-1, -2));
-        final TextView tv = label(value, 12.5f, UI_INK, tfHan);
+        final TextView tv = label(value, 9f, UI_INK, tfHan);
         weight(tv, 500);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -22452,12 +22451,12 @@ public class MainActivity extends Activity {
         cell.setGravity(android.view.Gravity.CENTER_VERTICAL);
         cell.setPadding(dp(9), dp(4), dp(6), dp(4));
         cell.setBackground(cellBorder(isOn.getAsBoolean()));
-        final TextView eyebrow = label(title, 10.5f, UI_FAINT, tfHan);
+        final TextView eyebrow = label(title, 8f, UI_FAINT, tfHan);
         cell.addView(eyebrow, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout line = new LinearLayout(this);
         line.setOrientation(LinearLayout.HORIZONTAL);
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView tv = label(valueText, 12.5f, UI_INK, tfHan);
+        TextView tv = label(valueText, 9f, UI_INK, tfHan);
         weight(tv, 500);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -26020,7 +26019,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < names.length; ++i) {
             final int index = i;
             android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            TextView name = label(names[i], 13f, UI_MUTED, tfHan);
+            TextView name = label(names[i], 12f, UI_MUTED, tfHan);
             name.setGravity(android.view.Gravity.CENTER);
             cell.addView(name, new android.widget.FrameLayout.LayoutParams(-1, -1));
             cell.setOnClickListener(v -> onTabClicked(index));
@@ -26172,7 +26171,7 @@ public class MainActivity extends Activity {
             else if (kind == 3) taps[i] = () -> showPrintGroup(k);
             else taps[i] = () -> { closeCurveTool(); showViewPage(k); };
         }
-        subRow = new ChipRow(names, 11.5f, dp(SUB_BAR_DP), UI_BLUE, UI_MUTED, taps);
+        subRow = new ChipRow(names, 9f, dp(SUB_BAR_DP), UI_BLUE, UI_MUTED, taps);
         subRowHost.addView(subRow, new android.widget.FrameLayout.LayoutParams(
                 -1, dp(SUB_BAR_DP)));
         syncSubRowActive();
@@ -29541,9 +29540,8 @@ public class MainActivity extends Activity {
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(46));
         row.setPadding(0, dp(4), dp(2), dp(4));
-        row.addView(rowName(labelText), new LinearLayout.LayoutParams(-2, -2));
-        final TextView tv = label(value, 13f, UI_MUTED, tfHan);
-        weight(tv, 500);
+        row.addView(label(labelText, 9.5f, UI_INK, tfHan), new LinearLayout.LayoutParams(-2, -2));
+        final TextView tv = label(value, 9.5f, UI_MUTED, tfHan);
         tv.setGravity(android.view.Gravity.END);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -29565,7 +29563,7 @@ public class MainActivity extends Activity {
         // describes.
         row.setMinimumHeight(dp(48));
         row.setPadding(0, dp(6), 0, dp(6));
-        row.addView(rowName(labelText), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(label(labelText, 8, UI_INK, tfHan), new LinearLayout.LayoutParams(0, -2, 1f));
         mark.setLit(isOn.getAsBoolean());
         row.addView(mark, new LinearLayout.LayoutParams(dp(18), dp(18)));
         row.setOnClickListener(v -> {
@@ -29635,7 +29633,7 @@ public class MainActivity extends Activity {
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.addView(rowName(name), new LinearLayout.LayoutParams(-2, -2));
         if (shortHint(hint)) {
-            final TextView note = label(Lang.t(hint), 11, UI_FAINT, tfHan);
+            final TextView note = label(Lang.t(hint), 9, UI_FAINT, tfHan);
             note.setPadding(dp(8), 0, 0, dp(1));
             head.addView(note, new LinearLayout.LayoutParams(-2, -2));
         } else if (hint != null && !hint.isEmpty()) {
@@ -32275,7 +32273,7 @@ public class MainActivity extends Activity {
         // L2 with a tenth of an em of tracking read as another list row. At 12
         // sp / 600 / L2 with a full sp of tracking it is a heading you can jump
         // to while scrolling.
-        final TextView t = mixedLabel(title, 11f, UI_MUTED);
+        final TextView t = mixedLabel(title, 8.5f, UI_MUTED);
         weight(t, 500);
         t.setLetterSpacing(0.09f);      // ≈ 1.0 sp at 12 sp
         t.setPadding(dp(16), dp(26), dp(16), dp(8));
@@ -32319,14 +32317,14 @@ public class MainActivity extends Activity {
 
         final LinearLayout text = new LinearLayout(this);
         text.setOrientation(LinearLayout.VERTICAL);
-        final TextView head = mixedLabel(title, 12.5f, UI_INK);
+        final TextView head = mixedLabel(title, 11f, UI_INK);
         weight(head, 500);
         text.addView(head);
         if (sub != null && !sub.isEmpty()) {
             // **12.5 sp, 1.45 line height, L3, 4 dp under the title.** The note
             // under a setting is the sentence that explains it, and it was 8.5
             // sp of a 45 % grey -- the hardest thing in the app to read.
-            final TextView s = mixedLabel(sub, 12.5f, UI_FAINT);
+            final TextView s = mixedLabel(sub, 8.5f, UI_FAINT);
             s.setPadding(0, dp(4), 0, 0);
             s.setLineSpacing(0f, 1.45f);
             text.addView(s);
@@ -32335,7 +32333,7 @@ public class MainActivity extends Activity {
 
         if (value != null && !value.isEmpty()) {
             // L2 and 500: the state of a setting is a value, not a hint.
-            final TextView v = mixedLabel(value, 12f, UI_MUTED);
+            final TextView v = mixedLabel(value, 9f, UI_MUTED);
             weight(v, 500);
             v.setGravity(android.view.Gravity.END);
             v.setPadding(dp(12), 0, 0, 0);
@@ -37927,7 +37925,7 @@ public class MainActivity extends Activity {
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
         line.addView(rowName(title), new LinearLayout.LayoutParams(-2, -2));
         if (shortHint(hint)) {
-            final TextView note = label(Lang.t(hint), 11, UI_FAINT, tfHan);
+            final TextView note = label(Lang.t(hint), 9, UI_FAINT, tfHan);
             note.setPadding(dp(8), 0, 0, dp(1));
             line.addView(note, new LinearLayout.LayoutParams(-2, -2));
         } else if (hint != null && !hint.isEmpty()) {
@@ -37935,8 +37933,8 @@ public class MainActivity extends Activity {
         }
         line.addView(new View(this), new LinearLayout.LayoutParams(0, -2, 1f));
         final TextView value = numberReadout();
-        line.addView(value, new LinearLayout.LayoutParams(dp(76), -2));
-        parent.addView(line, new LinearLayout.LayoutParams(-1, dp(22)));
+        line.addView(value, new LinearLayout.LayoutParams(dp(60), -2));
+        parent.addView(line, new LinearLayout.LayoutParams(-1, dp(20)));
 
         final DialBar bar = new DialBar(this);
         bar.setMax(1000);
