@@ -125,6 +125,8 @@ public class MainActivity extends Activity {
     private android.widget.TextView dialValue;
     /** The file the second engine reads. It takes a path, not a descriptor. */
     private String fotuSourcePath;
+    /** The photograph {@link #fotuSourcePath} was copied for. */
+    private String fotuSourcePathFor;
     /** The grant whose private copy came up short; see {@link #fotuSourceFile}. */
     private String fotuSourceDead;
     // The frame's own tone controls, as state: captureLook/applyLook move them
@@ -1158,6 +1160,44 @@ public class MainActivity extends Activity {
     private View filmPaperRow;
     /** 货架卡片的容器：竖屏装着那个横向滚动器，横屏直接装两列网格。 */
     private LinearLayout filmShelfHost;
+
+    // ------------------------------------------------------- 胶片货架：网格视图
+    //
+    // **一张横条装不下五十四支胶片。** 横条对拇指是对的，对「找一支片」是错的：
+    // 屏上永远是四张，其余五十张在一次滑动之后、在一个看不出顺序的顺序里。网格
+    // 是同一批卡片、同一套筛选、同一份缩略图缓存 —— 只有父亲和列数变了 —— 而它
+    // 从屏幕底部升起来，所以挑片的时候照片还在上面。
+    //
+    // **这里没有一帧在排版。** 面板是定高的 FrameLayout，只动 `translationY`；
+    // 网格在里面再走 14 dp 并淡入。一帧只写这两个属性。
+    private static final float SHEET_FRAC = 0.64f;
+    /** 320 ms：`MS_SHEET` 是别的面板的 360，这一张要更利索一点。 */
+    private static final int MS_GRID = 320;
+    /** 网格里一列卡片的目标宽度 —— 和竖向横条上那张卡一样宽。 */
+    private static final int SHEET_CARD_DP = 84;
+
+    private android.widget.FrameLayout filmSheet;
+    private android.widget.ScrollView filmSheetScroll;
+    private ChevronToggle filmSheetClose;
+    private ChevronToggle filmHeadOpen;
+    /** 标题所在那一行：分类条要回到它下面。 */
+    private LinearLayout filmHeadRow;
+    /** `brandScroll` 原来是局部变量；网格要借它，所以它有名字了。 */
+    private HorizontalScrollView brandScrollView;
+    private boolean shelfExpanded;
+    /** 0 = 横条的形状，1 = 网格。两个箭头都读它。 */
+    private float shelfExpand;
+    private android.animation.ValueAnimator shelfExpandAnim;
+    /** 3..5，由宽度决定：网格一行放几张卡。 */
+    private int sheetCols = 4;
+    /** 展开态的高度（px）。开的时候算一次 —— 动画里 `getHeight()` 还是 0。 */
+    private int sheetHeight;
+    /** 向上轻扫展开网格的起点。 */
+    private float shelfSwipeX, shelfSwipeY;
+    private boolean shelfSwipeArmed;
+    /** 在纸面上往下抹收起网格的起点。 */
+    private float sheetDownX, sheetDownY;
+    private boolean sheetDownArmed;
     private View editorRule;
     /** 两栏之间那根 1 px 的线，横屏才有。 */
     private boolean landscapeMode;
@@ -3981,17 +4021,15 @@ public class MainActivity extends Activity {
     private void animateHeightTo(final View v, int from, int to,
                                  final int endHeight, final Runnable then) {
         cancelHeight(v);
-        // **The one switch that turns motion off.** With it off a panel is
-        // simply the height it should be -- which is what 设置的动画可以选择
-        // 关闭 asks for. `cancelHeight` runs first: a surviving animator would
-        // keep writing `lp.height` behind this assignment.
-        if (!arrivalAnim()) {
-            final android.view.ViewGroup.LayoutParams lp = v.getLayoutParams();
-            lp.height = endHeight;
-            v.setLayoutParams(lp);
-            if (then != null) then.run();
-            return;
-        }
+        // **A panel always moves; it is not part of the motion switch.** The
+        // switch covers what is decoration (typed text, traced frames, dial
+        // ticks, paper strips, page transitions). A panel that jumped between
+        // two heights took the photograph with it in one frame, which reads as a
+        // glitch rather than as "motion off" -- and a cut also leaves
+        // `CappedScroll` measuring against the height it had when the page was
+        // built, which is how the 拉不到底 class of reports starts. `cancelHeight`
+        // still runs first: a surviving animator would keep writing `lp.height`
+        // behind this one.
         final android.animation.ValueAnimator a = android.animation.ValueAnimator.ofInt(from, to);
         a.setDuration(MS_HEIGHT);
         a.setInterpolator(EASE_OUT);
@@ -5005,7 +5043,14 @@ public class MainActivity extends Activity {
         arrivalAnimCache = on;
         getSharedPreferences("ui", MODE_PRIVATE).edit()
                 .putBoolean("arrival_anim", on).apply();
-        if (!on) { cancelFrames(); cancelType(); settleArrivals(); }
+        if (!on) {
+            cancelFrames(); cancelType(); settleArrivals();
+            // **A transition in flight has no one to finish it now.** Its
+            // callback would still run, but the switch that asked for it is
+            // off -- and until it does, the stage owns the window's touches.
+            // Landing it here is what makes "off" mean "nothing is moving".
+            if (settingsCorner != null) finishSettingsCorner(!settingsOpen, true);
+        }
     }
 
     /**
@@ -13984,6 +14029,10 @@ public class MainActivity extends Activity {
                 || canvasStage == null || editorSourceBar == null || panelHolder == null
                 || tabsRoot == null || subBar == null) return;
         final LinearLayout app = (LinearLayout) editorRoot;
+        // **转一下就落回收起态。** 网格是竖屏的形状（右栏本来就是两列），
+        // 而且这一列马上要被整棵拆开重装 —— 条子得先回到 `filmScroll` 的
+        // 名下，`applyFilmShelfMode` 才有东西可排。
+        if (shelfExpanded) forceCloseShelfSheet();
         final boolean land = isLandscapeNow();
         landscapeMode = land;
         try {
@@ -14112,6 +14161,10 @@ public class MainActivity extends Activity {
      */
     private void applyFilmShelfMode() {
         if (filmShelfHost == null || filmCardStrip == null || filmScroll == null) return;
+        // **网格是竖屏的形状，开着的时候条子归它。** 转屏会先走
+        // `forceCloseShelfSheet`，所以走到这里还是展开态只可能是别人乱调 ——
+        // 那时候从纸里把条子抢走，纸就只剩一个空滚动区了。
+        if (shelfExpanded) return;
         filmCols = landscapeMode ? 2 : 1;
         final android.view.ViewParent p = filmCardStrip.getParent();
         if (p instanceof android.view.ViewGroup) ((android.view.ViewGroup) p).removeView(filmCardStrip);
@@ -14138,6 +14191,8 @@ public class MainActivity extends Activity {
             filmShelfHost.setLayoutParams(sl);
         }
         rebuildFilmCards();
+        // 横屏没有网格可开：标题栏那颗箭头要收起来（竖屏再放出来）。
+        refreshShelfChevrons();
     }
 
     /** A Java-level crash never reaches `DebugSink`'s queue -- the process is
@@ -14921,7 +14976,17 @@ public class MainActivity extends Activity {
         // designed size and still hands back a 32 dp touch target.
         menuPill.setPadding(dp(4), dp(4), dp(4), dp(4));
         menuPill.setContentDescription("设置");
-        menuPill.setOnClickListener(v -> showSettings());
+        menuPill.setOnClickListener(v -> {
+            // One line, synchronously on disk: 「点不出设置」 needs to say which
+            // state it was in, and a screenshot cannot.
+            try {
+                markFile("settings tap open=" + settingsOpen
+                        + " stage=" + (settingsCorner != null)
+                        + " parent=" + (settingsScreen == null ? "none"
+                                : settingsScreen.getParent() != null));
+            } catch (Throwable ignored) { }
+            showSettings();
+        });
         // **按下就得有反应。** 转场再快也有两帧的延迟，手指要知道它被接住了。
         pressFeedback(menuPill);
         // **Left of the wordmark, not between it and the version.** The menu
@@ -16580,6 +16645,17 @@ public class MainActivity extends Activity {
             lastRenderedBitmap = null;
             // **The border described the picture that just went away.**
             clearBorderLook();
+            // **And so did the canvas.** The cleanup below only runs when the
+            // strip is empty; deleting the *current* frame while others remain
+            // left `compare.after` holding the deleted picture, so the canvas
+            // showed a photograph that no longer exists anywhere -- 「用 fotu 会
+            // 显示删除的图片」. Empty is the honest state: the strip is right
+            // there, and the next tap loads.
+            if (!frames.isEmpty()) {
+                if (compare != null) { compare.clear(); compare.resetView(); }
+                lastFotuPlain = null;
+                statusText.setText("已删除 · 从下面选一张继续");
+            }
         } else if (currentFrame > index) {
             currentFrame--;
         }
@@ -16639,6 +16715,12 @@ public class MainActivity extends Activity {
     private void reopenFrameForced(int index) {
         if (index < 0 || index >= frames.size()) return;
         final Frame frame = frames.get(index);
+        // **Tapping the chip is asking for another try.** `fotuSourceDead`
+        // remembers a copy that failed once so that 54 shelf cards do not each
+        // pay for it; the user pointing at this frame again is the one gesture
+        // that should clear it, or the answer is "restart the app" -- which is
+        // exactly what the report said.
+        fotuSourceDead = null;
         saveLookIntoFrames();
         currentFrame = index;
         reopenToOriginal = frame.original;
@@ -16791,6 +16873,472 @@ public class MainActivity extends Activity {
         return (float) Math.hypot(e.getX(0) - e.getX(1), e.getY(0) - e.getY(1));
     }
 
+
+    // ============================================================ 胶片货架：网格
+    //
+    // **一张横条装不下五十四支胶片。** 横条对拇指是对的，对「找一支片」是错的：
+    // 屏上永远是四张，其余五十张在一次滑动之后、在一个看不出顺序的顺序里。网格
+    // 是同一批卡片、同一套筛选、同一份缩略图缓存 —— 只有父亲和列数变了 —— 而它
+    // 从屏幕底部升起来，所以挑片的时候照片还在上面。
+    //
+    // **这里没有一帧在排版。** 面板是定高的 FrameLayout，只动 `translationY`；
+    // 网格在里面再走 14 dp 并淡入。一帧只写这两个属性。
+
+    /**
+     * **展开态的高度：编辑器可用高度的 64 %，且至少给照片留三成。**
+     *
+     * <p>用 `editorRoot.getHeight()` 而不是屏幕高度：`uiRoot` 有系统栏的
+     * padding，这一列真正能用的就是 app 那棵树。
+     *
+     * <p>1280x2772（394x853 dp，density 3.25）实测：app 813 dp、面板 **520 dp
+     * （64.0 %）**、照片可见 **293 dp（34.3 % 屏高）**、滚动区 435 dp、
+     * 4 列 × 81.5 dp 的卡片、一屏 **4.04 行**。这个数和「占屏 60–68 %、
+     * 顶上至少 30 % 照片」是同一组。
+     */
+    private int sheetHeightPx() {
+        final int room = (editorRoot != null && editorRoot.getHeight() > 0)
+                ? editorRoot.getHeight()
+                : Math.max(dp(400), getResources().getDisplayMetrics().heightPixels - dp(40));
+        final int h = Math.round(room * SHEET_FRAC);
+        final int ceiling = room - Math.round(room * 0.30f);
+        return Math.max(dp(220), Math.min(h, ceiling));
+    }
+
+    /**
+     * 一列 84 dp，**每张卡右边还有 9 dp 的空** —— 这两笔都要算进去，否则五列
+     * 会把卡片压到 67 dp，名字就只剩一行半。
+     *
+     * <p>实测：320 dp 三列（87 dp 一张）、360 dp 三列（100）、393 dp 四列（79）、
+     * 412 dp 四列（84）、430 dp 四列（88）。
+     */
+    private int sheetColsFor(int widthPx) {
+        final int usable = Math.max(dp(200), widthPx - dp(32));
+        final int gap = dp(9);
+        final int cols = Math.round((usable - gap) / (float) (dp(SHEET_CARD_DP) + gap));
+        return Math.max(3, Math.min(5, cols));
+    }
+
+    /**
+     * **建一次，之后只是被借走。**
+     *
+     * <p>展开时它装的是货架自己的 `filmCardStrip` 和分类条 —— 卡片、缩略图、
+     * 选中描边、点击回调全都是屏幕下方那一批对象，所以不存在「两份货架要保持
+     * 同步」这件事。建一次也意味着第一次展开付视图的钱，之后每次只是平移。
+     */
+    private void buildFilmSheet() {
+        if (filmSheet != null || uiRoot == null) return;
+        filmSheet = new android.widget.FrameLayout(this);
+        filmSheet.setBackgroundColor(UI_PAPER);
+        // **落在它身上的手势归它。** 一张能被画布看穿的纸，画布的双指缩放和
+        // 长按比较也会够到。
+        filmSheet.setClickable(true);
+        filmSheet.setFocusable(false);
+
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        filmSheet.addView(body, new android.widget.FrameLayout.LayoutParams(-1, -1));
+
+        final View edge = new View(this);
+        edge.setBackgroundColor(UI_LINE);
+        body.addView(edge, new LinearLayout.LayoutParams(-1, Math.max(1, dp(0.6f))));
+
+        final LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(16), 0, dp(16), 0);
+        final TextView title = mixedLabel("胶片与相纸", 8.5f, UI_INK);
+        title.setLetterSpacing(0.06f);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        filmSheetClose = new ChevronToggle();
+        filmSheetClose.setContentDescription("收起胶片网格");
+        filmSheetClose.setOnClickListener(v -> setShelfExpanded(false));
+        head.addView(filmSheetClose, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        body.addView(head, new LinearLayout.LayoutParams(-1, dp(46)));
+
+        // **分类条住在滚动区外面**，所以它天然吸顶：切分类只是重排网格，
+        // 条子一个像素都不会动。
+        filmSheetScroll = new android.widget.ScrollView(this);
+        filmSheetScroll.setVerticalScrollBarEnabled(false);
+        filmSheetScroll.setClipToPadding(false);
+        body.addView(filmSheetScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // **在纸上往下抹 = 收起**，和横条上的向上轻扫对称。它挂在纸上，
+        // 所以只有点到标题、顶边线这类没人消费的地方才算 —— 卡片和滚动区
+        // 照样先拿到自己的手势。
+        filmSheet.setOnTouchListener((v, ev) -> onSheetPullDown(ev));
+
+        filmSheet.setVisibility(View.GONE);
+        filmSheet.setTranslationY(dp(2000));
+        uiRoot.addView(filmSheet, new android.widget.FrameLayout.LayoutParams(
+                -1, dp(320), android.view.Gravity.BOTTOM));
+    }
+
+    /**
+     * 展开 / 收起。
+     *
+     * <p>横屏没有这个手势：右栏本来就是两列网格，一张盖在它上面的面板会把
+     * 它要列的东西全挡住。
+     */
+    private void setShelfExpanded(boolean on) {
+        if (shelfExpanded == on) return;
+        if (on && landscapeMode) return;
+        shelfExpanded = on;
+        if (on) {
+            buildFilmSheet();
+            if (filmSheet == null) { shelfExpanded = false; return; }
+            final int appW = (editorRoot != null && editorRoot.getWidth() > 0)
+                    ? editorRoot.getWidth()
+                    : getResources().getDisplayMetrics().widthPixels;
+            sheetCols = sheetColsFor(appW);
+            final int h = sheetHeightPx();
+            sheetHeight = h;
+            final android.view.ViewGroup.LayoutParams lp = filmSheet.getLayoutParams();
+            if (lp != null) {
+                lp.height = h;
+                filmSheet.setLayoutParams(lp);
+            }
+            filmSheet.setVisibility(View.VISIBLE);
+            // 高度在画第一帧之前就写好了，所以起点是精确的：面板不会先在
+            // 屏底下「露一头」再开始动。
+            filmSheet.setTranslationY(h);
+            filmSheet.setAlpha(1f);
+            borrowShelfViewsIntoSheet();
+            // **先把最贵的那一步做完再起动画。** 重建五十四张卡是这次转场里
+            // 唯一的重活；它在面板还在屏幕下面时发生，于是动画本身只剩下搬一帧。
+            filmSheet.post(() -> {
+                if (!shelfExpanded) return;
+                animateShelfExpand(1f);
+                scrollSheetToSelected();
+            });
+        } else {
+            animateShelfExpand(0f);
+        }
+        refreshShelfChevrons();
+    }
+
+    /**
+     * **卡片条和分类条换父亲，别的一概不动。**
+     *
+     * <p>这就是网格不是「第二份货架」的全部原因：选中描边、缩略图、置灰的卡、
+     * 点击回调，都是原来那一批。
+     */
+    private void borrowShelfViewsIntoSheet() {
+        if (filmCardStrip == null || brandScrollView == null || filmSheet == null) return;
+        final android.view.ViewParent cp = filmCardStrip.getParent();
+        if (cp instanceof android.view.ViewGroup) ((android.view.ViewGroup) cp).removeView(filmCardStrip);
+        final android.view.ViewParent bp = brandScrollView.getParent();
+        if (bp instanceof android.view.ViewGroup) ((android.view.ViewGroup) bp).removeView(brandScrollView);
+
+        final LinearLayout body = (LinearLayout) filmSheet.getChildAt(0);
+        body.removeView(brandScrollView);
+        body.addView(brandScrollView,
+                Math.max(0, body.indexOfChild(filmSheetScroll)),
+                new LinearLayout.LayoutParams(-1, dp(38)));
+
+        filmSheetScroll.removeAllViews();
+        filmCols = sheetCols;
+        filmGridRow = null;
+        filmCardStrip.setOrientation(LinearLayout.VERTICAL);
+        filmCardStrip.setGravity(android.view.Gravity.TOP);
+        filmCardStrip.setPadding(dp(16), dp(6), dp(16), dp(20));
+        filmCardStrip.setTranslationY(0f);
+        filmCardStrip.setAlpha(1f);
+        filmSheetScroll.addView(filmCardStrip,
+                new android.widget.FrameLayout.LayoutParams(-1, -2));
+        rebuildFilmCards();
+    }
+
+    /**
+     * **一个数、一个动画、可打断。** 半路再点只改目标，从当前所在的位置接着走，
+     * 时长按剩下的距离缩 —— 连点两下就原地掉头，既不跳也不停（和
+     * `beginShelfFold` 同一个形状）。
+     */
+    private void animateShelfExpand(final float target) {
+        final android.animation.ValueAnimator old = shelfExpandAnim;
+        shelfExpandAnim = null;
+        if (old != null) old.cancel();
+        final float from = shelfExpand;
+        if (Math.abs(target - from) < 0.002f) {
+            shelfExpand = target;
+            applyShelfExpand(target);
+            if (target <= 0f) settleShelfSheetClosed();
+            return;
+        }
+        final long ms = Math.max(120L, Math.round(MS_GRID * Math.abs(target - from)));
+        shelfExpandAnim = android.animation.ValueAnimator.ofFloat(from, target);
+        shelfExpandAnim.setDuration(ms);
+        // **主人的曲线，不过冲。** `cubic-bezier(0.22, 1, 0.36, 1)` 第一帧
+        // （16 ms）就走了 6 %，末端平着落地 —— 这个尺寸上会回弹的弹簧读起来
+        // 像面板装松了，而不是像快。
+        shelfExpandAnim.setInterpolator(
+                new android.view.animation.PathInterpolator(0.22f, 1f, 0.36f, 1f));
+        shelfExpandAnim.addUpdateListener(a -> {
+            shelfExpand = (Float) a.getAnimatedValue();
+            applyShelfExpand(shelfExpand);
+        });
+        shelfExpandAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                if (shelfExpandAnim != a) return;
+                shelfExpandAnim = null;
+                shelfExpand = target;
+                applyShelfExpand(target);
+                if (target <= 0f) settleShelfSheetClosed();
+            }
+        });
+        shelfExpandAnim.start();
+    }
+
+    /**
+     * **只有 transform 和 alpha。** 不写高度、不增删子视图、不 `requestLayout`
+     * —— 五十四张卡在网格里各自待着，滑上去的只是那张纸。
+     */
+    private void applyShelfExpand(float t) {
+        if (filmSheet == null) return;
+        final int h = sheetHeight > 0 ? sheetHeight
+                : (filmSheet.getHeight() > 0 ? filmSheet.getHeight() : dp(320));
+        filmSheet.setTranslationY(h * (1f - t));
+        // 网格比纸慢半拍，并在后半段淡进来：面板是一张纸先到，卡片落在纸上。
+        if (filmCardStrip != null) {
+            final float g = Math.max(0f, Math.min(1f, (t - 0.10f) / 0.90f));
+            filmCardStrip.setTranslationY(dp(14) * (1f - g));
+            filmCardStrip.setAlpha(g);
+        }
+        if (filmSheetClose != null) filmSheetClose.setTurn(t);
+        if (filmHeadOpen != null) filmHeadOpen.setTurn(t);
+    }
+
+    /** 面板已经落到屏底：把视图还回去，然后藏起来。 */
+    private void settleShelfSheetClosed() {
+        if (shelfExpanded) return;
+        if (filmSheet != null) {
+            filmSheet.setVisibility(View.GONE);
+            filmSheet.setTranslationY(dp(2000));
+        }
+        if (filmCardStrip != null) {
+            filmCardStrip.setTranslationY(0f);
+            filmCardStrip.setAlpha(1f);
+        }
+        if (filmShelfHost != null) filmShelfHost.setAlpha(1f);
+        returnBrandScroll();
+        // `applyFilmShelfMode` 把条子装回 `filmScroll`、按竖屏的列数重建，
+        // 并且会把选中的那张滚进来。
+        applyFilmShelfMode();
+        scrollShelfToSelected();
+        refreshShelfChevrons();
+    }
+
+    /**
+     * 不播动画地落回收起态 —— 视图树正在被重排（转屏）或者要被整页盖住
+     * （设置页）的时候用。它不重建卡片：调用方之后一定会走到
+     * `applyFilmShelfMode`，那里才是决定条子住在哪的地方。
+     */
+    private void forceCloseShelfSheet() {
+        shelfExpanded = false;
+        shelfExpand = 0f;
+        final android.animation.ValueAnimator a = shelfExpandAnim;
+        shelfExpandAnim = null;
+        if (a != null) a.cancel();
+        if (filmSheet != null) {
+            filmSheet.setVisibility(View.GONE);
+            filmSheet.setTranslationY(dp(2000));
+        }
+        if (filmCardStrip != null) {
+            filmCardStrip.setTranslationY(0f);
+            filmCardStrip.setAlpha(1f);
+            // 还在纸里就先摘下来，否则 `applyFilmShelfMode` 会把一个错父亲的
+            // 条子当成「已经装好了」。
+            final android.view.ViewParent p = filmCardStrip.getParent();
+            if (p instanceof android.view.ViewGroup && p != filmScroll) {
+                ((android.view.ViewGroup) p).removeView(filmCardStrip);
+            }
+        }
+        if (filmSheetScroll != null) filmSheetScroll.removeAllViews();
+        if (filmShelfHost != null) filmShelfHost.setAlpha(1f);
+        returnBrandScroll();
+        if (filmSheetClose != null) filmSheetClose.setTurn(0f);
+        if (filmHeadOpen != null) filmHeadOpen.setTurn(0f);
+    }
+
+    /** 分类条回到标题下面。它只离开过一次，所以这里只认「不在家」这一种情况。 */
+    private void returnBrandScroll() {
+        if (brandScrollView == null || filmHeadRow == null) return;
+        if (panels.length == 0 || !(panels[0] instanceof LinearLayout)) return;
+        final LinearLayout page = (LinearLayout) panels[0];
+        if (brandScrollView.getParent() == page) return;
+        final android.view.ViewParent p = brandScrollView.getParent();
+        if (p instanceof android.view.ViewGroup) ((android.view.ViewGroup) p).removeView(brandScrollView);
+        page.addView(brandScrollView,
+                Math.max(0, page.indexOfChild(filmHeadRow) + 1),
+                new LinearLayout.LayoutParams(-1, dp(38)));
+    }
+
+    private void refreshShelfChevrons() {
+        final float t = shelfExpanded ? 1f : 0f;
+        if (filmHeadOpen != null) {
+            // 横屏没有网格可开：右栏本来就是两列。
+            filmHeadOpen.setVisibility(landscapeMode
+                    ? android.view.View.GONE : android.view.View.VISIBLE);
+            filmHeadOpen.setTurn(t);
+        }
+        if (filmSheetClose != null) filmSheetClose.setTurn(t);
+    }
+
+    /** 现在载入的那支胶片是哪张卡（`updateFilmSelection` 用的同一套判断）。 */
+    private View selectedShelfCard() {
+        for (int i = 0; i < filmCards.size(); ++i) {
+            final View card = filmCards.get(i);
+            final Object tag = card.getTag();
+            final String id = tag == null ? "" : tag.toString();
+            final boolean active = "original".equals(id) ? showingOriginal
+                    : (filmStock != null && !showingOriginal && cardShowsStock(id, filmStock));
+            if (active) return card;
+        }
+        return null;
+    }
+
+    /** 展开时让网格停在当前这支胶片上，而不是从头开始找。 */
+    private void scrollSheetToSelected() {
+        if (filmSheetScroll == null) return;
+        final View sel = selectedShelfCard();
+        if (sel == null) return;
+        // 90 ms：展开的动画还在走，但布局已经落地 —— 于是网格滑上来的时候
+        // 已经停在当前这支胶片上，而不是从第一张开始让人自己找。
+        filmSheetScroll.postDelayed(() -> {
+            int y = 0;
+            View v = sel;
+            while (v != null && v != filmSheetScroll) {
+                y += v.getTop();
+                final android.view.ViewParent up = v.getParent();
+                v = up instanceof View ? (View) up : null;
+            }
+            filmSheetScroll.smoothScrollTo(0, Math.max(0, y - dp(8)));
+        }, 90);
+    }
+
+    /**
+     * **收起之后，横条重新说了算，所以选中的那张必须在屏上。** 居中，不是
+     * 「靠左 8 dp」—— 从网格里挑完回来，眼睛应该正好落在它上面。
+     */
+    private void scrollShelfToSelected() {
+        if (filmScroll == null || filmCols > 1) return;
+        final View sel = selectedShelfCard();
+        if (sel == null) return;
+        filmScroll.post(() -> {
+            final int vis = filmScroll.getWidth();
+            final int x = sel.getLeft() - Math.max(0, (vis - sel.getWidth()) / 2);
+            filmScroll.smoothScrollTo(Math.max(0, x), 0);
+        });
+    }
+
+    /**
+     * **向上轻扫就是展开网格。** 一条竖直位移超过 28 dp、且明显压过横向的手势
+     * 才算数 —— 横条本来就在横向滚动，1.8 倍的竖向优势是它和滑动之间的那条线。
+     * 手指抬起前不会再触发第二次。
+     *
+     * <p>真正的展开推迟到下一帧：`removeView` 一个正在派发这次触摸的 view 是
+     * 可以做的，但没必要在一帧里同时做两件事。
+     */
+    private boolean onShelfSwipe(android.view.MotionEvent ev) {
+        switch (ev.getActionMasked()) {
+            case android.view.MotionEvent.ACTION_DOWN:
+                shelfSwipeX = ev.getX();
+                shelfSwipeY = ev.getY();
+                shelfSwipeArmed = !shelfExpanded;
+                return false;
+            case android.view.MotionEvent.ACTION_MOVE:
+                if (!shelfSwipeArmed) return false;
+                final float dy = shelfSwipeY - ev.getY();
+                final float dx = Math.abs(shelfSwipeX - ev.getX());
+                if (dy > dp(28) && dy > dx * 1.8f) {
+                    shelfSwipeArmed = false;
+                    final View card = filmScroll;
+                    if (card != null) card.post(() -> setShelfExpanded(true));
+                    return true;
+                }
+                return false;
+            case android.view.MotionEvent.ACTION_UP:
+            case android.view.MotionEvent.ACTION_CANCEL:
+                shelfSwipeArmed = false;
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /** 纸面上的一次下滑 —— 28 dp、且压过横向，和展开那条同一条线。 */
+    private boolean onSheetPullDown(android.view.MotionEvent ev) {
+        switch (ev.getActionMasked()) {
+            case android.view.MotionEvent.ACTION_DOWN:
+                sheetDownX = ev.getX();
+                sheetDownY = ev.getY();
+                sheetDownArmed = shelfExpanded;
+                return false;
+            case android.view.MotionEvent.ACTION_MOVE:
+                if (!sheetDownArmed) return false;
+                final float dy = ev.getY() - sheetDownY;
+                if (dy > dp(28) && dy > Math.abs(ev.getX() - sheetDownX) * 1.8f) {
+                    sheetDownArmed = false;
+                    setShelfExpanded(false);
+                    return true;
+                }
+                return false;
+            case android.view.MotionEvent.ACTION_UP:
+            case android.view.MotionEvent.ACTION_CANCEL:
+                sheetDownArmed = false;
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * **24 dp 的方框，里面一个箭头，别的什么都没有。**
+     *
+     * <p>草图里是一个 `⊞`；主人要的是箭头，而箭头也是这两个里唯一能「转」的
+     * 那个。一个形状、一个属性：`turn` 把它转 180 度，于是开和关读起来是同一
+     * 件东西的两个位置，而不是两个图标。
+     */
+    private final class ChevronToggle extends View {
+        private final android.graphics.Paint ink = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private float turn;
+
+        ChevronToggle() {
+            super(MainActivity.this);
+            setClickable(true);
+            setFocusable(false);
+            ink.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            ink.setStyle(android.graphics.Paint.Style.STROKE);
+        }
+
+        /** 0 = 朝上（展开），1 = 朝下（收起）。 */
+        void setTurn(float t) {
+            final float v = Math.max(0f, Math.min(1f, t));
+            if (Math.abs(v - turn) < 0.001f) return;
+            turn = v;
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            final float w = getWidth(), h = getHeight();
+            if (w <= 0f || h <= 0f) return;
+            final float d = getResources().getDisplayMetrics().density;
+            // 框：1 dp 直角，和其它所有发丝线一样
+            ink.setStrokeWidth(1f);
+            ink.setColor(UI_LINE);
+            c.drawRect(0.5f, 0.5f, w - 0.5f, h - 0.5f, ink);
+            // 箭头，绕中心转
+            c.save();
+            c.rotate(180f * turn, w * 0.5f, h * 0.5f);
+            ink.setStrokeWidth(1.7f * d);
+            ink.setColor(isPressed() ? UI_BLUE : UI_INK);
+            final float cx = w * 0.5f, cy = h * 0.5f, r = 4.1f * d;
+            c.drawLine(cx - r, cy + r * 0.62f, cx, cy - r * 0.62f, ink);
+            c.drawLine(cx, cy - r * 0.62f, cx + r, cy + r * 0.62f, ink);
+            c.restore();
+        }
+    }
+
     private View buildFilmPanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -16798,6 +17346,7 @@ public class MainActivity extends Activity {
         // signpost in a page that is already titled; what belongs beside it are
         // the two controls the page cannot answer for itself.
         final LinearLayout filmHead = sectionHead("胶片与相纸", this::resetFilmPanel);
+        filmHeadRow = filmHead;
         // **Which engine develops the shelf.** The two machines are not
         // interchangeable, and eighteen films are sold by both of them: asking
         // "which engine" on every one of those cards was a sheet before every
@@ -16851,19 +17400,33 @@ public class MainActivity extends Activity {
         filmHead.addView(meterChip, beforeReset + 1, chipLp);
         refreshEngineSwitch();
         refreshMeterChip();
+        // **The way into the grid.** A 24 dp square beside the metering chip:
+        // the head already carries the engine switch and the meter, and an
+        // arrow in the same box as those two is the smallest thing that can say
+        // "there is more of this below". It turns 180 degrees when the sheet
+        // opens -- one shape, two positions (see `ChevronToggle`).
+        filmHeadOpen = new ChevronToggle();
+        filmHeadOpen.setContentDescription("展开胶片网格");
+        filmHeadOpen.setOnClickListener(v -> setShelfExpanded(!shelfExpanded));
+        final LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(dp(24), dp(24));
+        openLp.rightMargin = dp(4);
+        filmHead.addView(filmHeadOpen, beforeReset + 2, openLp);
         // 46, not 38: the engine lamp's spill is 12.5 dp, and a 24 dp cell in a
         // 38 dp row would have its glow sliced flat 7 dp out. `PANEL_CAP_DP`
         // carries the extra 8 (see there).
         panel.addView(filmHead, new LinearLayout.LayoutParams(-1, dp(46)));
 
-        HorizontalScrollView brandScroll = new HorizontalScrollView(this);
-        brandScroll.setHorizontalScrollBarEnabled(false);
-        brandScroll.setFillViewport(false);
+        // **The tabs are a field, not a local.** The grid borrows them while it
+        // is open (they sit above its scroller, sticky by construction), so the
+        // two places that hold them are this page and the sheet.
+        brandScrollView = new HorizontalScrollView(this);
+        brandScrollView.setHorizontalScrollBarEnabled(false);
+        brandScrollView.setFillViewport(false);
         brandRow = new LinearLayout(this);
         brandRow.setOrientation(LinearLayout.HORIZONTAL);
         brandRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        brandScroll.addView(brandRow, new android.widget.FrameLayout.LayoutParams(-2, dp(38)));
-        panel.addView(brandScroll, new LinearLayout.LayoutParams(-1, dp(38)));
+        brandScrollView.addView(brandRow, new android.widget.FrameLayout.LayoutParams(-2, dp(38)));
+        panel.addView(brandScrollView, new LinearLayout.LayoutParams(-1, dp(38)));
 
         filmScroll = new HorizontalScrollView(this);
         filmScroll.setHorizontalScrollBarEnabled(false);
@@ -16880,6 +17443,9 @@ public class MainActivity extends Activity {
         filmShelfHost = new LinearLayout(this);
         filmShelfHost.setOrientation(LinearLayout.VERTICAL);
         filmShelfHost.addView(filmScroll, new LinearLayout.LayoutParams(-1, -1));
+        // 向上轻扫 = 展开网格（见 `onShelfSwipe`）。监听挂在滚动条上，因为
+        // `OnTouchListener` 先于 `HorizontalScrollView` 自己的处理跑。
+        filmScroll.setOnTouchListener((v, ev) -> onShelfSwipe(ev));
         panel.addView(filmShelfHost, new LinearLayout.LayoutParams(-1, dp(111)));
 
         // **One bar, and a list behind it.** The shelf of paper boxes was the
@@ -17772,7 +18338,13 @@ public class MainActivity extends Activity {
         // **A grid card is a bigger card.** Two columns of the right-hand
         // column are ~140 dp wide; 96 + 34 keeps the picture area's proportion
         // and gives the name two readable lines.
-        card.addView(imageBox, new LinearLayout.LayoutParams(-1, dp(filmCols > 1 ? 96 : 67)));
+        // **Two columns is the landscape rail; three and up is the sheet.** A
+        // rail card is ~140 dp wide and keeps 96 + 34; a sheet card is 84 dp and
+        // keeps the shelf's own 67 + 27, which is the proportion the cards were
+        // drawn at -- so the grid is the strip, only wrapped.
+        final int cardImgH = dp(filmCols == 2 ? 96 : 67);
+        final int cardNameH = dp(filmCols == 2 ? 34 : 27);
+        card.addView(imageBox, new LinearLayout.LayoutParams(-1, cardImgH));
 
         TextView name = label(text, 7.5f, active ? UI_BLUE : (available ? UI_INK : UI_MUTED), tfHan);
         name.setMaxLines(2);
@@ -17780,9 +18352,9 @@ public class MainActivity extends Activity {
         name.setBackgroundColor(UI_PAPER);
         name.setPadding(dp(6), dp(4), dp(5), dp(2));
         // 横屏的卡片高，名字在栏里居中才不会顶出一条空带。
-        name.setGravity(filmCols > 1 ? android.view.Gravity.CENTER_VERTICAL
+        name.setGravity(filmCols == 2 ? android.view.Gravity.CENTER_VERTICAL
                 : android.view.Gravity.TOP);
-        card.addView(name, new LinearLayout.LayoutParams(-1, dp(filmCols > 1 ? 34 : 27)));
+        card.addView(name, new LinearLayout.LayoutParams(-1, cardNameH));
 
         card.setClickable(true);
         if (available) {
@@ -17959,7 +18531,9 @@ public class MainActivity extends Activity {
 
     /** 卡片缩略图的像素宽：竖屏 86 dp（一张横卡），横屏 150 dp（网格）。 */
     private int shelfThumbWidthPx() {
-        return filmCols > 1 ? dp(150) : Math.max(1, dp(86));
+        // 横屏的卡片宽（150）；竖屏的横条和网格里的卡片一样宽（86），
+        // 所以同一份缩略图在两种形状里都能用，切回去不用重渲。
+        return filmCols == 2 ? dp(150) : Math.max(1, dp(86));
     }
 
     private void cacheFilmThumb(String stock, Bitmap rendered) {
@@ -30655,6 +31229,9 @@ public class MainActivity extends Activity {
 
     private void showSettings(String section) {
         if (uiRoot == null) return;
+        // 设置是整页的，而且它和网格住在同一个 FrameLayout 里、后加的在上：
+        // 一张还开着的网格会画在设置页上面。
+        if (shelfExpanded) forceCloseShelfSheet();
         // 上一段转场还没走完就又被叫醒：先落到它自己的终态（`settingsOpen`
         // 此刻还是**旧的**，用它判断该落在「开」还是「关」）。
         if (settingsCorner != null) finishSettingsCorner(!settingsOpen, false);
@@ -30665,6 +31242,13 @@ public class MainActivity extends Activity {
         }
         if (!settingsOpen) {
             settingsOpen = true;
+            // **In the tree before it is visible.** A page left inside a stage
+            // that was already discarded answers `setVisibility` and stays
+            // invisible -- a tap on ☰ then did nothing at all.
+            if (settingsScreen.getParent() == null && uiRoot != null) {
+                uiRoot.addView(settingsScreen,
+                        new android.widget.FrameLayout.LayoutParams(-1, -1));
+            }
             settingsScreen.setVisibility(View.VISIBLE);
             settingsScreen.setAlpha(1f);
             // **corner 转场**：三块从左上角长满屏幕（克莱因蓝 → 主题橙 → 设置
@@ -30734,7 +31318,15 @@ public class MainActivity extends Activity {
         if (uiRoot == null || settingsScreen == null) return;
         // Motion off: the page is simply there (it is already visible and
         // opaque by the time this is called).
-        if (!arrivalAnim()) return;
+        // **But a stage left over from an interrupted run has to go first.**
+        // `CornerSwitch` swallows every touch (`onInterceptTouchEvent` is always
+        // true); if one was still sitting on `uiRoot` the page was visible and
+        // nothing on the screen could be tapped -- reported as 「关闭动画后点不出
+        // 设置了」, with the settings page itself never appearing.
+        if (!arrivalAnim()) {
+            if (settingsCorner != null) finishSettingsCorner(false, false);
+            return;
+        }
         final CornerSwitch stage = new CornerSwitch(this, LT_KLEIN, CORNER_ORANGE, UI_PAPER);
         uiRoot.removeView(settingsScreen);
         stage.addView(settingsScreen, new android.widget.FrameLayout.LayoutParams(-1, -1));
@@ -30748,6 +31340,16 @@ public class MainActivity extends Activity {
     /** 关闭：页面先缩回左上角，然后深色，最后蓝色 —— 房间就是这么露出来的。 */
     private void closeSettingsCorner() {
         if (!arrivalAnim()) {
+            // **Through the finish, not around it.** Setting the page `GONE`
+            // directly left it inside the stage when a transition had been cut
+            // short, and a discarded stage on `uiRoot` eats every touch: the
+            // settings page could not be opened again until the app was
+            // restarted. `finishSettingsCorner` puts the page back in `uiRoot`
+            // and removes the stage in the same message.
+            if (settingsCorner != null) {
+                finishSettingsCorner(true, true);
+                return;
+            }
             if (settingsScreen != null) settingsScreen.setVisibility(View.GONE);
             syncRoomBars();
             return;
@@ -30791,6 +31393,20 @@ public class MainActivity extends Activity {
                 uiRoot.removeView(stage);
                 uiRoot.setClipToPadding(true);
             }
+        }
+        // **Whatever happened above, the page ends up in `uiRoot`.** It is the
+        // one thing every later `showSettings` relies on: a page parked in a
+        // detached container still answers `setVisibility(VISIBLE)` and is never
+        // drawn.
+        if (settingsScreen != null && uiRoot != null
+                && settingsScreen.getParent() != uiRoot) {
+            final android.view.ViewParent par = settingsScreen.getParent();
+            if (par instanceof android.view.ViewGroup) {
+                ((android.view.ViewGroup) par).removeView(settingsScreen);
+            }
+            settingsScreen.setTranslationX(0f);
+            settingsScreen.setTranslationY(0f);
+            uiRoot.addView(settingsScreen, new android.widget.FrameLayout.LayoutParams(-1, -1));
         }
         if (hide && settingsScreen != null) settingsScreen.setVisibility(View.GONE);
         if (syncBars) syncRoomBars();
@@ -30916,7 +31532,7 @@ public class MainActivity extends Activity {
         settingsAdd(settingsRow("滑杆样式", "尺子 = 原来的样子；轨道 = 拇指跟手，刻度印在下面",
                 sliderStyleValue(), true, this::showSliderStyleSheet));
         settingsRule();
-        settingsAdd(settingsSwitch("界面动画", "文字逐字、边框、滑竿刻度、相纸条、面板升降、页面转场；关掉更快",
+        settingsAdd(settingsSwitch("界面动画", "文字逐字、边框、滑竿刻度、相纸条、页面转场；关掉更快",
                 arrivalAnim(), this::setArrivalAnim));
 
         settingsGroup("预览 \u00b7 PREVIEW");
@@ -31923,6 +32539,7 @@ public class MainActivity extends Activity {
         // A render of the previous photograph must not land on this one, and
         // the file path of the previous photograph is not this one's.
         fotuSourcePath = null;
+        fotuSourcePathFor = null;
         fotuSourceDead = null;
         fotuGeneration++;
         // Whatever is rendering belongs to the photograph being replaced.
@@ -32056,6 +32673,8 @@ public class MainActivity extends Activity {
             for (String ext : knownButUnsupported) {
                 if (lower.endsWith(ext)) {
                     hideBusy();
+                    try { DebugSink.text("import-skip", "extension " + ext + " " + uri); }
+                    catch (Throwable ignored) { }
                     showInAppToast("[E-1107] 暂不支持 " + ext + " 格式");
                     return;
                 }
@@ -32083,6 +32702,13 @@ public class MainActivity extends Activity {
                         // A question is not an import: whatever was on the canvas
                         // stays, and no plate is left behind.
                         hideBusy();
+                        // The canvas keeps the previous picture, which is the
+                        // right thing for a question -- but only if this line
+                        // says it was a question. Without it the trail read
+                        // "import:name" and then nothing, and 「当前的图片不
+                        // 加载」 had no evidence at all.
+                        try { DebugSink.text("import-skip", "budget " + full[0] + "x" + full[1]
+                                + " cap " + cap + " " + uri); } catch (Throwable ignored) { }
                         showImportBudgetDialog(uri, full[0], full[1], cap, reopenIndex);
                         return;
                     }
@@ -32818,6 +33444,7 @@ public class MainActivity extends Activity {
 
     private void loadRawImage(Uri uri, int reopenIndex) {
         fotuSourcePath = null;
+        fotuSourcePathFor = null;
         fotuSourceDead = null;
         fotuGeneration++;
         // **This decode has a serial number.** A RAW takes three to five seconds, and the strip
@@ -35192,7 +35819,16 @@ public class MainActivity extends Activity {
      */
     private String fotuSourceFile() {
         String path = null;
-        if (fotuSourcePath != null && new java.io.File(fotuSourcePath).isFile()) path = fotuSourcePath;
+        // **A copy belongs to one photograph.** The path alone is not enough:
+        // `files/import/<name>` is derived from the file name, and a name can
+        // come back (a second card, the same export twice) -- and a path that
+        // outlived its import would otherwise develop the *previous* picture
+        // while the canvas says this one. Reported as 「用 fotu 会显示删除的
+        // 图片，当前的图片不加载」, gone after a cold start for the obvious
+        // reason.
+        final String wantFor = sourceUri == null ? null : sourceUri.toString();
+        if (fotuSourcePath != null && wantFor != null && wantFor.equals(fotuSourcePathFor)
+                && new java.io.File(fotuSourcePath).isFile()) path = fotuSourcePath;
         else if (rawFilePath != null) path = rawFilePath;
         else if (sourceUri != null) {
             // **One attempt per frame, not one per card.** The shelf asks for
@@ -35229,6 +35865,7 @@ public class MainActivity extends Activity {
             path = stand;
         }
         fotuSourcePath = path;
+        fotuSourcePathFor = wantFor;
         return path;
     }
 
@@ -41670,6 +42307,7 @@ public class MainActivity extends Activity {
 
     /** True when back closed one level inside the app, false when there is nothing left. */
     private boolean backOneLevel() {
+        if (shelfExpanded) { setShelfExpanded(false); return true; }
         if (curveStage != null) { closeViewTool(); return true; }
         if (settingsOpen) { closeSettings(); return true; }
         if (negMode) { leaveNegative(); return true; }
@@ -41690,6 +42328,11 @@ public class MainActivity extends Activity {
         // holds them), and clearing on entry would erase the evidence for that
         // one before it happened.
         CrashTrail.markNow(this, "app:onDestroy");
+        if (shelfExpandAnim != null) {
+            final android.animation.ValueAnimator a = shelfExpandAnim;
+            shelfExpandAnim = null;
+            a.cancel();
+        }
         stopPrefetch();
         cancelLivePreview();
         // Session *and* engine go down under the same lock the render runs

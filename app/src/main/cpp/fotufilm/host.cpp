@@ -3928,6 +3928,23 @@ static void reset_options() {
     g_rebate_inset_y = 2.4;
     g_rebate_carrier = "none";
     g_rebate_holes = "white";
+    // **A develop starts with no print frame.** These were the only options
+    // `reset_options` did not touch, and they are file-level statics that
+    // outlive one `fh_process` call: choosing a print frame once kept
+    // `g_pf_kind` set for the rest of the process, so picking 「不印边框」
+    // afterwards sent no `pf:` slot and the host drew the *previous* border
+    // anyway -- preview and export alike, until the app was restarted. Reported
+    // as 「印刷画框预览之后就清不掉了」 by two people, one of whom saw the
+    // export clean because his first develop after a restart carried no frame.
+    g_pf_kind.clear();
+    g_pf_gauge = "135";
+    g_pf_frames = 1;
+    g_pf_medium_back = false;
+    g_pf_etext = false;
+    g_pf_margin = 3.0;
+    g_pf_fx = 0.0;
+    g_pf_fy = 0.0;
+    g_pf_bars_ok = false;
 }
 
 extern "C" int fh_process(const char *resources, const char *config_prefix, const char *photo,
