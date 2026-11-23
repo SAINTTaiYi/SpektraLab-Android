@@ -31857,6 +31857,16 @@ public class MainActivity extends Activity {
             // The previous file's unpacked plane is not this frame's problem.
             try { SpektraLabEngine.clearRawCache(); } catch (Throwable ignored) { }
             clearShelfCache();
+            // **Retire the previous photograph's fotufilm pass.** Its completion
+            // tests `fotuGeneration`, so a bump is what stops a develop that is
+            // still inside the kernels from painting the old picture over this
+            // one (`epoch` in `renderFotu` is the second lock on the same door).
+            // `lastFotuPlain` is dropped so a border recompose cannot redraw it
+            // either -- both bitmaps are ordinary managed memory, so dropping the
+            // reference is the free.
+            ++fotuGeneration;
+            fotuPending = false;
+            lastFotuPlain = null;
             // **A new photograph gets a new budget.** Six self-healing passes
             // is a lot per photo, and they are spent by the user's own renders
             // cutting a pass short -- carrying that debt into the next import
@@ -32608,6 +32618,11 @@ public class MainActivity extends Activity {
             stopPrefetch();
             if (compare != null) compare.clear();
             clearShelfCache();
+            // Same as the JPEG path: a develop of the previous frame must not
+            // land on this one (see `epoch` in `renderFotu`).
+            ++fotuGeneration;
+            fotuPending = false;
+            lastFotuPlain = null;
             lastRenderedBitmap = null;
             refreshPanelLocks();
             // **Not `clearBusyPlate()`.** That emptied the canvas for the
@@ -35523,6 +35538,13 @@ public class MainActivity extends Activity {
         final String id = FotuFilm.idOf(stock);
         final String medium = fotuMedium();
         final int gen = ++fotuGeneration;
+        // **Which photograph this frame belongs to.** A develop takes seconds,
+        // and it used to have no identity at all: a pass started on the picture
+        // before an import landed afterwards and painted that picture onto the
+        // new frame's canvas, seeded the shelf's cache with it and labelled the
+        // status with the *new* file's name -- 「导入新照片，卡片和画布还是上一张」.
+        // `renderEpoch` is bumped by every import, and this is what checks it.
+        final int epoch = renderEpoch;
         stopPrefetch();
         fotuRendering = true;
         rendering = true;
@@ -35572,6 +35594,14 @@ public class MainActivity extends Activity {
                 rendering = false;
                 clearBusyPlate();
                 if (gen != fotuGeneration) return;
+                if (epoch != renderEpoch) {
+                    // The photograph changed under us. Nothing of this frame
+                    // belongs on the canvas, in the shelf's cache, or in the
+                    // status line.
+                    CrashTrail.mark(this, "fotu: dropped, the photo changed");
+                    if (bmp != null) bmp.recycle();
+                    return;
+                }
                 if (bmp == null) {
                     // **The gate heals itself once.** The host refuses a frame
                     // that is not its gate's shape -- the first engine's E-1305 --
@@ -35704,6 +35734,9 @@ public class MainActivity extends Activity {
         final String id = FotuFilm.idOf(stock);
         final String medium = fotuMedium();
         final int gen = ++fotuLiveGeneration;
+        // Same identity as the full render: a drag frame must not land on a
+        // photograph it was not drawn from.
+        final int epoch = renderEpoch;
         final String geo = fotuGeoSlot();
         fotuRendering = true;
         final int edge = settled ? FOTU_LIVE_EDGE : FOTU_DRAG_EDGE;
@@ -35728,6 +35761,10 @@ public class MainActivity extends Activity {
             final Bitmap drawn = frame;
             runOnUiThread(() -> {
                 fotuRendering = false;
+                if (epoch != renderEpoch) {
+                    if (drawn != null) drawn.recycle();
+                    return;
+                }
                 // A full render asked for while this was in flight owns the
                 // canvas; running it here is what the queue would have done.
                 if (fotuPending) { fotuPending = false; renderFotu(); return; }
