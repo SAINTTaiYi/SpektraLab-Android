@@ -778,15 +778,20 @@ public class MainActivity extends Activity {
     // Measured on #F4F4F0: L1 17.4:1, L2 9.1:1, L3 5.6:1; on a card (#ECECE7)
     // 15.8 / 8.3 / 5.1. All three clear WCAG AA, and L3 is the one that used to
     // be 7.5 sp of 40 % black.
-    private static int UI_INK        = 0xFF111318;   // L1
-    private static int UI_MUTED      = 0xFF3B404C;   // L2
-    private static int UI_FAINT      = 0xFF585E6C;   // L3
+    // **Ink, not soot.** #111318 measured better and looked worse: on a warm
+    // paper white a neutral near-black reads as a hole. These are the same
+    // three tiers moved onto the paper's own hue -- a charcoal with a little
+    // blue in it, a mid grey that is legible without competing, and a faint
+    // one that is clean rather than washed out.
+    private static int UI_INK        = 0xFF222630;   // L1
+    private static int UI_MUTED      = 0xFF525866;   // L2
+    private static int UI_FAINT      = 0xFF7A808E;   // L3
     /** A 1 dp outline: buttons and cards. */
-    private static int UI_LINE       = 0xFFB5BAC4;
+    private static int UI_LINE       = 0xFFCFD4DC;
     /** The hairline between rows and under a bar -- quieter than a card's edge. */
     private static int UI_RULE       = 0xFFD8DCE2;
     /** The unfilled half of a slider track. */
-    private static int UI_TRACK      = 0xFFCFD4DC;
+    private static int UI_TRACK      = 0xFFDDE2E8;
     private static int UI_STAGE      = 0xFF172174;   // the canvas
     /** Text drawn on the canvas, in both themes. */
     private static int UI_ON_CANVAS  = 0xFFD0D8F8;
@@ -906,19 +911,21 @@ public class MainActivity extends Activity {
         if (dark) {
             // Amber, lifted from #E8862A: at 9-12 sp on black the old orange
             // lost its edge -- 原图 and 完成 read as smudged rather than lit.
-            UI_BLUE       = 0xFFFF963A;
-            UI_BLUE_LIGHT = 0xFFFFB066;
+            // Amber, pulled back from #FF963A: on a black panel the brighter
+            // one is a warning light. #F2913D is the darkroom's safelight.
+            UI_BLUE       = 0xFFF2913D;
+            UI_BLUE_LIGHT = 0xFFF7A85E;
             // Not #000000 under the cards: a pure-black panel beside a pure-black
             // canvas gives the frame no edge to sit against, and pure white on
             // pure black is the one pair that smears on OLED.
             UI_PAPER      = 0xFF121211;
             UI_GROUND     = 0xFF1C1B19;
-            UI_INK        = 0xFFF2F0EC;   // L1, 15.9:1
-            UI_MUTED      = 0xFFC2BDB4;   // L2,  9.4:1
-            UI_FAINT      = 0xFF918C84;   // L3,  4.9:1
+            UI_INK        = 0xFFE8E5DF;   // L1, a warm white
+            UI_MUTED      = 0xFFA6A199;   // L2
+            UI_FAINT      = 0xFF78736B;   // L3
             UI_LINE       = 0xFF3F3D39;
             UI_RULE       = 0xFF272623;
-            UI_TRACK      = 0xFF353430;
+            UI_TRACK      = 0xFF2A2926;
             UI_STAGE      = 0xFF000000;   // **the canvas is black**
             UI_ON_CANVAS  = 0xFFB0ACA5;
         } else {
@@ -2063,10 +2070,15 @@ public class MainActivity extends Activity {
                 // rectangle -- which is exactly what the one under the pointer
                 // turned into while it was landing: 25 dp of tick in a 32 dp
                 // bar, multiplied by 1.95, clipped to a slab.
+                // **The band the notches live in, and the band the digits do.**
+                // The notch used to be centred on the bar and grew to `h - 2d`,
+                // so the tallest one reached 31 dp -- straight through the
+                // digits at 20.5-30 dp. 3 dp to 17 dp, then 3.5 dp of air, then
+                // the number: two rows, never one.
                 final float tickH = Math.min(
                         ((6f + 3f * m) + 1.5f + 4.5f * g + 10f * f) * d
                                 * (1f + 0.50f * pop),
-                        h - 2f * d);
+                        14f * d);
                 final float tickW = ((0.9f + 0.5f * m) + 1.2f * f) * d
                         * (1f + 0.28f * pop);
                 final float lit = Math.max(
@@ -2075,7 +2087,7 @@ public class MainActivity extends Activity {
                 final float hot = Math.max(Math.min(1f, 0.60f * f + 0.60f * g), pop);
                 paint.setColor(blend(dim, hotInk, hot));
                 paint.setAlpha(Math.round(lit * 255f));
-                rect.set(x - tickW, midY - tickH * 0.5f, x + tickW, midY + tickH * 0.5f);
+                rect.set(x - tickW, 3f * d, x + tickW, 3f * d + tickH);
                 c.drawRoundRect(rect, tickW, tickW, paint);
             }
             paint.setAlpha(0xFF);
@@ -2087,8 +2099,8 @@ public class MainActivity extends Activity {
             paint.setTypeface(tfBody == null ? android.graphics.Typeface.DEFAULT : tfBody);
             paint.setFontFeatureSettings("tnum");
             paint.setTextAlign(android.graphics.Paint.Align.CENTER);
-            paint.setTextSize(11f * d);
-            final float baseline = h - 2f * d;
+            paint.setTextSize(9.5f * d);
+            final float baseline = h - 3f * d;
             float lastRight = -1e9f;
             for (int i = first; i <= last; i += kMajor) {
                 final float x = cx + (i - pos) * pitch;
@@ -2117,7 +2129,7 @@ public class MainActivity extends Activity {
          */
         private void drawTrack(android.graphics.Canvas c, int w, int h) {
             final float x0 = trackX0(), x1 = trackX1();
-            final float trackY = 8f * d;
+            final float trackY = 7f * d;
             final float half = 1.5f * d;
             final float frac = Math.max(0f, Math.min(1f, pos / (float) kSteps));
             final float thumbX = x0 + (x1 - x0) * frac;
@@ -2139,13 +2151,13 @@ public class MainActivity extends Activity {
 
             // 8 段 = 9 个刻度
             final int segs = 8;
-            final float top = 16.5f * d;
+            final float top = 12.5f * d;
             final boolean intro = introT >= 0f;
             paint.setTypeface(tfBody == null ? android.graphics.Typeface.DEFAULT : tfBody);
             paint.setFontFeatureSettings("tnum");
             paint.setTextAlign(android.graphics.Paint.Align.CENTER);
-            paint.setTextSize(10.5f * d);
-            final float baseline = h - 3f * d;
+            paint.setTextSize(9.5f * d);
+            final float baseline = h - 3.5f * d;
             float lastRight = -1e9f;
             for (int i = 0; i <= segs; ++i) {
                 final float x = x0 + (x1 - x0) * i / segs;
@@ -2159,17 +2171,27 @@ public class MainActivity extends Activity {
                 }
                 paint.setColor(light ? 0xFFFFFFFF : UI_FAINT);
                 paint.setAlpha(Math.round((major ? 0xDC : 0xA8) * appear));
-                final float th = (major ? 4f : 2f) * d * (intro ? (0.4f + 0.6f * appear) : 1f);
+                final float th = (major ? 3.5f : 2f) * d * (intro ? (0.4f + 0.6f * appear) : 1f);
                 rect.set(x - 0.5f * d, top, x + 0.5f * d, top + th);
                 c.drawRoundRect(rect, 0.5f * d, 0.5f * d, paint);
                 if (!major || format == null || appear < 0.5f) continue;
                 final String text = format.apply(Math.round(i * getMax() / (float) segs));
                 if (text == null || text.isEmpty()) continue;
                 final float tw = paint.measureText(text);
-                if (x - tw * 0.5f < lastRight + 4f * d) continue;
+                // **The ends align to the ends of the track.** Centred, the
+                // first label hung half its width off the left edge (the minus
+                // of `-4.00` was outside the view) and the last was clipped the
+                // same way (`4.00` came out `4.0C`). The two ends are never
+                // skipped; the ones between them may be, when they would touch.
+                final boolean first = i == 0, last = i == segs;
+                if (!first && !last && x - tw * 0.5f < lastRight + 4f * d) continue;
                 paint.setAlpha(Math.round(0xFF * appear));
-                c.drawText(text, x, baseline, paint);
-                lastRight = x + tw * 0.5f;
+                paint.setTextAlign(first ? android.graphics.Paint.Align.LEFT
+                        : last ? android.graphics.Paint.Align.RIGHT
+                        : android.graphics.Paint.Align.CENTER);
+                c.drawText(text, first ? x0 : last ? x1 : x, baseline, paint);
+                paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+                lastRight = first ? x0 + tw : x + tw * 0.5f;
             }
 
             // 拇指最后画：纸色的缝先铺，蓝点压在上面
@@ -5702,14 +5724,28 @@ public class MainActivity extends Activity {
     /**
      * **Whether this row still sits where a fresh import left it.**
      *
-     * <p>The value of a control that has been moved is `UI_BLUE`; the value of
-     * one that has not is L1. That is the whole "一眼扫出哪些参数被改动过" --
-     * no dot, no marker, the number itself says it. Tolerance is two of the
-     * thousand steps the track has, so rounding never lights a row up.
+     * <p>Tolerance is two of the thousand steps the track has, so rounding
+     * never lights a row up.
      */
-    private static int valueInk(float v, float def, float lo, float hi) {
+    private static boolean valueMoved(float v, float def, float lo, float hi) {
         final float tol = Math.max(1e-5f, Math.abs(hi - lo) * 0.0025f);
-        return Math.abs(v - def) > tol ? UI_BLUE : UI_INK;
+        return Math.abs(v - def) > tol;
+    }
+
+    /**
+     * **A value at rest is quiet; a value that has been moved speaks.**
+     *
+     * <p>400 in L2 while the row sits on its neutral, 500 in the accent once it
+     * does not. Ten of thirteen numbers at rest is the normal state of a
+     * panel, and ten numbers all wearing the same weight and the same ink is
+     * what made the two that matter invisible. Nothing is added to the row --
+     * the difference is entirely in the number that was already there.
+     */
+    private void markValue(TextView t, float v, float def, float lo, float hi) {
+        if (t == null) return;
+        final boolean moved = valueMoved(v, def, lo, hi);
+        t.setTextColor(moved ? UI_BLUE : UI_MUTED);
+        weight(t, moved ? 500 : 400);
     }
 
     /**
@@ -5722,7 +5758,7 @@ public class MainActivity extends Activity {
      * pushes the value off the row.
      */
     private TextView rowName(String title) {
-        final TextView n = label(title, 14, UI_INK, tfHan);
+        final TextView n = label(title, 13, UI_INK, tfHan);
         weight(n, 500);
         return n;
     }
@@ -5736,8 +5772,7 @@ public class MainActivity extends Activity {
         // **14.5 sp, 600.** The readout is the one number on a row and it was
         // 9 sp of Regular -- the same size as the name beside it, which is why
         // a panel of thirteen rows read as thirteen equal things.
-        final TextView t = label("", 14.5f, UI_INK, tfBody);
-        weight(t, 600);
+        final TextView t = label("", 13f, UI_MUTED, tfBody);
         t.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
         t.setSingleLine(true);
         t.setFontFeatureSettings("tnum");
@@ -16933,8 +16968,8 @@ public class MainActivity extends Activity {
         // **A panel's own name, one tier above its rows.** At 8.5 sp it was the
         // same size as the row names under it and one weight lighter than the
         // numbers beside them, so the page had no top.
-        TextView titleView = mixedLabel(title, 10.5f, UI_INK);
-        weight(titleView, 600);
+        TextView titleView = mixedLabel(title, 12f, UI_INK);
+        weight(titleView, 500);
         titleView.setLetterSpacing(0.06f);
         head.addView(titleView, new LinearLayout.LayoutParams(0, -2, 1f));
         // **Text again, and one word.** The circular arrow was an experiment:
@@ -17865,10 +17900,18 @@ public class MainActivity extends Activity {
         return cellBorder(false);
     }
 
+    /** The accent at 55 %, for a card's edge: readable as a state, not as a box. */
+    private static int accentSoft() {
+        return 0x8C000000 | (UI_BLUE & 0x00FFFFFF);
+    }
+
     private android.graphics.drawable.GradientDrawable cellBorder(boolean active) {
         android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
         bg.setColor(UI_GROUND);
-        bg.setStroke(dp(1), active ? UI_BLUE : UI_LINE);
+        // **A state is a tint on the edge, not a heavy frame.** Full-strength
+        // accent around a card turned four quiet cells into four buttons; 55 %
+        // still reads at a glance and leaves the surface in charge.
+        bg.setStroke(dp(1), active ? accentSoft() : UI_LINE);
         return bg;
     }
 
@@ -20566,7 +20609,7 @@ public class MainActivity extends Activity {
         // **The name stops at its own width and a spacer takes the rest**, so
         // the mark sits after the name instead of at the far end of the row.
         if (shortHint(hint)) {
-            final TextView note = label(Lang.t(hint), 12, UI_FAINT, tfHan);
+            final TextView note = label(Lang.t(hint), 11, UI_FAINT, tfHan);
             note.setPadding(dp(8), 0, 0, dp(1));
             line.addView(note, new LinearLayout.LayoutParams(-2, -2));
         } else if (hint != null && !hint.isEmpty()) {
@@ -20595,7 +20638,7 @@ public class MainActivity extends Activity {
             bar.setProgress(ratio ? logProgress(lo, hi, v)
                     : Math.max(0, Math.min(1000, Math.round((v - lo) / (hi - lo) * 1000f))));
             value.setText(String.format(java.util.Locale.US, "%.2f", v));
-            value.setTextColor(valueInk(v, def, lo, hi));
+            markValue(value, v, def, lo, hi);
         };
         sink.add(refresh);
         refresh.run();
@@ -20666,7 +20709,11 @@ public class MainActivity extends Activity {
         });
         box.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
         // The note is behind the "!" now, so a row is one line tall.
-        parent.addView(box, new LinearLayout.LayoutParams(-1, -2));
+        // **11 dp under every row.** With none, the tick digits of one slider
+        // sat on the title of the next and the panel read as one long block.
+        final LinearLayout.LayoutParams boxLp = new LinearLayout.LayoutParams(-1, -2);
+        boxLp.bottomMargin = dp(11);
+        parent.addView(box, boxLp);
         return box;
     }
 
@@ -20750,7 +20797,11 @@ public class MainActivity extends Activity {
                     .putBoolean("raw_auto_bright", on).apply();
             refreshOriginalView();
         });
-        page.addView(toneGrid, new LinearLayout.LayoutParams(-1, dp(46)));
+        // **15 dp of air under the four cards.** The first slider's title was
+        // flush against the cards' bottom edge.
+        final LinearLayout.LayoutParams gridLp = new LinearLayout.LayoutParams(-1, dp(46));
+        gridLp.bottomMargin = dp(15);
+        page.addView(toneGrid, gridLp);
 
         // **Lightroom's six, in Lightroom's order.** 曝光度 / 对比度 / 高光 /
         // 阴影 / 白色色阶 / 黑色色阶 is the panel a user already has in their
@@ -22117,7 +22168,10 @@ public class MainActivity extends Activity {
                         renderImage();
                     }
                 });
-                printBody.addView(toneCells, new LinearLayout.LayoutParams(-1, dp(46)));
+                final LinearLayout.LayoutParams cellsLp =
+                        new LinearLayout.LayoutParams(-1, dp(46));
+                cellsLp.bottomMargin = dp(15);
+                printBody.addView(toneCells, cellsLp);
 
                 // **相纸宽容度：这是唯一能真正"突破"相纸那条 7 档线的控件。**
                 // 它不是把纸的曲线拉直（物理上做不到），而是给每个大尺度区域
@@ -22373,11 +22427,10 @@ public class MainActivity extends Activity {
         // **The eyebrow, then the value.** 8 sp of L2 over 9 sp of L1 was one
         // weight of grey on another; 11.5 / 500 in L3 above 13.5 / 600 in L1 is
         // two tiers the eye can sort without reading.
-        final TextView eyebrow = label(title, 11.5f, UI_FAINT, tfHan);
-        weight(eyebrow, 500);
+        final TextView eyebrow = label(title, 10.5f, UI_FAINT, tfHan);
         cell.addView(eyebrow, new LinearLayout.LayoutParams(-1, -2));
-        final TextView tv = label(value, 13.5f, UI_INK, tfHan);
-        weight(tv, 600);
+        final TextView tv = label(value, 12.5f, UI_INK, tfHan);
+        weight(tv, 500);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams tvLp = new LinearLayout.LayoutParams(-1, -2);
@@ -22399,14 +22452,13 @@ public class MainActivity extends Activity {
         cell.setGravity(android.view.Gravity.CENTER_VERTICAL);
         cell.setPadding(dp(9), dp(4), dp(6), dp(4));
         cell.setBackground(cellBorder(isOn.getAsBoolean()));
-        final TextView eyebrow = label(title, 11.5f, UI_FAINT, tfHan);
-        weight(eyebrow, 500);
+        final TextView eyebrow = label(title, 10.5f, UI_FAINT, tfHan);
         cell.addView(eyebrow, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout line = new LinearLayout(this);
         line.setOrientation(LinearLayout.HORIZONTAL);
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView tv = label(valueText, 13.5f, UI_INK, tfHan);
-        weight(tv, 600);
+        TextView tv = label(valueText, 12.5f, UI_INK, tfHan);
+        weight(tv, 500);
         tv.setSingleLine(true);
         tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         line.addView(tv, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -25968,7 +26020,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < names.length; ++i) {
             final int index = i;
             android.widget.FrameLayout cell = new android.widget.FrameLayout(this);
-            TextView name = label(names[i], 12.5f, UI_MUTED, tfHan);
+            TextView name = label(names[i], 13f, UI_MUTED, tfHan);
             name.setGravity(android.view.Gravity.CENTER);
             cell.addView(name, new android.widget.FrameLayout.LayoutParams(-1, -1));
             cell.setOnClickListener(v -> onTabClicked(index));
@@ -26042,7 +26094,7 @@ public class MainActivity extends Activity {
                 // **Selected is a weight, not only a colour.** At 11 sp an
                 // accent-only selection was one hue away from its neighbours;
                 // 600 against 400 is visible from arm's length.
-                weight(labels[i], on ? 600 : 400);
+                weight(labels[i], on ? 500 : 400);
                 underline(labels[i], on);
             }
         }
@@ -26120,7 +26172,7 @@ public class MainActivity extends Activity {
             else if (kind == 3) taps[i] = () -> showPrintGroup(k);
             else taps[i] = () -> { closeCurveTool(); showViewPage(k); };
         }
-        subRow = new ChipRow(names, 9f, dp(SUB_BAR_DP), UI_BLUE, UI_MUTED, taps);
+        subRow = new ChipRow(names, 11.5f, dp(SUB_BAR_DP), UI_BLUE, UI_MUTED, taps);
         subRowHost.addView(subRow, new android.widget.FrameLayout.LayoutParams(
                 -1, dp(SUB_BAR_DP)));
         syncSubRowActive();
@@ -29583,16 +29635,15 @@ public class MainActivity extends Activity {
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
         head.addView(rowName(name), new LinearLayout.LayoutParams(-2, -2));
         if (shortHint(hint)) {
-            final TextView note = label(Lang.t(hint), 12, UI_FAINT, tfHan);
+            final TextView note = label(Lang.t(hint), 11, UI_FAINT, tfHan);
             note.setPadding(dp(8), 0, 0, dp(1));
             head.addView(note, new LinearLayout.LayoutParams(-2, -2));
         } else if (hint != null && !hint.isEmpty()) {
             head.addView(bangFor(() -> hint));
         }
         head.addView(new View(this), new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView value = label(rangeText(initial, step), 14.5f,
-                valueInk(initial, def, lo, hi), tfBody);
-        weight(value, 600);
+        final TextView value = label(rangeText(initial, step), 13f, UI_MUTED, tfBody);
+        markValue(value, initial, def, lo, hi);
         // **Live data, never typed.** The arrival animation types every label in
         // a row; a drag that lands while it runs gets overwritten by the number
         // the label held when the run started -- the dial says 52.10 and the
@@ -29616,7 +29667,7 @@ public class MainActivity extends Activity {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 float v = rangeSnap(lo + (hi - lo) * progress / 1000f, lo, hi, step);
                 value.setText(rangeText(v, step));
-                value.setTextColor(valueInk(v, def, lo, hi));
+                markValue(value, v, def, lo, hi);
                 apply.accept(v);
                 lastEditedBar = bar;
                 if (bar instanceof DialBar && ((DialBar) bar).isDragging()) {
@@ -29661,7 +29712,9 @@ public class MainActivity extends Activity {
         row.addView(bar, new LinearLayout.LayoutParams(-1, dp(32)));
         // Wraps its content: a weighted row inside a scrollable page is handed a
         // share of the container, which would clip a 50 dp dial in a 35 dp row.
-        parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        final LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
+        rowLp.bottomMargin = dp(11);
+        parent.addView(row, rowLp);
         return bar;
     }
 
@@ -29800,7 +29853,7 @@ public class MainActivity extends Activity {
                 // **L1 for the page you are on, L2 for the rest.** The underline
                 // is already the accent; spending it on the letters too made
                 // five of the six tabs look equally far from the one in use.
-                weight(tabLabels[i], i == active ? 600 : 400);
+                weight(tabLabels[i], i == active ? 500 : 400);
                 tintText(tabLabels[i], i == active ? UI_INK : UI_MUTED, MS_SOFT);
                 // Every page is reachable on both engines now, so nothing fades.
                 tabLabels[i].setAlpha(1f);
@@ -32222,8 +32275,8 @@ public class MainActivity extends Activity {
         // L2 with a tenth of an em of tracking read as another list row. At 12
         // sp / 600 / L2 with a full sp of tracking it is a heading you can jump
         // to while scrolling.
-        final TextView t = mixedLabel(title, 12f, UI_MUTED);
-        weight(t, 600);
+        final TextView t = mixedLabel(title, 11f, UI_MUTED);
+        weight(t, 500);
         t.setLetterSpacing(0.09f);      // ≈ 1.0 sp at 12 sp
         t.setPadding(dp(16), dp(26), dp(16), dp(8));
         settingsBody.addView(t, new LinearLayout.LayoutParams(-1, -2));
@@ -37874,7 +37927,7 @@ public class MainActivity extends Activity {
         line.setGravity(android.view.Gravity.CENTER_VERTICAL);
         line.addView(rowName(title), new LinearLayout.LayoutParams(-2, -2));
         if (shortHint(hint)) {
-            final TextView note = label(Lang.t(hint), 12, UI_FAINT, tfHan);
+            final TextView note = label(Lang.t(hint), 11, UI_FAINT, tfHan);
             note.setPadding(dp(8), 0, 0, dp(1));
             line.addView(note, new LinearLayout.LayoutParams(-2, -2));
         } else if (hint != null && !hint.isEmpty()) {
@@ -37896,7 +37949,7 @@ public class MainActivity extends Activity {
             bar.setProgress(Math.max(0, Math.min(1000,
                     Math.round((v - lo) / (hi - lo) * 1000f))));
             value.setText(String.format(java.util.Locale.US, "%.2f", v));
-            value.setTextColor(valueInk(v, def, lo, hi));
+            markValue(value, v, def, lo, hi);
         };
         fotuRefreshers.add(refresh);
         refresh.run();
@@ -37905,7 +37958,7 @@ public class MainActivity extends Activity {
                 final float v = lo + (hi - lo) * progress / 1000f;
                 set.accept(v);
                 value.setText(String.format(java.util.Locale.US, "%.2f", v));
-                value.setTextColor(valueInk(v, def, lo, hi));
+                markValue(value, v, def, lo, hi);
                 // The chain at 800 px is about a fifth of a second now that the
                 // host keeps the decoded scene and the tables, so the canvas can
                 // follow the finger instead of waiting for the release.
