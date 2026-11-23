@@ -260,7 +260,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 光的边缘有多柔。0 = 紧实，100 = 更柔更长（对光华 / 光晕无影响）	How soft the edge of the light is. 0 = tight, 100 = softer and longer (no effect on Bloom / Halation)
 光能铺多远。0 = 紧贴高光，50 = 基准，100 = 漫到远处	How far the light reaches. 0 = hugging the highlights, 50 = default, 100 = spreads far
 光谱实测 · 12 种输出介质	Measured spectra · 12 output media
-入场动画	Arrival animation
+界面动画	Interface motion
 全不选	Select none
 全尺寸	Full size
 全尺寸 · 原图（JPEG）	Full size · original (JPEG)
@@ -643,7 +643,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 文件只有 %.1f MB，%d×%d 的 16 位像素要 %.1f MB	File is only %.1f MB; %d×%d at 16 bits needs %.1f MB
 文件头不是 TIFF（%02X %02X %02X %02X）	Header is not TIFF (%02X %02X %02X %02X)
 文件自身尺寸	File's own size
-文字逐字、边框、滑竿刻度、相纸条；关掉更快	Typed text, frames, dial ticks, paper strips; off is faster
+文字逐字、边框、滑竿刻度、相纸条、面板升降、页面转场；关掉更快	Typed text, frames, dial ticks, paper strips, panel resizes, page transitions; off is faster
 方向	Direction
 方形画布 1:1	Square canvas 1:1
 方角	Square
@@ -1201,3 +1201,5 @@ TIFF / DNG 是给电脑上的 Lightroom 的母版，不套画框。	TIFF and DNG
 扫码加入	Scan to join
 QQ 群 · 没满，直接加	QQ group · not full, join here
 先在「胶片与相纸」右上角选引擎（SPK / FOTU），再点胶片	Pick an engine (SPK / FOTU) at the top right of Film and paper first, then tap a film
+彩色	Color
+电影	Cine

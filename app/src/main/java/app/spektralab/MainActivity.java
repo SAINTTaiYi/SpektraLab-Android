@@ -3277,8 +3277,94 @@ public class MainActivity extends Activity {
     // stock both of them ship is one card carrying a two-engine mark, and the
     // tap asks which machine develops it. `其他` is where the makers only the
     // second engine carries (Agfa, Lomography, Harman, AR-5) are filed.
-    private static final String[] BRAND_IDS = {"all", "kodak", "fujifilm", "ilford", "cinestill", "other"};
-    private static final String[] BRAND_NAMES = {"全部", "KODAK", "FUJIFILM", "ILFORD", "CINESTILL", "其他"};
+    /**
+     * Two ways to file the shelf, in one row.
+     *
+     * <p>The first five are **what the film is** -- colour negative, black and
+     * white, reversal, motion picture -- because that is how a photographer
+     * looks for a look; the rest are **who made it**. They overlap on purpose
+     * (a Portra is both 彩色 and KODAK) and the counts do too: a tab counts the
+     * cards the shelf would show under it, never the stocks.
+     */
+    private static final String[] BRAND_IDS = {"all", "color", "mono", "reversal", "cine",
+            "kodak", "fujifilm", "ilford", "cinestill", "other"};
+    private static final String[] BRAND_NAMES = {"全部", "彩色", "黑白", "反转", "电影",
+            "KODAK", "FUJIFILM", "ILFORD", "CINESTILL", "其他"};
+
+    /** A tab whose name is Chinese (the type tabs and `all`). */
+    private static boolean cjkTab(String id) {
+        return "all".equals(id) || "color".equals(id) || "mono".equals(id)
+                || "reversal".equals(id) || "cine".equals(id);
+    }
+
+    /**
+     * What this card is, for the type tabs.
+     *
+     * <p>**Merged cards ask their first engine.** A film both engines ship is
+     * one card keyed by the first engine's id, and that engine's catalogue
+     * already knows whether it is monochrome or a slide. The second engine's
+     * own catalogue carries the same two flags (`catalog.txt` columns 5 and 6),
+     * so the answer is exact on both sides rather than inferred from the name.
+     */
+    private boolean isMonoCard(String cardId) {
+        final String key = cardKeyFor(cardId);
+        if (key.startsWith(FotuFilm.PREFIX)) {
+            final FotuFilm.Stock st = fotuStocks.get(FotuFilm.idOf(key));
+            return st != null && st.monochrome;
+        }
+        return isMonochromeStock(key);
+    }
+
+    private boolean isReversalCard(String cardId) {
+        final String key = cardKeyFor(cardId);
+        if (key.startsWith(FotuFilm.PREFIX)) {
+            final String f = FotuFilm.idOf(key);
+            final FotuFilm.Stock st = fotuStocks.get(f);
+            // **Instax is a positive print, not a slide.** The catalogue marks
+            // it `reversal` because it comes out the right way round, and the
+            // shelf's 「反转」 tab is about E-6 film -- a one-piece instant sheet
+            // under that word would be the one card nobody looks for there.
+            return st != null && st.reversal && !f.startsWith("instax");
+        }
+        return isPositiveStock(key);
+    }
+
+    /**
+     * Motion-picture stock: the films printed through a cinema print film.
+     *
+     * <p>Not `reflection` and not `reversal` -- CineStill 800T is a colour
+     * negative, Double-X is black and white, and both are cut from motion
+     * picture stock. They are the films whose edge carries a `tmotion` print
+     * (5219, 5207, 5222) and whose paper is 2383.
+     */
+    private static boolean isCineCard(String cardId) {
+        final String key = cardKeyFor(cardId);
+        if (key.startsWith(FotuFilm.PREFIX)) {
+            final String f = FotuFilm.idOf(key);
+            return f.startsWith("vision") || f.startsWith("cinestill")
+                    || "doublex5222".equals(f) || f.startsWith("eterna")
+                    || "f64d".equals(f) || "reala500d".equals(f);
+        }
+        return key.startsWith("kodak_vision3") || "kodak_verita_200d".equals(key)
+                || "cinestill_800t".equals(key);
+    }
+
+    /** One shelf filter, whatever kind of tab asked for it. */
+    private boolean matchesFilter(String cardId, String filter) {
+        if ("all".equals(filter)) return true;
+        switch (filter) {
+            case "color":    return !isCineCard(cardId) && !isReversalCard(cardId)
+                                    && !isMonoCard(cardId);
+            // **The four type tabs partition the shelf**: 电影 first, because a
+            // Double-X is a motion picture stock before it is a black-and-white
+            // one, and the four counts then add up to 「全部」 instead of each
+            // claiming the same card.
+            case "mono":     return !isCineCard(cardId) && isMonoCard(cardId);
+            case "reversal": return !isCineCard(cardId) && isReversalCard(cardId);
+            case "cine":     return isCineCard(cardId);
+            default:         return filter.equals(brandOf(cardId));
+        }
+    }
     // **One card per gate, in the gates' own order.** This used to be a
     // separate ladder (36/24/65/56/56/70/84/120/170) that only resembled the
     // gates: 6x8 had no card, 6x12 and 6x17 were 120/170, and 56 appeared twice
@@ -3838,6 +3924,7 @@ public class MainActivity extends Activity {
         // rises out of 60 % alpha, so the last frames are the only fully solid
         // ones. That is the difference between "a sheet rose from the edge" and
         // "a panel was always there".
+        if (!arrivalAnim()) { dialog.show(); fixTypefaces(sheet); return; }
         sheet.setTranslationY(dp(640));
         sheet.setAlpha(0.6f);
         dialog.show();
@@ -3894,6 +3981,17 @@ public class MainActivity extends Activity {
     private void animateHeightTo(final View v, int from, int to,
                                  final int endHeight, final Runnable then) {
         cancelHeight(v);
+        // **The one switch that turns motion off.** With it off a panel is
+        // simply the height it should be -- which is what 设置的动画可以选择
+        // 关闭 asks for. `cancelHeight` runs first: a surviving animator would
+        // keep writing `lp.height` behind this assignment.
+        if (!arrivalAnim()) {
+            final android.view.ViewGroup.LayoutParams lp = v.getLayoutParams();
+            lp.height = endHeight;
+            v.setLayoutParams(lp);
+            if (then != null) then.run();
+            return;
+        }
         final android.animation.ValueAnimator a = android.animation.ValueAnimator.ofInt(from, to);
         a.setDuration(MS_HEIGHT);
         a.setInterpolator(EASE_OUT);
@@ -4835,8 +4933,16 @@ public class MainActivity extends Activity {
     }
 
     /** Everything that has to be true before a copy is worth 8 B/px. */
+    /**
+     * Some panels refuse the F16 copy outright (Mali-G925 / Android 14:
+     * "The new ColorSpace cannot increase the minimum value"). One refusal is
+     * enough -- this is a display nicety, and retrying it costs a 20 MP
+     * RGBA_F16 allocation on every render and every export.
+     */
+    private static volatile boolean hdrPreviewBroken;
+
     private boolean hdrPreviewWanted() {
-        return hdrDisplaySupported() && hdrPreviewPref()
+        return hdrDisplaySupported() && hdrPreviewPref() && !hdrPreviewBroken
                 && !isFotuStock(filmStock) && !showingOriginal && session != null;
     }
 
@@ -4888,7 +4994,9 @@ public class MainActivity extends Activity {
                 });
             } catch (Throwable t) {
                 if (f16 != null && !f16.isRecycled()) f16.recycle();
-                DebugSink.text("hdr", "preview: " + t);
+                if (t instanceof IllegalArgumentException) hdrPreviewBroken = true;
+                DebugSink.text("hdr", "preview: " + t + (hdrPreviewBroken
+                        ? " (this panel cannot show it; the SDR canvas stays)" : ""));
             }
         }, "SpektraLab-hdr").start();
     }
@@ -5073,6 +5181,7 @@ public class MainActivity extends Activity {
         if (tv == null) return;
         final int from = tv.getCurrentTextColor();
         if (from == to) return;
+        if (!arrivalAnim()) { tv.setTextColor(to); return; }
         final Object prev = tv.getTag();
         if (prev instanceof android.animation.ValueAnimator) {
             ((android.animation.ValueAnimator) prev).cancel();
@@ -14343,21 +14452,34 @@ public class MainActivity extends Activity {
      *
      * @return the correlation, or -1 when it cannot be measured.
      */
-    private static double exportMatchesCanvas(String path, Bitmap canvas) {
-        if (canvas == null || canvas.getWidth() <= 0) return -1;
+    /**
+     * @return {ncc, meanGap} -- structure correlation and the absolute
+     *         difference of the two mean levels, in 0..255. `{-1, -1}` when the
+     *         picture cannot be read.
+     *
+     * <p>**NCC alone is blind to exposure.** A frame developed two stops hot has
+     * exactly the structure of the frame that was on the canvas -- same edges,
+     * same sky -- so it correlates at 0.97 while the picture is white. The
+     * report that finally made this visible (SL-261123-A65A: a DNG exported
+     * 4096x1512, 2.7 MB, blown out and green) would have passed the 0.55 gate
+     * comfortably. Two means are already computed here for the correlation; the
+     * difference between them costs nothing.
+     */
+    private static double[] exportMatchesCanvas(String path, Bitmap canvas) {
+        if (canvas == null || canvas.getWidth() <= 0) return new double[]{-1, -1};
         try {
             final android.graphics.BitmapFactory.Options probeOpt =
                     new android.graphics.BitmapFactory.Options();
             probeOpt.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(path, probeOpt);
-            if (probeOpt.outWidth <= 0 || probeOpt.outHeight <= 0) return -1;
+            if (probeOpt.outWidth <= 0 || probeOpt.outHeight <= 0) return new double[]{-1, -1};
             int sample = 1;
             while (Math.max(probeOpt.outWidth, probeOpt.outHeight) / (sample * 2) >= 200) sample *= 2;
             final android.graphics.BitmapFactory.Options o =
                     new android.graphics.BitmapFactory.Options();
             o.inSampleSize = sample;
             final Bitmap bm = BitmapFactory.decodeFile(path, o);
-            if (bm == null) return -1;
+            if (bm == null) return new double[]{-1, -1};
             final int gw = 48;
             final int gh = Math.max(8, Math.round(gw * (float) bm.getHeight() / bm.getWidth()));
             final Bitmap a = Bitmap.createScaledBitmap(bm, gw, gh, true);
@@ -14378,10 +14500,10 @@ public class MainActivity extends Activity {
                 final double vb = ((pb[i] & 255) + ((pb[i] >> 8) & 255) + ((pb[i] >> 16) & 255)) / 3.0 - mb;
                 num += va * vb; da += va * va; db += vb * vb;
             }
-            if (da <= 1e-9 || db <= 1e-9) return -1;
-            return num / Math.sqrt(da * db);
+            if (da <= 1e-9 || db <= 1e-9) return new double[]{-1, -1};
+            return new double[]{num / Math.sqrt(da * db), Math.abs(ma - mb)};
         } catch (Throwable t) {
-            return -1;
+            return new double[]{-1, -1};
         }
     }
 
@@ -15567,6 +15689,27 @@ public class MainActivity extends Activity {
         // never appear ("我刚导入新照片就给我自己选了 spk 引擎").
         if (filmStock != null) shelfEngine = isFotuStock(filmStock) ? "fotu" : "spk";
         printStock = look.printStock;
+        // **The border belongs to this photograph, and it lands first.**
+        // Everything below this point repaints panels, and a single
+        // `refreshXxx()` throwing (a page whose rows are not built yet, a crop
+        // overlay with no frame behind it) used to leave the assignments
+        // further down unrun -- so the *previous* photograph's print frame or
+        // card kept being drawn over this one, with no control able to clear
+        // it until a restart. Reported as 「删掉照片、重新导入，上一张的白底
+        // 片框一直会在，关不掉，得重启软件」. Repeating them below is
+        // harmless; not having them here is not.
+        pfKind = look.pfKind == null ? "none" : look.pfKind;
+        frameTemplate = look.frameTemplate == null ? "" : look.frameTemplate;
+        FrameTemplate.forget();
+        pfCamera = "mediumFormatBack".equals(look.pfCamera) ? "mediumFormatBack" : "panoramic";
+        pfFrames = Math.max(1, Math.min(4, look.pfFrames));
+        pfMargin = look.pfMargin > 0f ? look.pfMargin : 3f;
+        pfFx = look.pfFx;
+        pfFy = look.pfFy;
+        overscanOn = look.overscanOn;
+        overscanFormat = look.overscanFormat;
+        overscanPair = look.overscanPair && "135_half".equals(look.overscanFormat);
+        if (isFotuStock(look.filmStock)) overscanFormat = fotuGaugeOf(look.filmStock);
         printExposure = look.printExposure;
         meterMethod = sanitizeMeter(look.meterMethod);
         refreshMeterChip();
@@ -16400,6 +16543,33 @@ public class MainActivity extends Activity {
     /** Drop a chip. The file is untouched -- this is the strip's own list. If
      *  the frame was the one on the canvas, the canvas is emptied rather than
      *  silently showing a photograph that is no longer in the list. */
+    /**
+     * Drop every 「印在画面周围」 choice.
+     *
+     * <p>These live in plain fields, not in a Look, and nothing outside
+     * `applyLook` ever cleared them -- so deleting the photograph they were
+     * made for left them describing a picture that no longer exists, and the
+     * next import was developed wearing the previous one's white card. What
+     * made it read as a phantom is that a restart rebuilt the editor from the
+     * (empty) session and the border was gone: 「得重启软件才行」.
+     *
+     * <p>The two rows are repainted here as well: a card that still says
+     * 「纸框 · 101.6×152.4」 over a canvas with no card is the same bug seen
+     * from the other side.
+     */
+    private void clearBorderLook() {
+        frameTemplate = "";
+        pfKind = "none";
+        overscanOn = false;
+        overscanPair = false;
+        lastFotuPlain = null;
+        FrameTemplate.forget();
+        if (pfValue != null) pfValue.setText(pfLabel());
+        if (frameValue != null) frameValue.setText(frameSummary());
+        if (frameSize != null) frameSize.setText("—");
+        if (overscanMark != null) overscanMark.setLit(false);
+    }
+
     private void removeFrame(int index) {
         CrashTrail.markNow(this, "frame:remove " + index + " of " + frames.size());
         if (index < 0 || index >= frames.size()) return;
@@ -16408,6 +16578,8 @@ public class MainActivity extends Activity {
         if (index == currentFrame) {
             currentFrame = -1;
             lastRenderedBitmap = null;
+            // **The border described the picture that just went away.**
+            clearBorderLook();
         } else if (currentFrame > index) {
             currentFrame--;
         }
@@ -16773,12 +16945,12 @@ public class MainActivity extends Activity {
         int n = 0;
         for (int i = 0; i < filmIds.size(); ++i) {
             final String id = filmIds.get(i);
-            if ("all".equals(brand) || brand.equals(brandOf(id))) n++;
+            if (matchesFilter(id, brand)) n++;
         }
         for (int i = 0; i < fotuIds.size(); ++i) {
             final String fid = fotuIds.get(i);
             if (fotuMerged(fid)) continue;                  // the merged card, already counted
-            if ("all".equals(brand) || brand.equals(brandOf(FotuFilm.PREFIX + fid))) n++;
+            if (matchesFilter(FotuFilm.PREFIX + fid, brand)) n++;
         }
         return n;
     }
@@ -16792,7 +16964,7 @@ public class MainActivity extends Activity {
             if (count == 0) continue;
             TextView tab = label(BRAND_NAMES[i] + " " + count,
                     8.5f, id.equals(brandFilter) ? UI_BLUE : UI_MUTED,
-                    "all".equals(id) ? tfHan : tfBody);
+                    cjkTab(id) ? tfHan : tfBody);
             tab.setGravity(android.view.Gravity.CENTER_VERTICAL);
             tab.setPadding(0, 0, dp(20), 0);
             if (id.equals(brandFilter)) {
@@ -17387,14 +17559,14 @@ public class MainActivity extends Activity {
         // left out: those already have a card, drawn once, from the pair.
         for (int i = 0; i < filmIds.size(); ++i) {
             final String id = filmIds.get(i);
-            if (!"all".equals(brandFilter) && !brandFilter.equals(brandOf(id))) continue;
+            if (!matchesFilter(id, brandFilter)) continue;
             addFilmCard(id, cardCaption(i), i);
         }
         for (int i = 0; i < fotuIds.size(); ++i) {
             final String fid = fotuIds.get(i);
             if (fotuMerged(fid)) continue;
             final String id = FotuFilm.PREFIX + fid;
-            if (!"all".equals(brandFilter) && !brandFilter.equals(brandOf(id))) continue;
+            if (!matchesFilter(id, brandFilter)) continue;
             // Index -2 marks "not a filmIds entry"; the id carries the stock, so
             // nothing has to be looked up.
             addFilmCard(id, fotuCardCaption(i), -2);
@@ -19261,6 +19433,13 @@ public class MainActivity extends Activity {
             if (i == k) enterPanel(viewScrolls[i], 0, true);
             else hideAtOnce(viewScrolls[i]);
         }
+        // **A tool screen is shorter than a slider page, and the panel has to
+        // fold down to it.** `enterPanel(panels[2], ...)` pinned this page at
+        // `PANEL_CAP_DP` when 光学 was opened, and nothing re-measured it when
+        // the curve board left for the canvas: the page became a title, five
+        // channel names and one hint, and the remaining ~117 dp was empty paper
+        // above the tab bar. Reported with a screenshot.
+        fitViewPanel();
         refreshViewPanel();
     }
 
@@ -19268,6 +19447,34 @@ public class MainActivity extends Activity {
         closeCurveStage();
         toolPage = -1;
         showViewPage(viewPage);
+        fitViewPanel();
+    }
+
+    /**
+     * Hand `panels[2]` the height its visible sub-page actually needs.
+     *
+     * <p>`capPanel` only ever *shrinks* a page (it fires when the laid-out height
+     * exceeds the cap), so a page that got shorter -- 曲线 losing its 150 dp
+     * board to `openCurveStage`, or the strip coming back -- kept the height the
+     * tab was opened with. `naturalHeight` measures off screen at the same
+     * width, so the number is the layout's own answer.
+     */
+    private void fitViewPanel() {
+        final View host = panels == null || panels.length < 3 ? null : panels[2];
+        if (host == null || panelHolder == null || landscapeMode) return;
+        final int w = panelHolder.getWidth()
+                - panelHolder.getPaddingLeft() - panelHolder.getPaddingRight();
+        if (w <= 0) return;
+        int to = naturalHeight(host, w);
+        final int cap = dp(PANEL_CAP_DP);
+        if (to > cap) to = cap;
+        if (to <= 0) return;
+        final android.view.ViewGroup.LayoutParams lp = host.getLayoutParams();
+        if (lp != null && lp.height != to) {
+            lp.height = to;
+            host.setLayoutParams(lp);
+            host.requestLayout();
+        }
     }
 
     /**
@@ -19393,6 +19600,9 @@ public class MainActivity extends Activity {
             }
         }
         syncSubRowActive();
+        // A strip page is taller than a tool screen: coming back from 曲线 this
+        // is what un-folds the panel.
+        fitViewPanel();
         markFile("view page=" + page + " fromH=" + fromH
                 + " h=" + (viewScrolls[page] == null ? -1 : viewScrolls[page].getHeight()));
     }
@@ -19461,10 +19671,14 @@ public class MainActivity extends Activity {
         final DialBar bar = new DialBar(this);
         bar.setMax(1000);
         styleRange(bar);
-        final float fLo = lo, fHi = hi;
-        bar.setValueFormat(p -> String.format(java.util.Locale.US, "%.2f",
-                fLo + (fHi - fLo) * p / 1000f));
         final boolean ratio = log && lo > 0f && hi > lo;
+        final float fLo = lo, fHi = hi;
+        // **The ruler's numbers ride the same curve as the thumb.** 放大曝光
+        // is logarithmic, so the linear formatter printed -2.00 … 2.00 under a
+        // 0.25 … 4.00 control (those are log2 of its ends) and every label
+        // disagreed with the value beside it: 「滑轨上的参数刻度和实际的对不上」.
+        bar.setValueFormat(p -> String.format(java.util.Locale.US, "%.2f",
+                ratio ? logValue(fLo, fHi, p) : fLo + (fHi - fLo) * p / 1000f));
         final Runnable refresh = () -> {
             final float v = get.get();
             bar.setProgress(ratio ? logProgress(lo, hi, v)
@@ -23043,7 +23257,7 @@ public class MainActivity extends Activity {
         // into its own page -- not fifteen controls at once.
         LinearLayout home = new LinearLayout(this);
         home.setOrientation(LinearLayout.VERTICAL);
-        home.addView(sectionHead("FRAME & IMPRINT / 边框", this::resetEdgePanel),
+        home.addView(sectionHead("FRAME & IMPRINT / 边框", this::resetEdgePanelAll),
                 new LinearLayout.LayoutParams(-1, dp(38)));
 
         // **Rows, not a horizontal scroller.** Four 176 dp cards do not fit a
@@ -24411,11 +24625,19 @@ public class MainActivity extends Activity {
                 super.onMeasure(widthSpec, heightSpec);
                 return;
             }
-            super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST));
-            // AT_MOST(cap) already hugs a shorter list; this only makes the
-            // intent explicit if a future parent hands down a loose spec.
-            if (getMeasuredHeight() > cap) {
-                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.EXACTLY));
+            // **A box may not report more than the room it was given.** This
+            // used to measure at `cap` whatever the parent offered: a tab page
+            // is `PANEL_CAP_DP` tall and spends 38 dp on its header, so a box
+            // that insisted on 230 dp sat in a 192 dp slot. A ScrollView
+            // scrolls to its *measured* height, so the bottom 38 dp of every
+            // page -- the last row, the 局部 · 曝光 rows -- could not be
+            // reached at all. Reported as 「很多面板都拉不到最底下的参数」.
+            // UNSPECIFIED (ie. `naturalHeight`) still measures at `cap`, so
+            // the off-screen measurement the page swap relies on is unchanged.
+            final int limit = mode == MeasureSpec.AT_MOST ? Math.min(cap, size) : cap;
+            super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST));
+            if (getMeasuredHeight() > limit) {
+                super.onMeasure(widthSpec, MeasureSpec.makeMeasureSpec(limit, MeasureSpec.EXACTLY));
             }
         }
     }
@@ -26988,6 +27210,24 @@ public class MainActivity extends Activity {
         resetDatePage();
     }
 
+    /** The overview's own 重置: all four layers, not just the two sub-pages. */
+    private void resetEdgePanelAll() {
+        resetEdgePanel();
+        pfCamera = "panoramic";
+        pfFrames = 1;
+        pfMargin = 3f;
+        pfFx = 0f;
+        pfFy = 0f;
+        refreshPfRows();
+        frameTemplate = "";
+        FrameTemplate.forget();
+        refreshFrameRows();
+        refreshEdgeCards();
+        if (filmStock == null || showingOriginal) return;
+        if (isFotuStock(filmStock)) { if (lastFotuPlain != null) recomposeFotu(); else renderFotu(); }
+        else if (session != null) renderImage();
+    }
+
     private void resetOverscanPage() {
         overscanOn = false;
         overscanMark.setLit(false);
@@ -27546,7 +27786,7 @@ public class MainActivity extends Activity {
             if (filmThumbs.containsKey(thumbKey(key))) continue;
             // It already said "无法预览"; a tap is the next attempt, not a pass.
             if (prefetchFails.containsKey(key)) continue;
-            if ("all".equals(brandFilter) || brandFilter.equals(brandOf(id))) pending.add(id);
+            if (matchesFilter(id, brandFilter)) pending.add(id);
             else rest.add(id);
         }
         pending.addAll(rest);
@@ -30492,6 +30732,9 @@ public class MainActivity extends Activity {
     /** 打开：把设置页搬进 stage，三块从左上角长满屏幕。 */
     private void openSettingsCorner() {
         if (uiRoot == null || settingsScreen == null) return;
+        // Motion off: the page is simply there (it is already visible and
+        // opaque by the time this is called).
+        if (!arrivalAnim()) return;
         final CornerSwitch stage = new CornerSwitch(this, LT_KLEIN, CORNER_ORANGE, UI_PAPER);
         uiRoot.removeView(settingsScreen);
         stage.addView(settingsScreen, new android.widget.FrameLayout.LayoutParams(-1, -1));
@@ -30504,6 +30747,11 @@ public class MainActivity extends Activity {
 
     /** 关闭：页面先缩回左上角，然后深色，最后蓝色 —— 房间就是这么露出来的。 */
     private void closeSettingsCorner() {
+        if (!arrivalAnim()) {
+            if (settingsScreen != null) settingsScreen.setVisibility(View.GONE);
+            syncRoomBars();
+            return;
+        }
         if (uiRoot == null || settingsScreen == null) {
             if (settingsScreen != null) settingsScreen.setVisibility(View.GONE);
             syncRoomBars();
@@ -30668,8 +30916,8 @@ public class MainActivity extends Activity {
         settingsAdd(settingsRow("滑杆样式", "尺子 = 原来的样子；轨道 = 拇指跟手，刻度印在下面",
                 sliderStyleValue(), true, this::showSliderStyleSheet));
         settingsRule();
-        settingsAdd(settingsSwitch("入场动画", "文字逐字、边框、滑竿刻度、相纸条；关掉更快", arrivalAnim(),
-                this::setArrivalAnim));
+        settingsAdd(settingsSwitch("界面动画", "文字逐字、边框、滑竿刻度、相纸条、面板升降、页面转场；关掉更快",
+                arrivalAnim(), this::setArrivalAnim));
 
         settingsGroup("预览 \u00b7 PREVIEW");
         settingsAdd(settingsSwitch("直方图", "叠在画面左上角的分布", histogramOn, on -> {
@@ -31773,6 +32021,20 @@ public class MainActivity extends Activity {
             // as "重新导入一张还是黑灰", gone after a restart for the obvious
             // reason.
             applyLook(defaultLook());
+        }
+        if (reopenIndex < 0) {
+            // **Belt to `applyLook`'s braces.** `defaultLook()` already says
+            // 「no border」, but one abandoned assignment anywhere in that
+            // method (it writes fifty fields between here and the border, and
+            // most of them repaint panels) is enough to carry the deleted
+            // picture's card onto this one. A fresh import is the one moment
+            // where the answer is known without asking anything.
+            frameTemplate = "";
+            pfKind = "none";
+            overscanOn = false;
+            overscanPair = false;
+            lastFotuPlain = null;
+            FrameTemplate.forget();
         }
         CrashTrail.mark(this, "import:look");
         try {
@@ -35545,6 +35807,10 @@ public class MainActivity extends Activity {
      */
     private void renderFotu() {
         if (!isFotuStock(filmStock)) return;
+        try {
+            DebugSink.text("border", "fotu pf=" + pfKind + " card=" + frameTemplate
+                    + " gate=" + overscanFormat + " film=" + filmStock + " frame=" + currentFrame);
+        } catch (Throwable ignored) { }
         if (fotuRendering) {
             fotuPending = true;
             statusText.setText("渲染中…");
@@ -37041,6 +37307,11 @@ public class MainActivity extends Activity {
     private void renderImage() { renderImage(PREVIEW_LONG_EDGE); }
 
     private void renderImage(int longEdge) {
+        try {
+            DebugSink.text("border", "spk pf=" + pfKind + " card=" + frameTemplate
+                    + " gate=" + overscanFormat + " on=" + overscanOn
+                    + " film=" + filmStock + " frame=" + currentFrame);
+        } catch (Throwable ignored) { }
         // **The engine is busy re-developing a live clip.** That loop owns 12
         // seconds of it, and a second render landing inside it would share the
         // one native result buffer with the clip. Say so, and render once when
@@ -40241,7 +40512,12 @@ public class MainActivity extends Activity {
                         // export re-decodes at the file's, which can be ten
                         // times what this heuristic was weighing.
                         long needPixels = (long) sourceWidth * sourceHeight;
-                        final int[] fileSize = exportAtNative && sourceUri != null
+                        // **A RAW's header reports its embedded JPEG.** Using it
+                        // here under-stated what the export needs (148 MB against a
+                        // real 313 MB on the X-M5 report) and, further down, made
+                        // 「按原图」 mean the preview's size. The session's own source
+                        // *is* the RAW's size, so a RAW never asks the header.
+                        final int[] fileSize = exportAtNative && sourceUri != null && !isRawFile
                                 ? sniffImageSize(sourceUri) : null;
                         if (fileSize != null && fileSize[0] > 0 && fileSize[1] > 0)
                             needPixels = (long) fileSize[0] * fileSize[1];
@@ -40284,7 +40560,19 @@ public class MainActivity extends Activity {
                             Bitmap fullBmp = null;
                             long fullBuf = 0;
                             try {
-                                final String path = sourceUri != null ? getFilePathFromUri(sourceUri) : null;
+                                // **`BitmapFactory` cannot read a RAW's own pixels.**
+                                // Handed a .RAF it returns the camera's *embedded
+                                // JPEG* -- 4416x2944 against a 6252x4176 negative on
+                                // the X-M5 report -- which is a different picture at
+                                // 70 % of the size, developed with the camera's own
+                                // grade. The export then wrote 7.6 MB where the frame
+                                // was 22.7 MB, and `export-selfcheck` read NCC 0.578
+                                // where a matching export reads 0.97: 「导出来是这样
+                                // 的」, twice, on one photograph (SL-261123-5756).
+                                // A RAW's 「按原图」 is the demosaiced frame the session
+                                // already holds, so it never re-decodes here.
+                                final String path = (!isRawFile && sourceUri != null)
+                                        ? getFilePathFromUri(sourceUri) : null;
                                 // **Not `inSampleSize = 1`.** See `decodeForExport`: the
                                 // release frame is the largest this phone can develop, not
                                 // the largest the file happens to be.
@@ -40292,16 +40580,40 @@ public class MainActivity extends Activity {
                                     fullBmp = decodeForExport(path, exportPixelCap());
                                 }
                             } catch (Throwable ignored) { fullBmp = null; }
-                            final boolean bigger = fullBmp != null
-                                    && (long) fullBmp.getWidth() * fullBmp.getHeight()
-                                       > (long) sourceWidth * sourceHeight;
+                            final long fullPx = fullBmp == null ? 0L
+                                    : (long) fullBmp.getWidth() * fullBmp.getHeight();
+                            final long framePx = (long) sourceWidth * sourceHeight;
+                            final boolean bigger = fullBmp != null && fullPx > framePx;
+                            // **A file that reads back *smaller* than the frame is
+                            // not the frame** -- an embedded preview, a thumbnail, a
+                            // half-size decode. Losing the staging copy is a reason
+                            // to go back to the file, never a reason to accept less
+                            // than what is on the canvas.
+                            final boolean usable = fullBmp != null && fullPx >= framePx;
                             // **A frame with no staging copy comes back from the
                             // file.** Since 1.7.0i the import lets
                             // `sourcePixels` go once the engine has its own;
                             // the export is the only thing that ever wanted it,
                             // and re-decoding at the same size is the same
                             // frame.
-                            final boolean fromFile = bigger || (sourcePixels == 0 && fullBmp != null);
+                            final boolean fromFile = bigger || (sourcePixels == 0 && usable);
+                            if (!fromFile && fullBmp != null) {
+                                // **Do not leave a 52 MB preview behind.** The
+                                // `fromFile` branch recycles its own bitmap, so a
+                                // refusal used to keep the embedded JPEG alive
+                                // until the next GC -- once per export.
+                                if (isRawFile) {
+                                    try {
+                                        DebugSink.text("export", "RAW: the export keeps the frame's own "
+                                                + sourceWidth + "x" + sourceHeight
+                                                + " (the file reads back "
+                                                + fullBmp.getWidth() + "x" + fullBmp.getHeight()
+                                                + ", its embedded JPEG)");
+                                    } catch (Throwable ignored) { }
+                                }
+                                fullBmp.recycle();
+                                fullBmp = null;
+                            }
                             if (fromFile) {
                                 final int fw = fullBmp.getWidth(), fh = fullBmp.getHeight();
                                 try {
@@ -40847,8 +41159,18 @@ public class MainActivity extends Activity {
                     // container intact and does it carry the pixels the header
                     // promises. A truncated write is the failure they actually
                     // suffer from.
-                    final double ncc = (batchExportRunning || noPixels) ? -1
+                    final double[] match = (batchExportRunning || noPixels)
+                            ? new double[]{-1, -1}
                             : exportMatchesCanvas(tmp.getAbsolutePath(), lastRenderedBitmap);
+                    final double ncc = match[0];
+                    // **A picture that is merely brighter is still the wrong
+                    // picture.** 15/255 is an order of magnitude above what a
+                    // re-encode and a resample can move (1-2 levels), so it
+                    // cannot fire on a correct export; a two-stop mistake reads
+                    // 100+. A batch is never checked here (its canvas belongs to
+                    // another frame), which is why this rides on `match`, not on
+                    // a fresh measurement.
+                    final double meanGap = match[1];
                     // **The measurement that actually catches this.** A frame
                     // replaced by row-to-row noise survives every check that
                     // averages: at 48 columns the noise is flat grey, so a
@@ -40858,19 +41180,21 @@ public class MainActivity extends Activity {
                     // reports measure 6 to 999 -- so it is asked separately and
                     // either one failing condemns the file.
                     final int stripes = info.length > 7 ? info[7] : -1;
-                    if ((ncc >= 0 && ncc < 0.55) || stripes >= 3500) {
+                    if ((ncc >= 0 && ncc < 0.55) || stripes >= 3500
+                            || (meanGap >= 0 && meanGap > 15.0)) {
                         exportCorruptNow = true;
                         try {
                             DebugSink.textNow("export-corrupt",
                                     String.format(java.util.Locale.US,
-                                        "canvas NCC %.3f rows %d at %dx%d tier=%s overscan=%s — retrying",
-                                        ncc, stripes, w, h, tier, overscanOn)
+                                        "canvas NCC %.3f gap %.1f rows %d at %dx%d tier=%s overscan=%s — retrying",
+                                        ncc, meanGap, stripes, w, h, tier, overscanOn)
                                         + "\n" + rowSignature(tmp.getAbsolutePath())
                                         + "\n" + reportHead());
                         } catch (Throwable ignored) { }
                     } else if (ncc >= 0) {
                         try { DebugSink.text("export-selfcheck", String.format(
-                                java.util.Locale.US, "canvas NCC %.3f rows %d", ncc, stripes)); }
+                                java.util.Locale.US, "canvas NCC %.3f gap %.1f rows %d",
+                                ncc, meanGap, stripes)); }
                         catch (Throwable ignored) { }
                     }
                 }
