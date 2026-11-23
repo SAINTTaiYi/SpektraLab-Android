@@ -17337,6 +17337,10 @@ public class MainActivity extends Activity {
         }
         shelfShapeIsGrid = intoGrid;
         rebuildFilmCards();
+        // The rebuild draws every card that has a picture; this asks for the
+        // ones that do not. `startPrefetch` returns immediately when nothing is
+        // missing, so a full shelf costs one loop over the tags.
+        ensureShelfQueue();
         if (withCross && shelfCross != null) {
             shelfCross.setVisibility(View.VISIBLE);
             shelfCross.setAlpha(1f);
@@ -18591,6 +18595,22 @@ public class MainActivity extends Activity {
         startPrefetch();
     }
 
+    /**
+     * **Is this card's picture already in hand?**
+     *
+     * <p>Deliberately does not ask the queue. `rebuildFilmCards` runs on every
+     * expand and every collapse, and by then the pass that filled
+     * `filmThumbs` has long finished -- so `shelfQueued()` is false for every
+     * card, and a branch that tests it first throws away fifty-one good
+     * thumbnails and draws fifty-one box fronts. That is exactly what 「展开
+     * 之后预览图都变回未加载」 was: the pictures were in the map the whole time.
+     */
+    private boolean cardHasPicture(String id, String key) {
+        if (filmThumbs.containsKey(thumbKey(key))) return true;
+        return lastRenderedBitmap != null && filmStock != null && !showingOriginal
+                && cardShowsStock(id, filmStock);
+    }
+
     private void addFilmCard(final String id, String text, final int index) {
         final boolean original = "original".equals(id);
         // **A film the shelf's engine does not ship is greyed, not hidden.** It
@@ -18626,15 +18646,18 @@ public class MainActivity extends Activity {
             // drawn cover both read as "still loading"; after three passes this
             // is the honest state, and a tap retries it.
             imageBox.addView(unavailableTile(), new android.widget.FrameLayout.LayoutParams(-1, -1));
-        } else if (beforeBitmap == null || !shelfQueued(id)) {
-            // **Nothing is queued with no engine, so nothing may look queued.**
-            // The card is born with the source at 55 % and the loading bars
-            // when it has no preview; with no engine there is no pass coming,
-            // and forty spinning cards read as a broken shelf.
-            // **No photograph yet, so there is nothing to preview.** A name
-            // typed into a grey rectangle says "empty slot"; a drawn box front
-            // says "this is a film". The shelf's job is choosing a stock, and
-            // before the first import that is the only thing it can show.
+        } else if (beforeBitmap == null
+                || (!cardHasPicture(id, key) && !shelfQueued(id))) {
+            // **A cover, only when there is genuinely nothing to show.** No
+            // photograph yet, no picture for this film, and no pass coming --
+            // that is a catalogue entry, and a drawn box front says "this is a
+            // film" where a spinner would say "wait".
+            //
+            // **A picture already in the map outranks the queue.** The check
+            // used to be `!shelfQueued(id)` alone, which is false after every
+            // pass ends -- so each rebuild (expand, collapse, brand switch)
+            // dropped every thumbnail and drew covers instead, and collapsing
+            // again did not bring them back.
             imageBox.addView(new FilmCoverView(this, id, text),
                     new android.widget.FrameLayout.LayoutParams(-1, -1));
         } else {
@@ -24318,6 +24341,7 @@ public class MainActivity extends Activity {
      * it mid-drag would cancel the drag.
      */
     private void beginDragFocus(DialBar bar) {
+        CappedScroll.fadeOn = false;
         // **A previous drag that never released.** The page can be rebuilt
         // under a finger (see `DialBar.onDetachedFromWindow`), and before that
         // hook existed the panel stayed blue for good. Ending here costs
@@ -24514,6 +24538,7 @@ public class MainActivity extends Activity {
     }
 
     private void endDragFocus(DialBar bar) {
+        CappedScroll.fadeOn = true;
         if (dragRow == null) return;
         dragRow = null;
         for (Object[] e : dragFaded) ((View) e[0]).setAlpha((Float) e[1]);
@@ -25574,6 +25599,17 @@ public class MainActivity extends Activity {
         /** The most this box will ever ask for, in px. */
         int cap() { return cap; }
 
+        /**
+         * **Off while the panel is transparent.**
+         *
+         * <p>The fade is 12 dp of `UI_PAPER` at the foot of the box -- the
+         * panel's own ink, saying there is more below. While a slider is being
+         * dragged the panel has no ink at all (the photograph is behind it), so
+         * that 12 dp becomes a white bar across the picture. Reported as
+         * 「调节参数的时候底下有一条白色的东西」.
+         */
+        static volatile boolean fadeOn = true;
+
         CappedScroll(android.content.Context context, int cap) {
             super(context);
             this.cap = cap;
@@ -25600,7 +25636,7 @@ public class MainActivity extends Activity {
          */
         @Override protected void dispatchDraw(android.graphics.Canvas c) {
             super.dispatchDraw(c);
-            if (!canScrollVertically(1)) return;
+            if (!fadeOn || !canScrollVertically(1)) return;
             final float h = 12f * getResources().getDisplayMetrics().density;
             final float top = getHeight() - h;
             if (top <= 0f) return;
