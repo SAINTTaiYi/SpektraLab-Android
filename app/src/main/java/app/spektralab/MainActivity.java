@@ -18253,7 +18253,7 @@ public class MainActivity extends Activity {
         // below are previews *of* -- a film only one engine carries is greyed
         // rather than hidden, because hiding it would make the shelf lie about
         // what the app can do.
-        engineSpkCell = label("SPK", 7.5f, UI_BLUE, tfBody);
+        engineSpkCell = label("SPEK", 7.5f, UI_BLUE, tfBody);
         engineFotuCell = label("FOTU", 7.5f, UI_BLUE, tfBody);
         engineSpkCell.setGravity(android.view.Gravity.CENTER);
         engineFotuCell.setGravity(android.view.Gravity.CENTER);
@@ -19570,7 +19570,7 @@ public class MainActivity extends Activity {
             // interrupted the one gesture the shelf exists for.
             engineNudge = true;
             refreshEngineSwitch();
-            showInAppToast("先在「胶片与相纸」右上角选引擎（SPK / FOTU），再点胶片");
+            showInAppToast("先在「胶片与相纸」右上角选引擎（SPEK / FOTU），再点胶片");
             return;
         }
         // **The head's switch decides, not the card.** A film the shelf's engine
