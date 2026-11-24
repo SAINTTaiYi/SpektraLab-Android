@@ -1290,3 +1290,6 @@ TIFF 线性 / DNG / 实况照片只有全尺寸；TIFF 16位没有实时档。	T
 显影：把负片到相纸的过程写成 3 秒实况（负片转正片），不需要相机录的那段动图。	Develop: the negative turning into the print, written as a three-second live photo — no camera clip needed.
 这一帧没有可导出的动图（不是实况照片，或动图已丢失）	No clip to export in this frame (not a live photo, or the clip is gone)
 这张是实况照片 · 选「实况照片」可把那段动图一起写进去	This is a live photo · choose Live photo to write the clip with the still
+参考线	Guides
+左转 90°	Rotate left 90°
+右转 90°	Rotate right 90°

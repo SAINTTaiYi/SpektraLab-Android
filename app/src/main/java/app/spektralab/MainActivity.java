@@ -284,6 +284,8 @@ public class MainActivity extends Activity {
      *  level against. */
     private boolean rotateGridOn = true;
     private RotateScale rotateArc;
+    /** The angle itself, 0.1° and centred over the ruler. */
+    private TextView rotateReadout;
     /** The committed angle when the finger went down: a failed render has to
      *  put the picture back where it was, not leave it turned in the numbers
      *  and straight on the screen. */
@@ -14024,15 +14026,17 @@ public class MainActivity extends Activity {
         compare.setRotateSink(new CompareView.RotateSink() {
             @Override public void onRotateStart() {
                 rotationBeforeDrag = geometryRotation;
-                rotating = true;
+                rotTickDeg = Math.round(geometryRotation);
+                rotInDetent = Math.abs(geometryRotation) < ROTATE_DETENT_DEG;
+                setRotatingNow(true);
             }
             @Override public void onRotateDelta(float total) { previewRotate(total); }
             @Override public void onRotateCommit(float total) {
-                rotating = false;
+                setRotatingNow(false);
                 commitRotate(total);
             }
             @Override public void onRotateReset() {
-                rotating = false;
+                setRotatingNow(false);
                 resetRotation("picture");
             }
         });
@@ -23664,62 +23668,248 @@ public class MainActivity extends Activity {
         showComposePage(0);
     }
 
+    /**
+     * **构图 → 旋转.**
+     *
+     * <p>Three instruments, in the order they get used: the angle as a number
+     * (tap it to level), a straight ruler you drag, and four things you press
+     * once. The arc that used to stand here was a lens barrel -- a degree cost
+     * a different number of pixels at its ends than in its middle, so the same
+     * hand movement meant different corrections depending on where it landed,
+     * and it read two decimals it could not actually resolve.
+     */
     private void buildRotatePage() {
-        // **The gesture is on the picture; the scale is the readout.** This
-        // page used to make the finger turn a dial while the picture sat still,
-        // which is the wrong way round: 修偏 is done by watching the horizon.
-        final RotateScale arc = new RotateScale(this);
-        arc.setAngle(geometryRotation);
-        rotateArc = arc;
-        android.widget.FrameLayout arcBox = new android.widget.FrameLayout(this);
-        arcBox.addView(arc, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        final TextView gridChip = label("", 8f, UI_BLUE, tfHan);
-        final Runnable paintChip = () -> gridChip.setText(rotateGridOn ? "参考线 · 开" : "参考线 · 关");
-        paintChip.run();
-        gridChip.setPadding(dp(8), dp(4), dp(8), dp(4));
-        gridChip.setOnClickListener(v -> {
+        // ---- the angle, and the guides it is read against ----------------
+        final android.widget.FrameLayout status = new android.widget.FrameLayout(this);
+        rotateReadout = label("", 15f, UI_INK, tfBody);
+        rotateReadout.setFontFeatureSettings("tnum");
+        rotateReadout.setSingleLine(true);
+        rotateReadout.setGravity(android.view.Gravity.CENTER);
+        // **The number is a target.** It is where the eye goes to read the
+        // angle, so it is where the hand goes to level it: a tap eases the
+        // picture to zero over 260 ms instead of cutting to it.
+        rotateReadout.setOnClickListener(v -> animateRotationTo(0f, "readout"));
+        status.addView(rotateReadout, new android.widget.FrameLayout.LayoutParams(-2, -2,
+                android.view.Gravity.CENTER));
+        status.addView(gridToggle(), new android.widget.FrameLayout.LayoutParams(-2, -2,
+                android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL));
+        composeBody.addView(status, new LinearLayout.LayoutParams(-1, dp(30)));
+
+        // ---- the ruler ---------------------------------------------------
+        final RotateScale ruler = new RotateScale(this);
+        ruler.setAngle(geometryRotation);
+        rotateArc = ruler;
+        composeBody.addView(ruler, new LinearLayout.LayoutParams(-1, dp(56)));
+
+        // ---- the four things you press once ------------------------------
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(10), 0, 0);
+        final LinearLayout.LayoutParams c0 = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        c0.rightMargin = dp(6);
+        final LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        c1.rightMargin = dp(6);
+        final LinearLayout.LayoutParams c2 = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        c2.rightMargin = dp(6);
+        row.addView(actionCard(IconBox.ROTATE_LEFT, "左转 90°", () -> turnBy(-1), false), c0);
+        row.addView(actionCard(IconBox.ROTATE_RIGHT, "右转 90°", () -> turnBy(1), false), c1);
+        row.addView(actionCard(IconBox.FLIP_H, "水平翻转", () -> {
+            geometryFlipH = !geometryFlipH;
+            if (compare != null) compare.animateFlip(true);
+            showComposePage(1);
+            commitCompose();
+        }, geometryFlipH), c2);
+        row.addView(actionCard(IconBox.FLIP_V, "垂直翻转", () -> {
+            geometryFlipV = !geometryFlipV;
+            if (compare != null) compare.animateFlip(false);
+            showComposePage(1);
+            commitCompose();
+        }, geometryFlipV), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        composeBody.addView(row, new LinearLayout.LayoutParams(-1, -2));
+
+        refreshRotateReadout(geometryRotation);
+    }
+
+    /** 参考线: the little switch that decides whether a grid exists at all. */
+    private View gridToggle() {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        box.setPadding(dp(8), dp(5), dp(8), dp(5));
+        final IconBox glyph = new IconBox(this, IconBox.GRID);
+        final TextView text = label("参考线", 8.5f, UI_MUTED, tfHan);
+        box.addView(glyph, new LinearLayout.LayoutParams(dp(12), dp(12)));
+        final LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-2, -2);
+        tlp.leftMargin = dp(5);
+        box.addView(text, tlp);
+        final Runnable paint = () -> {
+            final boolean on = rotateGridOn;
+            box.setBackground(outlineBox(on));
+            text.setTextColor(on ? UI_BLUE : UI_FAINT);
+            glyph.setTint(on ? UI_BLUE : UI_FAINT);
+            glyph.invalidate();
+        };
+        paint.run();
+        box.setOnClickListener(v -> {
             rotateGridOn = !rotateGridOn;
             getSharedPreferences("ui", MODE_PRIVATE).edit()
                     .putBoolean("rotate_grid", rotateGridOn).apply();
-            paintChip.run();
+            paint.run();
             syncRotateGrid();
         });
-        android.widget.FrameLayout.LayoutParams chipLp = new android.widget.FrameLayout.LayoutParams(
-                -2, -2, android.view.Gravity.TOP | android.view.Gravity.END);
-        chipLp.topMargin = 0;
-        chipLp.rightMargin = dp(6);
-        arcBox.addView(gridChip, chipLp);
-        composeBody.addView(arcBox, new LinearLayout.LayoutParams(-1, dp(70)));
-        final TextView tip = label("拖弧尺或画面转动 · 双击画面归零 · 松手吸附水平",
-                7.5f, UI_MUTED, tfHan);
-        tip.setGravity(android.view.Gravity.CENTER);
-        composeBody.addView(tip, new LinearLayout.LayoutParams(-1, dp(14)));
-
-        final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(12), 0, 0);
-
-        final LinearLayout.LayoutParams cell = new LinearLayout.LayoutParams(0, -2, 1f);
-        row.addView(circleAction("↺", "向左 90°", () -> turnBy(-1)), cell);
-        row.addView(circleAction("↻", "向右 90°", () -> turnBy(1)),
-                new LinearLayout.LayoutParams(0, -2, 1f));
-        row.addView(circleAction("⇆", "水平翻转", () -> {
-            geometryFlipH = !geometryFlipH;
-            showComposePage(1);
-            commitCompose();
-        }), new LinearLayout.LayoutParams(0, -2, 1f));
-        row.addView(circleAction("⇅", "垂直翻转", () -> {
-            geometryFlipV = !geometryFlipV;
-            showComposePage(1);
-            commitCompose();
-        }), new LinearLayout.LayoutParams(0, -2, 1f));
-        composeBody.addView(row, new LinearLayout.LayoutParams(-1, -2));
-
-        // No footnote under the buttons: the tip above the scale already says
-        // what the gesture does, and this page is height-sensitive. (The old
-        // one here still said "转表盘" three pages after the dial was removed.)
+        return box;
     }
 
+    /**
+     * **One of the four.** The same card the print parameters use -- ground
+     * fill, a hairline that turns accent when it is on -- because a page with
+     * one visual language is the whole point.
+     */
+    private View actionCard(int icon, String caption, Runnable tap, boolean active) {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        box.setBackground(cardBorder(active));
+        box.setClickable(true);
+        final IconBox glyph = new IconBox(this, icon);
+        glyph.setTint(active ? UI_BLUE : UI_INK);
+        box.addView(glyph, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        final TextView text = label(caption, 8.5f, active ? UI_BLUE : UI_MUTED, tfHan);
+        text.setGravity(android.view.Gravity.CENTER);
+        final LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, -2);
+        tlp.topMargin = dp(5);
+        box.addView(text, tlp);
+        box.setOnClickListener(v -> tap.run());
+        return box;
+    }
+
+    /**
+     * **One icon language for this page.**
+     *
+     * <p>The four buttons used to be font characters (↺ ↻ ⇆ ⇅), drawn by
+     * whatever symbol face the ROM happens to carry: two of them came out
+     * visibly lighter and smaller than the other two, and none of them shared a
+     * stroke with the rest of the interface. These are paths -- one 1.6 dp
+     * stroke, one 20 dp box, identical at every density.
+     */
+    private final class IconBox extends View {
+        static final int ROTATE_LEFT = 0, ROTATE_RIGHT = 1, FLIP_H = 2, FLIP_V = 3, GRID = 4;
+
+        private final int kind;
+        private int tint = UI_INK;
+        private final android.graphics.Paint p =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Path path = new android.graphics.Path();
+        private final android.graphics.RectF oval = new android.graphics.RectF();
+
+        IconBox(android.content.Context c, int kind) {
+            super(c);
+            this.kind = kind;
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            p.setStrokeJoin(android.graphics.Paint.Join.ROUND);
+        }
+
+        void setTint(int c) {
+            if (tint == c) return;
+            tint = c;
+            invalidate();
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas c) {
+            final float w = getWidth(), h = getHeight();
+            if (w <= 0f || h <= 0f) return;
+            final float s = Math.min(w, h);
+            final float cx = w / 2f, cy = h / 2f;
+            final float u = s / 20f;               // everything below is in 20ths
+            p.setColor(tint);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(1f, dp(1.7f)));
+            switch (kind) {
+                case ROTATE_RIGHT:
+                    drawRotate(c, cx, cy, u * 7.2f, u);
+                    break;
+                case ROTATE_LEFT: {
+                    final int save = c.save();
+                    c.scale(-1f, 1f, cx, cy);
+                    drawRotate(c, cx, cy, u * 7.2f, u);
+                    c.restoreToCount(save);
+                    break;
+                }
+                case FLIP_H:
+                    drawFlip(c, cx, cy, u, true);
+                    break;
+                case FLIP_V:
+                    drawFlip(c, cx, cy, u, false);
+                    break;
+                case GRID:
+                    p.setStrokeWidth(Math.max(1f, dp(1.1f)));
+                    drawGridIcon(c, cx, cy, u);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /** Three quarters of a ring with the head at the moving end. */
+        private void drawRotate(android.graphics.Canvas c, float cx, float cy, float r, float u) {
+            oval.set(cx - r, cy - r, cx + r, cy + r);
+            final float start = -60f, sweep = 285f;
+            c.drawArc(oval, start, sweep, false, p);
+            final double a = Math.toRadians(start + sweep);
+            final float ex = (float) (cx + r * Math.cos(a));
+            final float ey = (float) (cy + r * Math.sin(a));
+            final float tx = (float) -Math.sin(a), ty = (float) Math.cos(a);
+            final float L = u * 2.9f, W = u * 1.9f;
+            path.reset();
+            path.moveTo(ex - tx * L + ty * W, ey - ty * L - tx * W);
+            path.lineTo(ex, ey);
+            path.lineTo(ex - tx * L - ty * W, ey - ty * L + tx * W);
+            c.drawPath(path, p);
+        }
+
+        /**
+         * **A mirror, not an arrow.** Two triangles pointing into a broken
+         * axis: the break is what says "this line is a reflection", and the
+         * pair says which way the picture is about to turn over. A pair of
+         * arrows reads as "move", which is a different button.
+         */
+        private void drawFlip(android.graphics.Canvas c, float cx, float cy, float u, boolean horizontal) {
+            final int save = c.save();
+            if (!horizontal) c.rotate(90f, cx, cy);
+            final float thin = p.getStrokeWidth();
+            p.setStrokeWidth(Math.max(1f, dp(1.2f)));
+            for (int i = 0; i < 3; ++i) {
+                final float y = cy - u * 5.6f + i * u * 5.2f;
+                c.drawLine(cx, y, cx, y + u * 2.8f, p);
+            }
+            p.setStrokeWidth(thin);
+            // Left half: apex on the axis, base outboard.
+            path.reset();
+            path.moveTo(cx - u * 1.5f, cy);
+            path.lineTo(cx - u * 7.0f, cy - u * 4.9f);
+            path.lineTo(cx - u * 7.0f, cy + u * 4.9f);
+            path.close();
+            c.drawPath(path, p);
+            path.reset();
+            path.moveTo(cx + u * 1.5f, cy);
+            path.lineTo(cx + u * 7.0f, cy - u * 4.9f);
+            path.lineTo(cx + u * 7.0f, cy + u * 4.9f);
+            path.close();
+            c.drawPath(path, p);
+            c.restoreToCount(save);
+        }
+
+        private void drawGridIcon(android.graphics.Canvas c, float cx, float cy, float u) {
+            final float half = u * 4.6f;
+            c.drawRect(cx - half, cy - half, cx + half, cy + half, p);
+            for (int i = 1; i < 3; ++i) {
+                final float d = -half + half * 2f * i / 3f;
+                c.drawLine(cx + d, cy - half, cx + d, cy + half, p);
+                c.drawLine(cx - half, cy + d, cx + half, cy + d, p);
+            }
+        }
+    }
     /** The grid belongs to exactly one square inch of this app. */
     private void syncRotateGrid() {
         if (compare == null) return;
@@ -23739,47 +23929,51 @@ public class MainActivity extends Activity {
 
     /** Live: the picture turns under the finger, nothing renders. */
     private void previewRotate(float total) {
-        final float want = clampRotation(rotationBeforeDrag + total);
+        final float want = magnetAngle(clampRotation(rotationBeforeDrag + total));
         if (rotateArc != null) rotateArc.setAngle(want);
         if (compare != null) compare.setPreviewRotation(want - rotationBeforeDrag);
+        refreshRotateReadout(want);
+        // One click per whole degree, and a heavier one on the way into the
+        // detent: the hand can count the correction without the eye leaving the
+        // horizon.
+        final int deg = Math.round(want);
+        if (deg != rotTickDeg) {
+            rotTickDeg = deg;
+            tickHaptic(false);
+        }
+        final boolean detent = Math.abs(want) < ROTATE_DETENT_DEG;
+        if (detent && !rotInDetent) tickHaptic(true);
+        rotInDetent = detent;
     }
 
     /**
      * Level the picture.
      *
-     * <p>Two ways in: a double tap on the canvas, and a double tap on the scale. The scale is
-     * where the reading is, so it is where people aim -- it used to swallow the second tap as a
-     * zero-degree drag, commit a full render, and never reset anything. One body, one log line,
-     * so a report can tell which target fired.
+     * <p>Three ways in now: a double tap on the canvas, a double tap on the
+     * ruler, and a tap on the reading itself -- the number is where the eye
+     * goes, so it is where the hand goes. All three ease over 260 ms; a cut to
+     * zero used to show the old baked angle until the render landed, so the
+     * picture appeared to jump twice.
      */
     private void resetRotation(String from) {
-        try {
-            DebugSink.text("rotate", "reset by double tap on the " + from
-                    + " (was " + geometryRotation + ")");
-        } catch (Throwable ignored) { }
-        rotationBeforeDrag = geometryRotation;
-        geometryRotation = 0f;
-        rotationPending = true;
-        geometrySeq++;
-        if (rotateArc != null) rotateArc.setAngle(0f);
-        if (compare != null) compare.setPreviewRotation(0f);
-        commitCompose();
+        animateRotationTo(0f, from);
     }
 
     /** Release: level snaps, the pipeline hears about it once. */
     private void commitRotate(float total) {
-        float want = clampRotation(rotationBeforeDrag + total);
+        float want = magnetAngle(clampRotation(rotationBeforeDrag + total));
         try {
             DebugSink.text("rotate", "commit want=" + want + " before=" + rotationBeforeDrag
                     + " total=" + total);
         } catch (Throwable ignored) { }
-        // Level is a place, not a number: 0.6 degrees is about two pixels of
-        // travel at the frame's corner.
-        if (Math.abs(want) < 0.6f) want = 0f;
+        // **Nothing snaps on release.** The magnet already made level a place
+        // the hand has to mean; rounding 0.4° away afterwards threw away the
+        // correction the user had just made, which is what "松手又弹回 0°" was.
         geometryRotation = want;
         rotationPending = true;
         geometrySeq++;
         if (rotateArc != null) rotateArc.setAngle(want);
+        refreshRotateReadout(want);
         if (compare != null) compare.setPreviewRotation(want - rotationBeforeDrag);
         // **The numbers, uploaded.** Three builds of reasoning about this
         // gesture produced nothing provable on the host -- the engine's own
@@ -23837,6 +24031,9 @@ public class MainActivity extends Activity {
         if (!twistActive) {
             twistActive = true;
             rotationBeforeDrag = geometryRotation;
+            rotTickDeg = Math.round(geometryRotation);
+            rotInDetent = Math.abs(geometryRotation) < ROTATE_DETENT_DEG;
+            setRotatingNow(true);
         }
         previewRotate(twistTotal - Math.signum(twistTotal) * TWIST_DEAD_ZONE_DEG);
     }
@@ -23848,71 +24045,70 @@ public class MainActivity extends Activity {
         twistTotal = 0f;
         twistActive = false;
         if (!active) return;
+        setRotatingNow(false);
         commitRotate(total - Math.signum(total) * TWIST_DEAD_ZONE_DEG);
     }
 
     /**
-     * **The scale under the picture, after the editor this is modelled on.**
+     * **A straight precision ruler, in degrees.**
      *
-     * <p>A short arc whose centre is the picture's own centre, so a degree of
-     * finger travel on the canvas and a tick on this scale are the same degree.
-     * The readings sit in a gap in the middle: the number *is* the pointer.
-     */
-    /**
-     * **The rotation scale, after the editor in the reference recording.**
+     * <p>The arc that stood here spanned 44° across the panel's width, which is
+     * about 7 dp to the degree at its ends and 9 at the top of its sweep -- so
+     * the same finger movement meant a different correction depending on where
+     * it landed, and 44° of travel sat in a 70 dp band. A straight ruler has
+     * one exchange rate everywhere: {@value #DP_PER_DEG} dp to a degree, a hair
+     * for every degree, a longer tick for every five, and the whole scale
+     * sliding under a fixed needle.
      *
-     * <p>A shallow arc of dots under the picture: one dot per degree, a longer
-     * tick every five, and the whole ruler sliding under a fixed pointer as the
-     * angle moves -- so the mark under the pointer is the angle you are on, and
-     * the number above it is that angle written out. Dragging anywhere on the
-     * scale turns the picture, which is the part a bare seekbar cannot do:
-     * there is no thumb to aim at, the gesture starts where the eye already is.
-     *
-     * <p>The reading carries two decimals because the scale is fine enough to
-     * resolve a hundredth: at 400 dp wide the ruler spans 44 degrees, so one
-     * pixel is a fortieth of a degree. Level is a place, and the commit still
-     * snaps to it (see `commitRotate`).
+     * <p><b>The needle is the value.</b> There is no thumb to aim at, so the
+     * gesture starts wherever the eye already is. The ends fade into the sheet
+     * -- an instrument does not end with a cut -- and the 0 mark gets a datum
+     * dot, because level is the one place on this ruler that means something on
+     * its own.
      */
     private final class RotateScale extends View {
-        /** Degrees of value the arc spans across its own width. */
-        private static final float SPAN_DEG = 44f;
+        /** dp per degree: 7 puts ±45° at 630 dp, so one degree is a 6.6 dp nudge. */
+        static final float DP_PER_DEG = 7f;
 
         private final android.graphics.Paint ink =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final android.graphics.Paint labelPaint =
+        private final android.graphics.Paint needle =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint fade =
                 new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         private float angle = 0f;
         private float downX = 0f;
         private boolean dragging = false;
         private long lastTapMs = 0L;
+        /** The two end fades, rebuilt only when the width or the sheet changes:
+         *  a fresh `LinearGradient` per frame is two allocations at 60 Hz. */
+        private int fadeW = -1, fadePaper = 0;
+        private android.graphics.Shader fadeL, fadeR;
 
         RotateScale(android.content.Context c) {
             super(c);
             ink.setStrokeCap(android.graphics.Paint.Cap.ROUND);
-            labelPaint.setTextAlign(android.graphics.Paint.Align.CENTER);
-            labelPaint.setTypeface(tfBody);
+            needle.setStrokeCap(android.graphics.Paint.Cap.ROUND);
         }
 
         void setAngle(float deg) {
-            if (Math.abs(angle - deg) < 0.005f) return;
+            if (Math.abs(angle - deg) < 0.004f) return;
             angle = deg;
             invalidate();
         }
 
-        /** One pixel is a fortieth of a degree at the usual width. */
         private float pxPerDeg() {
-            return Math.max(1f, getWidth() / SPAN_DEG);
+            return Math.max(2f, dp(DP_PER_DEG));
         }
 
         @Override public boolean onTouchEvent(android.view.MotionEvent e) {
             switch (e.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_DOWN: {
-                    // **The scale is a target too.** The hint line says "双击画面归零", and the
-                    // number people want zeroed sits right here, so a double tap on the ticks
-                    // has to mean the same thing. Before this it was read as two zero-degree
-                    // drags: two full renders and no reset -- which is what "双击无法归零" was.
+                    // Double tap on the ruler still means "level it": the
+                    // reading is the target people reach for, and before this
+                    // the second tap arrived as a zero-degree drag.
                     final long now = android.os.SystemClock.uptimeMillis();
-                    if (now - lastTapMs < 420L) {
+                    if (now - lastTapMs < 400L) {
                         lastTapMs = 0L;
                         dragging = false;
                         resetRotation("scale");
@@ -23921,24 +24117,22 @@ public class MainActivity extends Activity {
                     lastTapMs = now;
                     downX = e.getX();
                     rotationBeforeDrag = geometryRotation;
+                    rotTickDeg = Math.round(geometryRotation);
+                    rotInDetent = Math.abs(geometryRotation) < ROTATE_DETENT_DEG;
                     dragging = true;
+                    setRotatingNow(true);
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
                     return true;
                 }
                 case android.view.MotionEvent.ACTION_MOVE:
-                    if (!dragging) return true;
-                    // **Relative to where the finger landed**, not to the last
-                    // event: a scrubber that integrates its own deltas drifts
-                    // against the refresh rate, and this one is calibrated in
-                    // pixels.
-                    previewRotate((e.getX() - downX) / pxPerDeg());
+                    if (dragging) previewRotate((e.getX() - downX) / pxPerDeg());
                     return true;
                 case android.view.MotionEvent.ACTION_UP:
                     if (dragging) {
                         dragging = false;
-                        // A tap is not a drag of zero degrees: committing one ran a full render
-                        // for merely touching the scale, and the second tap of a double tap then
-                        // arrived to a picture that was still busy.
+                        setRotatingNow(false);
+                        // A tap is not a drag of zero degrees: committing one
+                        // ran a full render for merely touching the ruler.
                         if (Math.abs(e.getX() - downX) >= dp(2)) {
                             commitRotate((e.getX() - downX) / pxPerDeg());
                         }
@@ -23946,6 +24140,7 @@ public class MainActivity extends Activity {
                     return true;
                 case android.view.MotionEvent.ACTION_CANCEL:
                     dragging = false;
+                    setRotatingNow(false);
                     return true;
                 default:
                     return super.onTouchEvent(e);
@@ -23956,81 +24151,187 @@ public class MainActivity extends Activity {
             final float w = getWidth(), h = getHeight();
             if (w <= 0f || h <= 0f) return;
             final float cx = w / 2f;
-            final float baseY = h - dp(10);
-            final float halfW = w / 2f - dp(3);
-            final double halfRad = Math.toRadians(SPAN_DEG / 2.0);
-            final float r = (float) (halfW / Math.sin(halfRad));
-            final float cy = baseY - r;
+            final float baseY = h - dp(12);
+            final float ppd = pxPerDeg();
 
-            // Ticks live on the value, not on the screen: tick `k` is the mark
-            // for `k` degrees, so it slides as `angle` moves and the ones every
-            // five stay the ones every five.
-            // **The ticks that are in view are the ones near the value, not the
-            // ones near zero.** Iterating -22..22 emptied the scale the moment
-            // the angle passed the width of the arc: at 45 degrees every tick
-            // worth drawing was in the 20s and 30s, outside the loop.
-            final int from = (int) Math.ceil(angle - SPAN_DEG / 2f) - 1;
-            final int to = (int) Math.floor(angle + SPAN_DEG / 2f) + 1;
-            for (int k = from; k <= to; ++k) {
-                final float rel = k - angle;
-                if (Math.abs(rel) > SPAN_DEG / 2f) continue;
-                final double phi = Math.toRadians(rel);
-                final float x = cx + (float) (r * Math.sin(phi));
-                final float y = cy + (float) (r * Math.cos(phi));
-                if (k % 5 == 0) {
-                    ink.setColor(UI_INK);
-                    ink.setAlpha(190);
-                    ink.setStrokeWidth(dp(1.6f));
-                    final float len = dp(7);
-                    canvas.drawLine(x, y,
-                            x + (float) (len * Math.sin(phi)),
-                            y + (float) (len * Math.cos(phi)), ink);
-                } else {
-                    ink.setColor(UI_INK);
-                    ink.setAlpha(120);
-                    canvas.drawCircle(x, y, dp(1.1f), ink);
-                }
+            // **The ticks live on the value, not on the screen**: tick `k` is
+            // the mark for `k` degrees, so a degree is a degree wherever it is.
+            for (int k = -45; k <= 45; ++k) {
+                final float x = cx + (k - angle) * ppd;
+                if (x < -dp(3) || x > w + dp(3)) continue;
+                final boolean major = k % 5 == 0;
+                ink.setColor(UI_INK);
+                ink.setAlpha(major ? 200 : 105);
+                ink.setStrokeWidth(major ? Math.max(1f, dp(1.2f)) : Math.max(1f, dp(0.8f)));
+                canvas.drawLine(x, baseY, x, baseY - (major ? dp(9) : dp(4.5f)), ink);
             }
 
-            // The pointer: fixed at the middle, longer than any tick, pointing
-            // away from the centre the way the ruler does.
-            ink.setColor(UI_INK);
-            ink.setAlpha(235);
-            ink.setStrokeWidth(dp(1.8f));
-            canvas.drawLine(cx, baseY, cx, baseY + dp(7), ink);
+            // The ends fade into the sheet: a ruler that stops dead reads as a
+            // cropped picture of a ruler.
+            final float fw = Math.min(dp(26), w * 0.18f);
+            if (fadeW != (int) w || fadePaper != UI_PAPER || fadeL == null) {
+                fadeW = (int) w;
+                fadePaper = UI_PAPER;
+                final int clear = UI_PAPER & 0x00FFFFFF;
+                fadeL = new android.graphics.LinearGradient(0f, 0f, fw, 0f, UI_PAPER, clear,
+                        android.graphics.Shader.TileMode.CLAMP);
+                fadeR = new android.graphics.LinearGradient(w, 0f, w - fw, 0f, UI_PAPER, clear,
+                        android.graphics.Shader.TileMode.CLAMP);
+            }
+            fade.setShader(fadeL);
+            canvas.drawRect(0f, 0f, fw, h, fade);
+            fade.setShader(fadeR);
+            canvas.drawRect(w - fw, 0f, w, h, fade);
+            fade.setShader(null);
 
-            labelPaint.setColor(UI_INK);
-            labelPaint.setTextSize(dp(13));
-            canvas.drawText(String.format(java.util.Locale.US, "%.2f°", angle),
-                    cx, baseY - dp(20), labelPaint);
+            // 0° datum.
+            final float zx = cx - angle * ppd;
+            if (zx > -dp(5) && zx < w + dp(5)) {
+                needle.setColor(UI_INK);
+                needle.setAlpha(150);
+                canvas.drawCircle(zx, baseY - dp(15), dp(1.7f), needle);
+            }
+
+            // The needle, last and above everything: this is the reading.
+            needle.setColor(UI_BLUE);
+            needle.setAlpha(255);
+            needle.setStrokeWidth(Math.max(1f, dp(1.8f)));
+            canvas.drawLine(cx, dp(6), cx, baseY + dp(2), needle);
         }
     }
 
-    private View circleAction(String glyph, String caption, Runnable tap) {
-        final LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+    // ---- the angle: one number, one magnet, one tick of the motor ----------
 
-        final TextView circle = label(glyph, 15, UI_INK, tfBody);
-        circle.setGravity(android.view.Gravity.CENTER);
-        final android.graphics.drawable.GradientDrawable ring =
-                new android.graphics.drawable.GradientDrawable();
-        ring.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        ring.setColor(0x00000000);
-        ring.setStroke(dp(1), UI_LINE);
-        circle.setBackground(ring);
-        circle.setOnClickListener(v -> tap.run());
-        box.addView(circle, new LinearLayout.LayoutParams(dp(40), dp(40)));
+    /**
+     * **The detent is a pause, not a snap.**
+     *
+     * <p>Inside ±0.5° the value moves at 35 % of the finger, hard against the
+     * middle, and the crossing gets a heavier tick -- so level *feels* like a
+     * place on the ruler. Outside the window nothing changes, and 0.8° released
+     * stays 0.8°: the old code rounded anything under 0.6° to zero, which is
+     * exactly the "松手又弹回 0°" it was reported as.
+     */
+    private static final float ROTATE_DETENT_DEG = 0.5f;
 
-        final TextView name = label(caption, 7.5f, UI_MUTED, tfHan);
-        name.setGravity(android.view.Gravity.CENTER);
-        name.setOnClickListener(v -> tap.run());
-        box.addView(name, new LinearLayout.LayoutParams(-1, -2));
-        return box;
+    /** Which whole degree the motor last clicked at, so a sweep is a texture. */
+    private int rotTickDeg = Integer.MIN_VALUE;
+    private boolean rotInDetent;
+    private android.os.Vibrator hapticMotor;
+    private long lastHapticMs;
+
+    /**
+     * The magnet, as a monotone cubic that leaves the window at full speed.
+     *
+     * <p>`f(0)=0`, `f'(0)=0.35`, `f(w)=w`, `f'(w)=1` -- continuous in value and
+     * in slope at the boundary, so entering the detent does not jump and
+     * leaving it does not lurch.
+     */
+    private static float magnetAngle(float deg) {
+        final float w = ROTATE_DETENT_DEG;
+        final float a = Math.abs(deg);
+        if (a >= w) return deg;
+        final float u = a / w;
+        final float y = w * (-0.65f * u * u * u + 1.3f * u * u + 0.35f * u);
+        return deg < 0f ? -y : y;
+    }
+
+    /** `0.0°` at level, `+5.7°` / `−2.3°` away from it -- never two decimals. */
+    private String rotateText(float deg) {
+        final float v = Math.abs(deg) < 0.05f ? 0f : deg;
+        return String.format(java.util.Locale.US, v == 0f ? "%.1f°" : "%+.1f°", v);
+    }
+
+    private void refreshRotateReadout(float deg) {
+        if (rotateReadout == null) return;
+        final float v = Math.abs(deg) < 0.05f ? 0f : deg;
+        rotateReadout.setText(rotateText(v));
+        rotateReadout.setTextColor(v == 0f ? UI_INK : UI_BLUE);
+    }
+
+    /** **One switch for both instruments.** A finger on the ruler and a finger
+     *  on the picture are the same gesture as far as the canvas is concerned:
+     *  it lightens its mask and wakes the grid either way. */
+    private void setRotatingNow(boolean on) {
+        rotating = on;
+        if (compare != null) compare.setRotating(on);
+    }
+
+    /** One tick of the motor, gated so a fast sweep is a texture, not a buzz. */
+    private void tickHaptic(boolean strong) {
+        final long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastHapticMs < (strong ? 90L : 55L)) return;
+        lastHapticMs = now;
+        try {
+            if (hapticMotor == null) {
+                hapticMotor = (android.os.Vibrator) getSystemService(
+                        android.content.Context.VIBRATOR_SERVICE);
+            }
+            if (hapticMotor != null && hapticMotor.hasVibrator()) {
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    hapticMotor.vibrate(android.os.VibrationEffect.createOneShot(
+                            strong ? 9L : 4L, strong ? 200 : 120));
+                } else {
+                    hapticMotor.vibrate(strong ? 9L : 4L);
+                }
+                return;
+            }
+        } catch (Throwable t) {
+            DebugSink.text("haptic", "vibrate: " + t);
+        }
+        try {
+            getWindow().getDecorView().performHapticFeedback(strong
+                    ? android.view.HapticFeedbackConstants.LONG_PRESS
+                    : android.view.HapticFeedbackConstants.CLOCK_TICK);
+        } catch (Throwable t) {
+            DebugSink.text("haptic", "feedback: " + t);
+        }
+    }
+
+    /**
+     * **Level it over 260 ms.** Tapping the reading (or the picture, twice)
+     * used to cut straight to zero: the canvas kept the old baked angle until
+     * the render landed, so the picture appeared to jump twice. Here the view
+     * turns with the animation and the render takes over from wherever the
+     * turn ended.
+     */
+    private android.animation.ValueAnimator rotateAnim;
+
+    private void animateRotationTo(float target, String from) {
+        final float start = geometryRotation;
+        try {
+            DebugSink.text("rotate", "level by " + from + " (was " + start + ")");
+        } catch (Throwable ignored) { }
+        if (Math.abs(start - target) < 0.02f) return;
+        if (rotateAnim != null) rotateAnim.cancel();
+        rotationBeforeDrag = start;
+        rotateAnim = android.animation.ValueAnimator.ofFloat(start, target);
+        rotateAnim.setDuration(260L);
+        rotateAnim.setInterpolator(xfEase());
+        rotateAnim.addUpdateListener(a -> {
+            final float v = (float) a.getAnimatedValue();
+            geometryRotation = v;
+            if (rotateArc != null) rotateArc.setAngle(v);
+            refreshRotateReadout(v);
+            if (compare != null) compare.setPreviewRotation(v - start);
+        });
+        rotateAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator a) {
+                geometryRotation = target;
+                rotationPending = true;
+                geometrySeq++;
+                refreshRotateReadout(target);
+                commitCompose();
+            }
+        });
+        rotateAnim.start();
     }
 
     private void turnBy(int direction) {
         geometryTurns = ((geometryTurns + direction) % 4 + 4) % 4;
+        // **A quarter turn is watched, not cut to.** 240 ms of the picture
+        // turning inside a frame that morphs to the new shape; the last pose is
+        // held until the render that already carries it lands.
+        if (compare != null) compare.animateQuarter(direction < 0 ? -1 : 1);
         commitCompose();
     }
 
@@ -32278,9 +32579,33 @@ public class MainActivity extends Activity {
          * device -- and the committed angle is applied once, on release.
          */
         private boolean rotateMode = false;
-        /** How far the composition stands back while the rotate page is open. */
-        private static final float ROTATE_SHRINK = 0.86f;
+        /** The rotate page uses the same box as every other page: with the
+         *  discarded area dimmed (see `drawRotMask`) there is nothing left for a
+         *  further shrink to explain -- it only made the print smaller. */
+        private static final float ROTATE_SHRINK = 1f;
         private float previewRotation = 0f;
+        /** A finger is on the ruler or on the picture: the mask goes lighter
+         *  and the calibration grid wakes up. */
+        private boolean rotatingNow;
+        private float gridWake;
+        private android.animation.ValueAnimator gridAnim;
+        private final android.os.Handler gridHandler =
+                new android.os.Handler(android.os.Looper.getMainLooper());
+        private final Runnable gridSleep = () -> wakeGrid(0f);
+        /** ±1 while a quarter turn plays -- and while it is held, waiting for
+         *  the frame that already carries it. */
+        private int quarterDir;
+        /** 1 horizontal, 2 vertical while a flip plays. */
+        private int flipAxis;
+        private float turnT;
+        private android.animation.ValueAnimator turnAnim;
+        private final android.graphics.RectF turnFrom = new android.graphics.RectF();
+        private final android.graphics.RectF turnTo = new android.graphics.RectF();
+        private final android.graphics.Paint maskPaint = new android.graphics.Paint();
+        private final android.graphics.Paint gridHalo = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint gridInk = new android.graphics.Paint(
+                android.graphics.Paint.ANTI_ALIAS_FLAG);
         private float rotLast = Float.NaN;
         private float rotTotal = 0f;
         /** Did this gesture leave the slop? A tap commits nothing. */
@@ -32308,6 +32633,17 @@ public class MainActivity extends Activity {
             if (!on) {
                 previewRotation = 0f;
                 rotTotal = 0f;
+                // Leaving the page drops every transient of the gesture: a
+                // held quarter turn on a page that is no longer open would keep
+                // drawing the old picture turned.
+                rotatingNow = false;
+                gridHandler.removeCallbacks(gridSleep);
+                if (gridAnim != null) { gridAnim.cancel(); gridAnim = null; }
+                gridWake = 0f;
+                if (turnAnim != null) { turnAnim.cancel(); turnAnim = null; }
+                quarterDir = 0;
+                flipAxis = 0;
+                turnT = 0f;
             }
             invalidate();
         }
@@ -32318,6 +32654,175 @@ public class MainActivity extends Activity {
             previewRotation = deg;
             invalidate();
         }
+
+        /**
+         * **A finger is down, wherever it is.** The ruler and the picture are
+         * the same gesture as far as the canvas is concerned: both lighten the
+         * mask over the discarded area and wake the calibration grid, and both
+         * put the grid back to sleep 300 ms after letting go.
+         */
+        void setRotating(boolean on) {
+            if (rotatingNow == on) return;
+            rotatingNow = on;
+            // A held pose belongs to the turn that produced it. A new gesture
+            // means the user is done looking at it, and the turn must not keep
+            // overriding the angle they are about to drag.
+            if (on && turnT >= 0.999f) {
+                quarterDir = 0;
+                flipAxis = 0;
+                turnT = 0f;
+            }
+            gridHandler.removeCallbacks(gridSleep);
+            if (on) {
+                wakeGrid(1f);
+            } else {
+                gridHandler.postDelayed(gridSleep, 300L);
+            }
+            invalidate();
+        }
+
+        private void wakeGrid(float to) {
+            if (gridAnim != null) {
+                gridAnim.cancel();
+                gridAnim = null;
+            }
+            if (Math.abs(gridWake - to) < 0.005f) {
+                gridWake = to;
+                invalidate();
+                return;
+            }
+            gridAnim = android.animation.ValueAnimator.ofFloat(gridWake, to);
+            gridAnim.setDuration(to > gridWake ? 160L : 320L);
+            gridAnim.setInterpolator(to > gridWake
+                    ? new android.view.animation.DecelerateInterpolator(1.4f)
+                    : new android.view.animation.AccelerateInterpolator(1.2f));
+            gridAnim.addUpdateListener(a -> {
+                gridWake = (float) a.getAnimatedValue();
+                invalidate();
+            });
+            gridAnim.start();
+        }
+
+        /**
+         * **A quarter turn, played rather than cut to.**
+         *
+         * <p>The frame morphs from the current shape to the transposed one over
+         * 240 ms while the picture turns inside it, and the last pose is held
+         * until the render lands. Without the morph the frame would jump to the
+         * new aspect on the first frame -- which is the instant change this
+         * exists to avoid -- and without the hold the screen would go back to
+         * the old orientation for as long as the engine takes.
+         */
+        void animateQuarter(int dir) {
+            if (dir == 0 || dst.width() <= 0f || dst.height() <= 0f) return;
+            quarterDir = dir > 0 ? 1 : -1;
+            flipAxis = 0;
+            turnFrom.set(dst);
+            computeFit(Math.max(1, getWidth()), Math.max(1, getHeight()));
+            // The frame the turned picture will occupy, by the same rule
+            // `drawFit` uses: the transposed rectangle fitted into the band. Not
+            // "the old frame with its sides swapped" -- a 3:2 frame is
+            // width-bound and its 2:3 twin is height-bound, so the two are not
+            // the same size and the swap would land on a smaller frame than the
+            // render then fills.
+            final float w0 = dst.height(), h0 = dst.width();
+            final float k = Math.min(fitW / Math.max(1f, w0), fitH / Math.max(1f, h0));
+            final float w = w0 * k, h = h0 * k;
+            final float cx = dst.centerX(), cy = dst.centerY();
+            turnTo.set(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
+            playTurn();
+        }
+
+        /** A flip is the same 240 ms, mirrored: the frame never changes shape. */
+        void animateFlip(boolean horizontal) {
+            if (dst.width() <= 0f || dst.height() <= 0f) return;
+            flipAxis = horizontal ? 1 : 2;
+            quarterDir = 0;
+            turnFrom.set(dst);
+            turnTo.set(dst);
+            playTurn();
+        }
+
+        private void playTurn() {
+            if (turnAnim != null) {
+                turnAnim.cancel();
+                turnAnim = null;
+            }
+            turnT = 0f;
+            turnAnim = android.animation.ValueAnimator.ofFloat(0f, 1f);
+            turnAnim.setDuration(240L);
+            turnAnim.setInterpolator(xfEase());
+            turnAnim.addUpdateListener(a -> {
+                turnT = (float) a.getAnimatedValue();
+                invalidate();
+            });
+            turnAnim.start();
+        }
+
+        private void drawTurn(android.graphics.Canvas canvas, Bitmap bmp) {
+            final float t = turnT;
+            if (quarterDir != 0) {
+                dst.set(turnFrom.left + (turnTo.left - turnFrom.left) * t,
+                        turnFrom.top + (turnTo.top - turnFrom.top) * t,
+                        turnFrom.right + (turnTo.right - turnFrom.right) * t,
+                        turnFrom.bottom + (turnTo.bottom - turnFrom.bottom) * t);
+            }
+            final float cx = dst.centerX(), cy = dst.centerY();
+            final int save = canvas.save();
+            if (flipAxis != 0) {
+                final float c = (float) Math.cos(Math.PI * t);       // 1 -> -1
+                final float k = Math.abs(c) < 0.02f ? 0.02f : c;
+                canvas.translate(cx, cy);
+                canvas.scale(flipAxis == 1 ? k : 1f, flipAxis == 2 ? k : 1f);
+                canvas.translate(-cx, -cy);
+                canvas.drawBitmap(bmp, null, dst, paint);
+            } else {
+                final double a = Math.toRadians(quarterDir * 90.0 * t);
+                final float cn = (float) Math.abs(Math.cos(a));
+                final float sn = (float) Math.abs(Math.sin(a));
+                final float bw = Math.max(1f, bmp.getWidth());
+                final float bh = Math.max(1f, bmp.getHeight());
+                // The smallest scale at which the turned picture still covers
+                // the frame it is being turned inside -- exact, not the
+                // bounding box, so 45° does not jump closer than it must.
+                final float k = Math.max(dst.width() / Math.max(1f, bw * cn + bh * sn),
+                        dst.height() / Math.max(1f, bw * sn + bh * cn));
+                final float gw = bw * k, gh = bh * k;
+                frameRect.set(cx - gw / 2f, cy - gh / 2f, cx + gw / 2f, cy + gh / 2f);
+                canvas.rotate(quarterDir * 90f * t, cx, cy);
+                canvas.drawBitmap(bmp, null, frameRect, paint);
+            }
+            canvas.restoreToCount(save);
+            drawRotMask(canvas);
+        }
+
+        /**
+         * **What is being thrown away is dimmed, not hidden.**
+         *
+         * <p>While the picture is turned the frame is the print and everything
+         * outside it is on its way out; drawing that at full brightness made
+         * the frame read as a decoration. 55 % while a finger is down -- the
+         * eye is on the horizon, the edges only need to be legible -- and 82 %
+         * once it is up, because the gesture is over and the frame is the
+         * answer.
+         */
+        private void drawRotMask(android.graphics.Canvas canvas) {
+            float a = previewRotation == 0f ? 0f : (rotatingNow ? 0.55f : 0.82f);
+            // Only a quarter turn changes what the frame *is*: a flip keeps the
+            // same rectangle, so dimming around it for 240 ms would be a pulse
+            // with nothing behind it.
+            if (turnT > 0f && quarterDir != 0) a = Math.max(a, turnT * 0.82f);
+            if (a <= 0.004f) return;
+            final float w = getWidth(), h = getHeight();
+            final float l = Math.max(0f, dst.left), t = Math.max(0f, dst.top);
+            final float r = Math.min(w, dst.right), b = Math.min(h, dst.bottom);
+            maskPaint.setColor(Math.min(255, Math.round(a * 255f)) << 24);
+            if (t > 0f) canvas.drawRect(0f, 0f, w, t, maskPaint);
+            if (b < h) canvas.drawRect(0f, b, w, h, maskPaint);
+            if (l > 0f) canvas.drawRect(0f, t, l, b, maskPaint);
+            if (r < w) canvas.drawRect(r, t, w, b, maskPaint);
+        }
+
 
         /** Screen angle of a point about the picture's centre. */
         private float angleAboutPicture(float x, float y) {
@@ -32450,6 +32955,13 @@ public class MainActivity extends Activity {
             sdrAfter = b;
             after = b;
             standIn = false;          // a developed frame just landed
+            // The frame that just landed already carries the turn.
+            if (quarterDir != 0 || flipAxis != 0) {
+                quarterDir = 0;
+                flipAxis = 0;
+                turnT = 0f;
+                if (turnAnim != null) { turnAnim.cancel(); turnAnim = null; }
+            }
             invalidate();
             // **One hook, every path.** Nine callers set this (render, live,
             // fotufilm's rebate, the export's restore, ...); asking each of them
@@ -32489,6 +33001,11 @@ public class MainActivity extends Activity {
             zoom = 1f;
             panX = 0f;
             panY = 0f;
+            rotatingNow = false;
+            gridWake = 0f;
+            quarterDir = 0;
+            flipAxis = 0;
+            turnT = 0f;
             invalidate();
         }
 
@@ -32591,30 +33108,18 @@ public class MainActivity extends Activity {
          */
         private void drawCropFrame(android.graphics.Canvas canvas) {
             if (dst.width() <= 0f || dst.height() <= 0f) return;
-            final float r = density * 3f;
             final android.graphics.Paint p = new android.graphics.Paint(
                     android.graphics.Paint.ANTI_ALIAS_FLAG);
             p.setStyle(android.graphics.Paint.Style.STROKE);
             p.setStrokeCap(android.graphics.Paint.Cap.SQUARE);
-            for (int pass = 0; pass < 2; ++pass) {
-                p.setColor(pass == 0 ? 0x4D000000 : 0xE6FFFFFF);
-                p.setStrokeWidth(pass == 0 ? density * 3.4f : density * 1.4f);
-                canvas.drawRoundRect(dst, r, r, p);
-            }
-            // Corner brackets: a quarter-frame's worth at each corner, drawn
-            // over the hairline so they read as handles rather than a border.
-            final float arm = Math.min(dpC(26f), Math.min(dst.width(), dst.height()) * 0.18f);
-            p.setColor(0xFFFFFFFF);
-            p.setStrokeWidth(density * 3f);
-            final float l = dst.left, t = dst.top, rr = dst.right, b = dst.bottom;
-            canvas.drawLine(l, t + r, l + arm, t + r, p);          // ↖ horizontal
-            canvas.drawLine(l + r, t, l + r, t + arm, p);          // ↖ vertical
-            canvas.drawLine(rr - arm, t + r, rr, t + r, p);        // ↗
-            canvas.drawLine(rr - r, t, rr - r, t + arm, p);
-            canvas.drawLine(l, b - r, l + arm, b - r, p);          // ↙
-            canvas.drawLine(l + r, b - arm, l + r, b, p);
-            canvas.drawLine(rr - arm, b - r, rr, b - r, p);        // ↘
-            canvas.drawLine(rr - r, b - arm, rr - r, b, p);
+            // A shadow, then a hairline: the frame survives a white dress and a
+            // black suit without a shadow layer.
+            p.setColor(0x59000000);
+            p.setStrokeWidth(Math.max(2f, density * 2.2f));
+            canvas.drawRect(dst, p);
+            p.setColor(0xE6FFFFFF);
+            p.setStrokeWidth(Math.max(1f, density));
+            canvas.drawRect(dst, p);
         }
 
         /** dp inside the view, where the outer `dp()` is not in scope. */
@@ -32631,65 +33136,73 @@ public class MainActivity extends Activity {
             invalidate();
         }
 
+        /**
+         * **A grid you can level against, and it knows when it is being used.**
+         *
+         * <p>One alpha with two states: at rest a whisper of thirds (a composing
+         * aid), and while a finger is moving a six-by-six calibration lattice
+         * with a heavier centre cross -- dense enough to put a building edge
+         * against, faint enough not to become the picture's own texture. It
+         * fades in over 160 ms and is put to sleep 300 ms after the finger
+         * leaves (see `setRotating`).
+         */
         private void drawGrid(android.graphics.Canvas canvas) {
             if (gridMode == 0 || dst.width() <= 0f || dst.height() <= 0f) return;
             final float l = dst.left, t = dst.top, r = dst.right, b = dst.bottom;
-            final float hair = Math.max(1f, density);
-            // Two passes: a dark halo first, then a light hairline. On a white
-            // sky a pure-white line disappears; on a black shadow a pure-black
-            // one does. The pair reads on both.
+            final float hair = Math.max(1f, density * 0.75f);
+            final float wake = gridWake;
             for (int pass = 0; pass < 2; ++pass) {
-                final android.graphics.Paint p = new android.graphics.Paint(
-                        android.graphics.Paint.ANTI_ALIAS_FLAG);
+                final android.graphics.Paint p = pass == 0 ? gridHalo : gridInk;
                 p.setStyle(android.graphics.Paint.Style.STROKE);
-                p.setColor(pass == 0 ? 0x38000000 : 0x88FFFFFF);
+                p.setColor(pass == 0 ? 0x000000 : 0xFFFFFF);
                 p.setStrokeWidth(pass == 0 ? hair * 3f : hair);
-                for (int i = 1; i <= 2; ++i) {
-                    final float x = l + (r - l) * i / 3f;
-                    final float y = t + (b - t) * i / 3f;
+                for (int i = 1; i < 6; ++i) {
+                    final boolean third = (i == 2 || i == 4);
+                    final boolean centre = (i == 3);
+                    float a = third ? 0.30f * (1f - 0.45f * wake) : 0.52f * wake;
+                    if (centre) a += 0.22f * wake;
+                    if (a < 0.012f) continue;
+                    p.setAlpha(Math.min(255, Math.round(a * (pass == 0 ? 120f : 255f))));
+                    final float x = l + (r - l) * i / 6f;
+                    final float y = t + (b - t) * i / 6f;
                     canvas.drawLine(x, t, x, b, p);
                     canvas.drawLine(l, y, r, y, p);
                 }
-                // Centre cross, a touch stronger than the thirds.
-                p.setColor(pass == 0 ? 0x44000000 : 0xA6FFFFFF);
-                final float cx = (l + r) / 2f, cy = (t + b) / 2f;
-                canvas.drawLine(cx, t, cx, b, p);
-                canvas.drawLine(l, cy, r, cy, p);
             }
         }
 
         private void drawFit(android.graphics.Canvas canvas, Bitmap bmp) {
             final float vw = getWidth(), vh = getHeight();
             if (vw <= 0 || vh <= 0 || bmp.getWidth() == 0) return;
-            // **The rotate page stands back a little.** A turned picture is
-            // bigger than the frame it has to cover, and the whole point of the
-            // frame is to show how much of the picture is being thrown away:
-            // that only reads if the picture's own edges are on screen. So the
-            // composition shrinks here, and returns to full size on the next
-            // page -- which is also what the editor in the reference does.
-            // **Fit, never cover.** 「不要裁切」: the picture fills the canvas by
-            // its *width* and is allowed to run past the panel's top edge; a
-            // cover scale would crop the frame, and a crop that changes when a
-            // panel opens is exactly the thing that was wrong.
+            // **Fit, never cover, at rest.** 「不要裁切」: the picture fills the
+            // canvas by its *width* and is allowed to run past the panel's top
+            // edge; a cover scale would crop the frame, and a crop that changes
+            // when a panel opens is exactly the thing that was wrong. Only the
+            // rotate page stands back, so the corners it throws away are on
+            // screen at all.
             computeFit(vw, vh);
-            // **Fit into the safe box, never beyond it.** `fitW` / `fitH` are
-            // the whole view at rest and the inset band while 构图 is in
-            // front, so the same arithmetic serves both: the picture keeps its
-            // shape, only the room it is given changes.
             final float fill = Math.min(fitW / bmp.getWidth(), fitH / bmp.getHeight());
             final float scale = fill * zoom * (rotateMode ? ROTATE_SHRINK : 1f);
             final float w = bmp.getWidth() * scale, h = bmp.getHeight() * scale;
             final float left = (fitL + fitR) / 2f - w / 2f + panX;
             final float top = pictureTop(h) + panY;
             dst.set(left, top, left + w, top + h);
+
+            // **A quarter turn or a flip is watched.** The picture and its frame
+            // move together for 240 ms; the last pose is held until the frame
+            // that already carries it lands (`setAfter`).
+            if (turnT > 0f && (quarterDir != 0 || flipAxis != 0)) {
+                drawTurn(canvas, bmp);
+                return;
+            }
             if (previewRotation == 0f) {
                 canvas.drawBitmap(bmp, null, dst, paint);
                 return;
             }
-            // **The picture grows as it turns, and is clipped to the frame.**
-            // Rotating a rectangle inside its own rectangle leaves four empty
-            // triangles; every editor answers by pushing the frame in until
-            // the picture covers it. The engine does the same arithmetic on
+            // **The picture grows as it turns, and the frame stays put.** A
+            // rectangle turned inside its own rectangle leaves four empty
+            // triangles; every editor answers by growing the picture until it
+            // covers the frame again. The engine does the same arithmetic on
             // the same numbers (`resolve_geometry_frame`, the `cover` term),
             // which is what makes the last frame of the drag and the first
             // frame of the render the same picture.
@@ -32697,14 +33210,12 @@ public class MainActivity extends Activity {
             final float gw = bmp.getWidth() * grow, gh = bmp.getHeight() * grow;
             final float cx = dst.centerX(), cy = dst.centerY();
             frameRect.set(cx - gw / 2f, cy - gh / 2f, cx + gw / 2f, cy + gh / 2f);
-            // **No clip.** The overflow *is* the information: the corners of a
-            // turned picture are what the crop frame is cutting away, and
-            // hiding them makes the frame look like a decoration instead of a
-            // decision. The view's own bounds are the only limit.
             final int save = canvas.save();
             canvas.rotate(previewRotation, cx, cy);
             canvas.drawBitmap(bmp, null, frameRect, paint);
             canvas.restoreToCount(save);
+            // What is outside the frame is on its way out: dimmed, not hidden.
+            drawRotMask(canvas);
         }
 
         /**
