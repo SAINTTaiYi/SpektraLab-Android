@@ -17037,7 +17037,7 @@ public class MainActivity extends Activity {
             b.setPixels(dev, 0, w, 0, 0, w, h);
             final java.io.File out = new java.io.File(file.getParentFile(),
                     file.getName().replace(".jpg", "") + "-mix.jpg");
-            if (!SpektraLabEngine.writeBitmapJpeg(b, out.getAbsolutePath(), 95)) return file;
+            if (!SpektraLabEngine.writeBitmapJpeg(b, out.getAbsolutePath(), SPK_JPEG_Q)) return file;
             file.delete();
             return out;
         } catch (Throwable t) {
@@ -26030,10 +26030,10 @@ public class MainActivity extends Activity {
                     "export_framed_" + System.currentTimeMillis() + ".jpg");
             boolean ok;
             try {
-                ok = SpektraLabEngine.writeBitmapJpeg(src, tmp.getAbsolutePath(), 95);
+                ok = SpektraLabEngine.writeBitmapJpeg(src, tmp.getAbsolutePath(), SPK_JPEG_Q);
                 if (!ok) {
                     try (java.io.OutputStream o = new java.io.FileOutputStream(tmp)) {
-                        ok = src.compress(Bitmap.CompressFormat.JPEG, 95, o);
+                        ok = src.compress(Bitmap.CompressFormat.JPEG, SPK_JPEG_Q, o);
                     }
                 }
             } catch (Throwable t) {
@@ -31259,6 +31259,28 @@ public class MainActivity extends Activity {
     // how many frames -- as cards that cannot be combined into something the
     // writers do not support. It remembers the two that are a taste rather than
     // a decision, and it puts the resulting file's name on the button.
+
+    /**
+     * **What quality a print is exported at.** Not what the canvas and the shelf
+     * cards use -- those are decoded back a moment later, where 0.95 is right.
+     *
+     * <p>A camera writes its own JPEG at about 0.33 bytes per pixel. The second
+     * engine develops a *cleaner* frame (the film's MTF takes the sensor noise
+     * with it), so at 0.95 a full-size print landed at 0.19–0.36 B/px -- smaller
+     * than the phone's original, which from the outside reads as "this app
+     * throws pixels away". 0.98 is visually lossless at eight bits and puts the
+     * same frame at 0.58 B/px. Measured on one 12.6 MP frame: 2.9 MB at 90,
+     * 4.5 at 95, **7.25 at 98**, 13.0 at 100 -- so the last two per cent of the
+     * quantiser would triple the file, which is not a trade a master makes.
+     *
+     * <p>The first engine stays at 95. Its grain is expensive to encode and it
+     * already writes 0.5–0.8 B/px -- well above the camera it came from, so the
+     * complaint that started this ("the fotu export is too small") does not
+     * apply to it. Raising it would only make every export heavier and slower
+     * for no visible gain.
+     */
+    private static final float FOTU_JPEG_Q = 0.98f;
+    private static final int SPK_JPEG_Q = 95;
 
     /** The writers this build has, in the order the panel shows them. */
     private static final String[] EXPORT_FORMATS = {"jpeg", "uhdr", "live", "dev", "tiff", "tifflin", "dng"};
@@ -38625,9 +38647,28 @@ public class MainActivity extends Activity {
      * @param rebate the strip of film. **Never for a clip frame**: a rebate is
      *               something a print has, and the still already carries it.
      */
+    /** The export's develop: the same frames, written at the print quality. */
+    private java.io.File fotuDevelopPrint(String id, String medium, int maxEdge, String tag,
+                                          boolean withGrain, String extRow, String extraSlots)
+            throws java.io.IOException {
+        final String source = fotuSourceFile();
+        if (source == null) throw new java.io.IOException("读不到原图文件；请重新导入这一张");
+        return fotuDevelopFrom(source, id, medium, maxEdge, tag, withGrain, extRow,
+                !"tif".equals(extRow) && (maxEdge == 0 || maxEdge >= FOTU_REBATE_MIN_EDGE),
+                extraSlots, FOTU_JPEG_Q);
+    }
+
     private java.io.File fotuDevelopFrom(String source, String id, String medium, int maxEdge,
                                          String tag, boolean withGrain, String extRow,
                                          boolean rebate, String extraSlots)
+            throws java.io.IOException {
+        return fotuDevelopFrom(source, id, medium, maxEdge, tag, withGrain, extRow, rebate,
+                extraSlots, 0.95f);
+    }
+
+    private java.io.File fotuDevelopFrom(String source, String id, String medium, int maxEdge,
+                                         String tag, boolean withGrain, String extRow,
+                                         boolean rebate, String extraSlots, float quality)
             throws java.io.IOException {
         final String root = ensureFotuRoot();
         final String prefix = root + "/cfg/" + id + "/" + medium + "/";
@@ -38647,7 +38688,7 @@ public class MainActivity extends Activity {
         synchronized (FOTU_HOST_LOCK) {
         rc = FotuFilm.process(root, prefix, source, out.getAbsolutePath(),
                 id, FotuFilm.mediumBin(medium), maxEdge, FotuFilm.SCREEN.equals(medium),
-                fotuEv, fotuHighlights, fotuShadows, fotuSaturation, fotuVibrance, 0.95f,
+                fotuEv, fotuHighlights, fotuShadows, fotuSaturation, fotuVibrance, quality,
                 fotuWarmth, fotuTint, fotuFlare, fotuGradeLift, fotuGradeGain,
                 fotuExpired, fotuBleach, fotuTableCache(), null, fotuPush,
                 fotuSlots(id, root, withGrain, extraSlots,
@@ -39254,7 +39295,7 @@ public class MainActivity extends Activity {
                 // 「相册写入失败」 with a `fotu-x-*.png: ENOENT` cause, three
                 // layers away from the truth. Bug since the host took over the
                 // strip; reported against 1.6.5q on a 120 6x12 frame.
-                file = fotuDevelop(id, medium, edge, "x", true, tiff ? "tif" : "jpg",
+                file = fotuDevelopPrint(id, medium, edge, "x", true, tiff ? "tif" : "jpg",
                         withSlot(geo, tiff ? fotuExifSlot() : ""));
                 verifyFotuExport(file, tiff);
                 // 胶片强度, the same dial the first engine uses. A TIFF master is
@@ -39332,6 +39373,11 @@ public class MainActivity extends Activity {
             // upright, so carrying the source's 90 degrees would turn the print a
             // second time.
             try {
+                // **What the file weighs, while the file is still here.** "The
+                // export is too small" is a claim about a number; a status line
+                // that names it is the difference between a bug report and a
+                // confirmed expectation.
+                final long bytes = written.length();
                 final Uri outUri = writeExportFile(written, base, ext, mime);
                 runOnUiThread(() -> {
                     // The share pill sends "the last export"; a fotu file has to
@@ -39342,7 +39388,10 @@ public class MainActivity extends Activity {
                     hideBusy();
                     final String what = tiff ? "TIFF 16 位 · 线性" : "JPEG";
                     final String hint = tiff ? "（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）" : "";
-                    statusText.setText("已导出 " + what + " · fotufilm · " + (ms / 1000) + " 秒"
+                    final String weigh = bytes > 0
+                            ? String.format(java.util.Locale.US, "%.1f", bytes / 1048576.0)
+                                    + " " + Lang.t("MB") + " · " : "";
+                    statusText.setText("已导出 " + what + " · " + weigh + "fotufilm · " + (ms / 1000) + " 秒"
                             + (edge > 0 ? "（按本机内存，长边 " + edge + " px）" : "") + hint);
                     final String liveNote = liveDone[0]
                             ? (devLive ? " · 显影实况（含动图）" : " · 实况（含动图）")
@@ -43657,7 +43706,7 @@ public class MainActivity extends Activity {
                 final int fw = bmp.getWidth(), fh = bmp.getHeight();
                 boolean ok;
                 try {
-                    ok = SpektraLabEngine.writeBitmapJpeg(bmp, tmp.getAbsolutePath(), 95);
+                    ok = SpektraLabEngine.writeBitmapJpeg(bmp, tmp.getAbsolutePath(), SPK_JPEG_Q);
                     if (!ok) {
                         // **A file beats a dialog.** The native writer is the one
                         // that keeps 4:4:4 and the ICC tag; if it cannot read the
@@ -43665,7 +43714,7 @@ public class MainActivity extends Activity {
                         // something unexpected) the platform encoder still writes
                         // a JPEG -- coarser chroma, no ICC, and said out loud.
                         try (java.io.OutputStream o = new java.io.FileOutputStream(tmp)) {
-                            ok = bmp.compress(Bitmap.CompressFormat.JPEG, 95, o);
+                            ok = bmp.compress(Bitmap.CompressFormat.JPEG, SPK_JPEG_Q, o);
                         }
                         try {
                             DebugSink.text("export-original",
@@ -44542,15 +44591,15 @@ public class MainActivity extends Activity {
                                         : tiff
                                         ? exportSession.exportTiff(tmp.getAbsolutePath(), tier)
                                         : uhdr
-                                        ? exportSession.exportUltraHdr(tmp.getAbsolutePath(), 95, 512, tier)
+                                        ? exportSession.exportUltraHdr(tmp.getAbsolutePath(), SPK_JPEG_Q, 512, tier)
                                         // **The dial, applied where the file is written.** A mix
                                         // below 100 cannot go through the engine's own encoder --
                                         // it renders and encodes in one native call, and the two
                                         // pictures being blended are one of its outputs and the
                                         // frame that output came from.
                                         : strengthMixActive()
-                                        ? exportJpegMixed(exportSession, tmp.getAbsolutePath(), 95, tier)
-                                        : exportSession.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
+                                        ? exportJpegMixed(exportSession, tmp.getAbsolutePath(), SPK_JPEG_Q, tier)
+                                        : exportSession.exportJpeg(tmp.getAbsolutePath(), SPK_JPEG_Q, 512, tier);
                             } finally {
                                 stopTick(wtick);
                             }
