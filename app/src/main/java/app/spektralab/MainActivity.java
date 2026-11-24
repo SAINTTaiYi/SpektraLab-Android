@@ -31261,7 +31261,7 @@ public class MainActivity extends Activity {
     // a decision, and it puts the resulting file's name on the button.
 
     /** The writers this build has, in the order the panel shows them. */
-    private static final String[] EXPORT_FORMATS = {"jpeg", "uhdr", "live", "tiff", "tifflin", "dng"};
+    private static final String[] EXPORT_FORMATS = {"jpeg", "uhdr", "live", "dev", "tiff", "tifflin", "dng"};
     private static final String[] EXPORT_SIZES = {"live", "preview", "full"};
 
     private android.app.Dialog exportPanel;
@@ -31269,7 +31269,6 @@ public class MainActivity extends Activity {
     private String exportSizeSel = "preview";
     private boolean exportBatchSel = false;
     private int exportLiveEdgeSel = 0;
-    private boolean exportDevSel = false;
     /** The clip's own long edge, read once when the panel opens. */
     private int exportClipEdge = 0;
     /** A clip exists even when its dimensions could not be read. */
@@ -31294,7 +31293,7 @@ public class MainActivity extends Activity {
     private LinearLayout exportBody;
     private int exportScreenW, exportMaxBody;
     private TextView exportHintText, exportHw, exportGo;
-    private TextView exportLiveNative, exportLiveHalf, exportLiveDev;
+    private TextView exportLiveNative, exportLiveHalf;
     private int exportBodyWidth;
     private boolean exportHintReady;
     private android.animation.ValueAnimator exportHintAnim;
@@ -31312,10 +31311,15 @@ public class MainActivity extends Activity {
 
     private boolean exportFormatAvailable(String id) {
         if (exportNoFilm() || frameTemplateOn()) return "jpeg".equals(id);
+        // **A batch writes JPEG and only JPEG.** It walks the strip without a
+        // live clip and without the develop animation, so every other card is a
+        // promise the loop cannot keep. Saying it here is also what greys them.
+        if (exportBatchSel) return "jpeg".equals(id);
         final boolean fotu = isFotuStock(filmStock);
         switch (id) {
             case "uhdr":    return !fotu && !PAPER_SCAN.equals(printStock);
             case "live":    return exportHasClip;
+            case "dev":     return developLiveAvailable();
             case "tiff":    return !fotu;             // fotufilm writes linear only
             case "tifflin": return true;
             case "dng":     return !fotu;             // no DNG writer in the host
@@ -31328,7 +31332,8 @@ public class MainActivity extends Activity {
         if (exportBatchSel) return "批量只写 JPEG · 预览 3400 或原图全尺寸";
         if (exportNoFilm()) return "没有胶片：导出的是原图 JPEG";
         if (frameTemplateOn()) return "画框逐张合成，只写 JPEG";
-        if ("live".equals(id)) return "这张照片不是实况照片";
+        if ("live".equals(id)) return "这一帧没有可导出的动图（不是实况照片，或动图已丢失）";
+        if ("dev".equals(id)) return "这一帧没有可显影的负片（无相纸 / 反转片 / 画框）";
         if ("uhdr".equals(id)) {
             return PAPER_SCAN.equals(printStock)
                     ? "无相纸的负片没有相纸肩部，没有可还的高光"
@@ -31344,7 +31349,7 @@ public class MainActivity extends Activity {
         if (isFotuStock(filmStock)) return "full".equals(size);   // tier is ignored there
         switch (format) {
             case "uhdr": case "tiff":    return !"live".equals(size);
-            case "tifflin": case "dng": case "live": return "full".equals(size);
+            case "tifflin": case "dng": case "live": case "dev": return "full".equals(size);
             default:                     return true;
         }
     }
@@ -31361,6 +31366,7 @@ public class MainActivity extends Activity {
         switch (id) {
             case "uhdr":    return "Ultra HDR";
             case "live":    return "实况照片";
+            case "dev":     return "显影";
             case "tiff":    return "TIFF 16位";
             case "tifflin": return "TIFF 线性";
             case "dng":     return "DNG";
@@ -31372,6 +31378,7 @@ public class MainActivity extends Activity {
         switch (id) {
             case "uhdr":    return "JPEG + 增益图";
             case "live":    return "静帧 + 动图";
+            case "dev":     return "负片转正片";
             case "tiff":    return "编码 16 位";
             case "tifflin": return "线性光";
             case "dng":     return "Adobe DNG";
@@ -31440,11 +31447,9 @@ public class MainActivity extends Activity {
     /** Never leave a selection the writers cannot honour. */
     private void clampExportSelection() {
         if (!exportFormatAvailable(exportFormatSel)) exportFormatSel = "jpeg";
-        if (exportBatchSel && !"jpeg".equals(exportFormatSel)) exportFormatSel = "jpeg";
         if (!exportSizeAvailable(exportFormatSel, exportSizeSel)) {
             exportSizeSel = exportSizeAvailable(exportFormatSel, "preview") ? "preview" : "full";
         }
-        if (!"live".equals(exportFormatSel)) exportDevSel = false;
         if (!exportHasClip) exportLiveEdgeSel = 0;
         else if (exportLiveEdgeSel != LIVE_CLIP_MAX_EDGE) exportLiveEdgeSel = LIVE_CLIP_FULL_EDGE;
     }
@@ -31476,6 +31481,8 @@ public class MainActivity extends Activity {
         if (frameTemplateOn()) return "画框逐张合成：只写 JPEG，出片尺寸由模板决定";
         if (exportBatchSel) return "批量逐张冲洗：只写 JPEG · 预览 3400 或原图全尺寸";
         switch (exportFormatSel) {
+            case "dev":
+                return "把负片显影成相纸的 3 秒过程写成实况 · 静帧按原图全尺寸";
             case "uhdr":
                 return "JPEG + 增益图：HDR 屏高光更亮，普通屏显示为标准 JPEG";
             case "tiff":
@@ -31493,6 +31500,11 @@ public class MainActivity extends Activity {
                                 + " " + exportClipEdge + "p"
                         : "成片固定全尺寸 · 动图跟着冲洗";
             default:
+                // **The clip is one tap away, so say so.** A frame that is a
+                // live photo looks exactly like one that is not, and the still
+                // is the honest default -- but a user who has one should not
+                // have to discover the card to find out it exists.
+                if (exportHasClip) return "这张是实况照片 · 选「实况照片」可把那段动图一起写进去";
                 return isFotuStock(filmStock)
                         ? "fotufilm 只按文件自身尺寸出片：没有 3400 / 实时档" : "";
         }
@@ -31605,18 +31617,28 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout exportRow(LinearLayout body, java.util.List<ExportCard> into, String... ids) {
-        final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        final int cw = exportColumnWidth();
-        for (int i = 0; i < ids.length; ++i) {
-            final ExportCard c = exportCard(ids[i], exportFormatTitle(ids[i]), exportFormatSub(ids[i]));
-            final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cw, -1);
-            if (i < ids.length - 1) lp.rightMargin = dp(6);
-            row.addView(c.box, lp);
-            into.add(c);
+        // Three per line, wrapping: a fourth card starts a second line at the
+        // same column width, so it reads as a wrapped grid rather than as a
+        // lone card stretched across the sheet.
+        LinearLayout first = null;
+        for (int start = 0; start < ids.length; start += 3) {
+            final LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            final int cw = exportColumnWidth();
+            final int end = Math.min(ids.length, start + 3);
+            for (int i = start; i < end; ++i) {
+                final ExportCard c = exportCard(ids[i], exportFormatTitle(ids[i]), exportFormatSub(ids[i]));
+                final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cw, -1);
+                if (i < end - 1) lp.rightMargin = dp(6);
+                row.addView(c.box, lp);
+                into.add(c);
+            }
+            final LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(-1, dp(52));
+            if (start > 0) rlp.topMargin = dp(6);
+            body.addView(row, rlp);
+            if (first == null) first = row;
         }
-        body.addView(row, new LinearLayout.LayoutParams(-1, dp(52)));
-        return row;
+        return first;
     }
 
     private LinearLayout exportSizeRow(LinearLayout body) {
@@ -31652,8 +31674,12 @@ public class MainActivity extends Activity {
         exportHasClip = clip != null;
         if (clip != null) exportClipEdge = liveClipLongEdge(clip);
         exportLiveEdgeSel = exportClipEdge > LIVE_CLIP_MAX_EDGE ? LIVE_CLIP_FULL_EDGE : 0;
-        exportDevSel = false;
         clampExportSelection();
+        // **What the panel was offered, on disk.** "Where did my live photo go"
+        // took a screenshot and a guess to answer; this line answers it from the
+        // log, on the device, without a build.
+        markFile("export panel: clip=" + exportHasClip + " edge=" + exportClipEdge
+                + " dev=" + developLiveAvailable() + " film=" + filmStock + " paper=" + printStock);
 
         exportFormatCards.clear();
         exportSizeCards.clear();
@@ -31744,11 +31770,12 @@ public class MainActivity extends Activity {
 
         // ③ the format, in two rows
         addExportLabel(body, "常用格式", 10);
-        final java.util.List<String> row1 = new java.util.ArrayList<>();
-        row1.add("jpeg");
-        if (exportFormatAvailable("uhdr")) row1.add("uhdr");
-        if (exportHasClip) row1.add("live");
-        exportRow(body, exportFormatCards, row1.toArray(new String[0]));
+        // **Every format is on the map, always.** Cards used to disappear when
+        // they did not apply (实况 on a still, 显影 without a clip), and what
+        // that produces is not a tidy panel -- it is the question "where did it
+        // go?". A greyed card that names its reason in one tap answers it, and
+        // the grid never reflows between frames.
+        exportRow(body, exportFormatCards, "jpeg", "uhdr", "live", "dev");
         addExportLabel(body, "桌面后期", 10);
         exportRow(body, exportFormatCards, "tiff", "tifflin", "dng");
 
@@ -31766,34 +31793,20 @@ public class MainActivity extends Activity {
         exportLiveRow.setOrientation(LinearLayout.HORIZONTAL);
         exportLiveNative = exportChip("原生动图", 1);
         exportLiveHalf = exportChip("1440 半价档", 2);
-        exportLiveDev = exportChip("显影", 3);
         final LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(-2, dp(26));
         c1.rightMargin = dp(6);
         exportLiveRow.addView(exportLiveNative, c1);
         exportLiveRow.addView(exportLiveHalf, new LinearLayout.LayoutParams(-2, dp(26)));
-        final LinearLayout.LayoutParams c3 = new LinearLayout.LayoutParams(-2, dp(26));
-        c3.leftMargin = dp(6);
-        exportLiveRow.addView(exportLiveDev, c3);
         final LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(-1, -2);
         llp.topMargin = dp(6);
         exportHintBox.addView(exportLiveRow, llp);
         body.addView(exportHintBox, hlp);
         exportLiveNative.setOnClickListener(v -> {
-            exportDevSel = false;
             exportLiveEdgeSel = LIVE_CLIP_FULL_EDGE;
             refreshExportPanel();
         });
         exportLiveHalf.setOnClickListener(v -> {
-            exportDevSel = false;
             exportLiveEdgeSel = LIVE_CLIP_MAX_EDGE;
-            refreshExportPanel();
-        });
-        exportLiveDev.setOnClickListener(v -> {
-            if (!developLiveAvailable()) {
-                showInAppToast("这一帧没有可显影的负片（无相纸 / 反转片 / 画框）");
-                return;
-            }
-            exportDevSel = true;
             refreshExportPanel();
         });
 
@@ -31918,18 +31931,14 @@ public class MainActivity extends Activity {
 
     private void refreshExportLiveChips() {
         if (exportLiveRow == null) return;
-        final boolean live = "live".equals(exportFormatSel);
-        exportLiveRow.setVisibility(live ? View.VISIBLE : View.GONE);
-        if (!live) return;
-        final boolean two = exportClipEdge > LIVE_CLIP_MAX_EDGE;
-        exportLiveNative.setVisibility(two ? View.VISIBLE : View.GONE);
-        exportLiveHalf.setVisibility(two ? View.VISIBLE : View.GONE);
-        exportLiveDev.setVisibility(developLiveAvailable() ? View.VISIBLE : View.GONE);
-        styleExportChip(exportLiveNative,
-                two && !exportDevSel && exportLiveEdgeSel != LIVE_CLIP_MAX_EDGE, true);
-        styleExportChip(exportLiveHalf,
-                two && !exportDevSel && exportLiveEdgeSel == LIVE_CLIP_MAX_EDGE, true);
-        styleExportChip(exportLiveDev, exportDevSel, developLiveAvailable());
+        // **The row exists only when there is something to choose.** A clip at
+        // or below 1440 has one answer, and an empty 32 dp band under the hint
+        // reads as a control that failed to draw.
+        final boolean two = "live".equals(exportFormatSel) && exportClipEdge > LIVE_CLIP_MAX_EDGE;
+        exportLiveRow.setVisibility(two ? View.VISIBLE : View.GONE);
+        if (!two) return;
+        styleExportChip(exportLiveNative, exportLiveEdgeSel != LIVE_CLIP_MAX_EDGE, true);
+        styleExportChip(exportLiveHalf, exportLiveEdgeSel == LIVE_CLIP_MAX_EDGE, true);
     }
 
     private void styleExportChip(TextView tv, boolean selected, boolean enabled) {
@@ -32031,7 +32040,7 @@ public class MainActivity extends Activity {
         if (!exportFormatAvailable(fmt) || !exportSizeAvailable(fmt, size)) return;
         saveExportPrefs();
         final boolean batch = exportBatchSel;
-        final boolean dev = "live".equals(fmt) && exportDevSel;
+        final boolean dev = "dev".equals(fmt);
         // A clip already at 1440 has nothing to choose, but it still has to be
         // attached: zero here would write the still alone.
         final int edge = "live".equals(fmt)
@@ -32061,6 +32070,7 @@ public class MainActivity extends Activity {
                 + "\n" + Lang.t("TIFF 线性：16 位线性输出，不带显示曲线，保留完整高光余量，给桌面端 Lightroom。")
                 + "\n" + Lang.t("DNG：LinearRaw，给电脑上的 Lightroom / ACR。手机版 Lightroom 打开会报错，那是 Adobe 的已知问题，不必反馈。")
                 + "\n" + Lang.t("实况照片：静帧 + 相机录的那段动图。静帧始终按原图全尺寸冲洗，动图可选原生像素或 1440。")
+                + "\n" + Lang.t("显影：把负片到相纸的过程写成 3 秒实况（负片转正片），不需要相机录的那段动图。")
                 + PARA + Lang.t("画质与尺寸")
                 + "\n" + Lang.t("实时画质：按当前预览的像素出片，最快，也是最软的一档。")
                 + "\n" + Lang.t("预览 3400：长边 3400，社交用，几秒钟一张。")
@@ -40886,20 +40896,27 @@ public class MainActivity extends Activity {
             // of anything that is not already on disk, and doing that for every
             // JPEG on the chance that one is a live photo would be a new cost on
             // the import path for no benefit. The XMP sits in the first 256 KB.
+            final String tag = uri == null ? "?" : String.valueOf(uri.getLastPathSegment());
             boolean maybe = false;
             try (java.io.InputStream in = getContentResolver().openInputStream(uri)) {
                 maybe = in != null && MotionPhoto.looksLikeMotion(in);
             } catch (Throwable ignored) { }
-            if (!maybe) return null;
+            // **Four lines on disk, because the alternative is a screenshot and
+            // a guess.** A live photo whose clip was not taken is
+            // indistinguishable, from the canvas, from one that never had a
+            // clip -- so every import says which of the four it was.
+            if (!maybe) { markFile("live: no motion xmp · " + tag); return null; }
             final String path = rawFilePath != null ? rawFilePath : getFilePathFromUri(uri);
-            if (path == null) return null;
+            if (path == null) { markFile("live: no path · " + tag); return null; }
             final MotionPhoto mp = MotionPhoto.read(path);
-            if (mp == null) return null;
+            if (mp == null) { markFile("live: container unreadable · " + tag); return null; }
             final java.io.File dir = new java.io.File(getFilesDir(), "import/live");
             if (!dir.isDirectory() && !dir.mkdirs()) return null;
             final java.io.File out = new java.io.File(dir,
                     "live-" + System.currentTimeMillis() + ".mp4");
-            if (!mp.extract(path, out)) return null;
+            if (!mp.extract(path, out)) { markFile("live: extract failed · " + tag); return null; }
+            markFile("live: clip " + mp.videoLength + "B ts=" + mp.timestampUs
+                    + (mp.hasGainMap ? " +gainmap" : "") + " · " + tag);
             try {
                 DebugSink.text("live", "motion photo: clip " + mp.videoLength + " B at "
                         + mp.videoOffset + " ts=" + mp.timestampUs
