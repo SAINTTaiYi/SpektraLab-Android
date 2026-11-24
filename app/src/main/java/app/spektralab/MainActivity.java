@@ -16081,18 +16081,17 @@ public class MainActivity extends Activity {
         overscanFormat = look.overscanFormat;
         overscanPair = look.overscanPair && "135_half".equals(look.overscanFormat);
         if (isFotuStock(look.filmStock)) overscanFormat = fotuGaugeOf(look.filmStock);
-        // **The border a 1.7.4j look carries is the rebate's now.** Between
-        // 1.7.1w and 1.7.4j a fotufilm frame drew its edge with the PrintFrame
-        // on every gate, including 135 and the 120s; those ten gates are the
-        // rebate's as of 1.7.4k, and the print frame no longer answers for
-        // them. A look saved in that window therefore has `pfKind = film` on a
-        // 135 gate -- which would draw nothing at all. Hand it to the rebate,
-        // switch and all: the picture keeps the border it was saved with.
-        if (pfKind != null && !"none".equals(pfKind) && !isPrintFrameGauge(overscanFormat)) {
+        // **Only what this film and paper cannot carry is dropped.** This used
+        // to clear *every* border on a gate the print frame did not lay out --
+        // which included the paper sheets and the mounts, so 印刷边框 was wiped
+        // on the next look restore even after it had been picked. Since 1.7.4t
+        // the print frame draws on every gauge (the host lays out 135 and the
+        // 120s itself), so the only thing worth clearing is a border the
+        // availability rules refuse -- and `refreshPfRows` would do that anyway.
+        if (pfKind != null && !"none".equals(pfKind) && !pfAvailable(pfKind)) {
             pfKind = "none";
-            overscanOn = true;
-            try { DebugSink.text("border", "look migrated: print frame on "
-                    + overscanFormat + " -> rebate"); } catch (Throwable ignored) { }
+            try { DebugSink.text("border", "look dropped an unavailable frame "
+                    + "on " + overscanFormat); } catch (Throwable ignored) { }
         }
         printExposure = look.printExposure;
         meterMethod = sanitizeMeter(look.meterMethod);
@@ -25864,6 +25863,18 @@ public class MainActivity extends Activity {
         return "film".equals(pfKind) || "film-positive".equals(pfKind);
     }
 
+    /** The three borders that draw a *film edge* -- a strip, not a material.
+     *
+     *  <p>They need a gauge the print frame lays out. On 135 and the 120s that
+     *  strip is the rebate's job (it is the page with 片基雾 / 漏光 / 日期 /
+     *  张数), and drawing both would put two film edges on one picture. The
+     *  material borders -- 相纸 / 片夹边 / 幻灯卡纸 / 留白 / 社交画布 -- have no
+     *  such rule: they are sheets the finished canvas is placed on.
+     */
+    private static boolean pfIsFilmEdgeKind(String kind) {
+        return "film".equals(kind) || "film-positive".equals(kind) || "emulsion".equals(kind);
+    }
+
     /**
      * **The gauge a fotufilm stock is coated on** -- official
      * `FilmFormat.nativeID(forStockID:)`, read out of the stock packs' own
@@ -26112,15 +26123,14 @@ public class MainActivity extends Activity {
         if (st == null) return true;
         final String gauge = overscanFormat == null ? "135" : overscanFormat;
         final boolean instant = st.reflection || gauge.startsWith("instax");
-        final boolean rollOrSheet = pfFilmGauge(gauge) && !gauge.startsWith("instax");
         final boolean reflective = pfReflectiveMedium(printStock);
         switch (kind) {
-            case "film":          return pfFilmGauge(gauge);
-            case "film-positive": return !st.reversal && !instant && rollOrSheet;
+            case "film":          return isPrintFrameGauge(gauge);
+            case "film-positive": return !st.reversal && !instant && isPrintFrameGauge(gauge);
             case "slide-mount":   return st.reversal && !instant;
             case "carrier":       return reflective && !pfPositivePaper(printStock)
                                          && !st.reversal && !instant;
-            case "emulsion":      return !instant && rollOrSheet;
+            case "emulsion":      return !instant && isPrintFrameGauge(gauge);
             default:              return kind.startsWith("paper-") && reflective;
         }
     }
@@ -26130,15 +26140,17 @@ public class MainActivity extends Activity {
         if (kind == null) return "";
         switch (kind) {
             case "film":
-                return "需要一张有画幅的胶片（135 / 120 / 电影片 / 页片 / Instax）";
+                return "需要 Super 35 / 16mm / Super 8 / 4×5 / Instax 的片门"
+                        + "（135 与 120 的片边用上面的「片边」开关画）";
             case "film-positive":
-                return "需要负片，画幅是卷片或页片";
+                return "需要负片，且片门是 Super 35 / 16mm / Super 8 / 4×5 / Instax";
             case "slide-mount":
                 return "需要 135 或 120 的反转片";
             case "carrier":
                 return "需要负片 + 一张反射相纸（Crystal Archive / Ektacolor / Endura）";
             case "emulsion":
-                return "需要卷片或页片（一次成像没有乳剂边）";
+                return "需要 Super 35 / 16mm / Super 8 / 4×5 / Instax 的片门"
+                        + "（一次成像没有乳剂边）";
             default:
                 return "需要一张反射相纸（Crystal Archive / Ektacolor / Endura）";
         }
@@ -26425,6 +26437,7 @@ public class MainActivity extends Activity {
         TextView note = label("画面冲出来之后再放到材料上 —— 不重采样、不改色彩。"
                 + "「相纸」是印出来那张纸的白边，「片夹边」是暗房把片夹锉宽留下的黑线，"
                 + "「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。"
+                + "选中的印刷边框会接管边框：一张图只有一层材料。"
                 + "页片没有齿孔，只有右上角的缺口码；Instax 是一体式相纸，四周是白边 —— 这两类本来就没有齿孔。",
                 7.5f, UI_MUTED, tfHan);
         note.setPadding(dp(2), 0, dp(2), dp(6));
@@ -26997,7 +27010,12 @@ public class MainActivity extends Activity {
         // what decides which strip draws is the gate, not the engine.
         final boolean drawn = isFotuStock(filmStock);
         if (edgeCardDate != null) edgeCardDate.setVisibility(View.VISIBLE);
-        if (edgeCardPf != null) edgeCardPf.setVisibility(View.VISIBLE);
+        // **The print frame is the second engine's.** It is composited by the
+        // fotufilm host after the picture is formed; the first engine has no
+        // such stage, so on an SPK frame every row of that page was a tap that
+        // could not do anything. The card is hidden rather than dimmed: a
+        // material the engine does not have is not a disabled control.
+        if (edgeCardPf != null) edgeCardPf.setVisibility(drawn ? View.VISIBLE : View.GONE);
         if (edgeCardRebate != null) edgeCardRebate.setVisibility(View.VISIBLE);
         if (edgeShapeRow != null) edgeShapeRow.setVisibility(View.VISIBLE);
         if (edgeFotuNote != null) edgeFotuNote.setVisibility(drawn ? View.VISIBLE : View.GONE);
@@ -29467,7 +29485,10 @@ public class MainActivity extends Activity {
         refreshFrameRows();
         refreshEdgeCards();
         if (filmStock == null || showingOriginal) return;
-        if (isFotuStock(filmStock)) { if (lastFotuPlain != null) recomposeFotu(); else renderFotu(); }
+        // **A develop, not a repaint.** `lastFotuPlain` already has the old
+        // border baked in by the host, so recomposing it would keep drawing the
+        // frame the reset just cleared.
+        if (isFotuStock(filmStock)) renderFotu();
         else if (session != null) renderImage();
     }
 
@@ -38980,12 +39001,23 @@ public class MainActivity extends Activity {
         // a switch: a 135 gate drawn with the print frame would be two borders
         // on one picture, and a super8 gauge drawn with the rebate is a gauge
         // the rebate does not know (`unknown format 'super8'`).
-        final boolean rebateDraw = withRebate && overscanOn
-                && !isPrintFrameGauge(overscanFormat);
+        // **The print frame is a finishing compositor, not a gate.** Only the
+        // two *film* borders need a film gauge (the host lays out a strip); a
+        // paper sheet, a carrier ring, a slide mount and the posting canvases
+        // are materials the picture is placed on, and they work on any gauge.
+        // Requiring `isPrintFrameGauge` here is what made 印刷边框 do nothing on
+        // every 135 frame -- which is thirty-seven of the forty-seven films:
+        // the row was accepted, `pfKind` was set, and not one byte of it ever
+        // reached the host.
+        // **One material, one border.** A chosen print frame owns the edge, so
+        // the rebate steps aside; with `none` the 片边 switch behaves as before.
         final boolean pfDraw = withRebate
-                && isPrintFrameGauge(overscanFormat)
                 && (pfKind != null && !"none".equals(pfKind))
-                && pfAvailable(pfKindHere);
+                && pfAvailable(pfKindHere)
+                && (!pfIsFilmEdgeKind(pfKindHere) || isPrintFrameGauge(overscanFormat));
+        final boolean rebateDraw = withRebate && overscanOn
+                && !isPrintFrameGauge(overscanFormat)
+                && !pfDraw;
         if (rebateDraw) {
             // The film outside the frame, through the same pipeline as the
             // picture: `rebate:1` makes the host lay the frame on a strip, and

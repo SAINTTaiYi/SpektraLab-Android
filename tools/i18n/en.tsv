@@ -805,7 +805,7 @@ spektrafilm — Andrea Volpato。胶片过程模型、实测彩色 profile 与�
 画面内	In frame
 画面内的哪个角	Which corner of the picture
 画面冲出来之后再放到材料上 —— 不重采样、不改色彩。	The picture goes onto the material after it's developed — no resampling, no colour change.
-画面冲出来之后再放到材料上 —— 不重采样、不改色彩。「相纸」是印出来那张纸的白边，「片夹边」是暗房把片夹锉宽留下的黑线，「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。页片没有齿孔，只有右上角的缺口码；Instax 是一体式相纸，四周是白边 —— 这两类本来就没有齿孔。	The frame is finished first and then placed on the material — no resampling, no colour change. "Paper" is the white border of the paper it was printed on, "carrier edge" is the black line a darkroom leaves when it files the carrier wider, and "emulsion edge" is the unexposed band outside the gate itself. None of these is the rebate above. Sheet film has no sprocket holes, only a notch code in the top right corner; Instax is an integral paper with a white border all round — those two never had holes.
+画面冲出来之后再放到材料上 —— 不重采样、不改色彩。「相纸」是印出来那张纸的白边，「片夹边」是暗房把片夹锉宽留下的黑线，「乳剂边」是片门外未曝光那一圈本身。和上面的「片边」不是一回事。选中的印刷边框会接管边框：一张图只有一层材料。页片没有齿孔，只有右上角的缺口码；Instax 是一体式相纸，四周是白边 —— 这两类本来就没有齿孔。	The picture is placed on its material after it is formed — no resampling, no colour change. Paper is the white edge of the sheet it was printed on, Carrier the black line a darkroom files into the carrier, Emulsion the unexposed margin outside the gate itself. None of these is the rebate above. A chosen print frame owns the border: one picture, one material. Sheet film has no perforations, only the notch code in the top-right corner; Instax is an integral paper with a white edge all round — neither has ever had sprocket holes.
 画面在片门里向上 / 下挪	Slides the picture up / down inside the gate
 画面在片门里向左 / 右挪；只有需要裁切时才有行程	Slides the picture left / right inside the gate; only travels when a crop is needed
 画面最亮的一端落在相纸实测边界内几档。引擎按这张纸自己的黑白边界解曲线，不是硬压	How many stops inside the paper's measured limit the brightest part of the frame lands. The engine solves the curve against this paper's own black and white points, it doesn't just clamp
@@ -1293,3 +1293,7 @@ TIFF 线性 / DNG / 实况照片只有全尺寸；TIFF 16位没有实时档。	T
 参考线	Guides
 左转 90°	Rotate left 90°
 右转 90°	Rotate right 90°
+
+需要 Super 35 / 16mm / Super 8 / 4×5 / Instax 的片门（135 与 120 的片边用上面的「片边」开关画）	Needs a Super 35 / 16mm / Super 8 / 4x5 / Instax gate (135 and 120 film edges are drawn by the Rebate switch above)
+需要负片，且片门是 Super 35 / 16mm / Super 8 / 4×5 / Instax	Needs a negative whose gate is Super 35 / 16mm / Super 8 / 4x5 / Instax
+需要 Super 35 / 16mm / Super 8 / 4×5 / Instax 的片门（一次成像没有乳剂边）	Needs a Super 35 / 16mm / Super 8 / 4x5 / Instax gate (instant film has no unexposed edge)
