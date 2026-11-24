@@ -23705,11 +23705,11 @@ public class MainActivity extends Activity {
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(0, dp(10), 0, 0);
-        final LinearLayout.LayoutParams c0 = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        final LinearLayout.LayoutParams c0 = new LinearLayout.LayoutParams(0, dp(52), 1f);
         c0.rightMargin = dp(6);
-        final LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        final LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(0, dp(52), 1f);
         c1.rightMargin = dp(6);
-        final LinearLayout.LayoutParams c2 = new LinearLayout.LayoutParams(0, dp(56), 1f);
+        final LinearLayout.LayoutParams c2 = new LinearLayout.LayoutParams(0, dp(52), 1f);
         c2.rightMargin = dp(6);
         row.addView(actionCard(IconBox.ROTATE_LEFT, "左转 90°", () -> turnBy(-1), false), c0);
         row.addView(actionCard(IconBox.ROTATE_RIGHT, "右转 90°", () -> turnBy(1), false), c1);
@@ -23724,7 +23724,7 @@ public class MainActivity extends Activity {
             if (compare != null) compare.animateFlip(false);
             showComposePage(1);
             commitCompose();
-        }, geometryFlipV), new LinearLayout.LayoutParams(0, dp(56), 1f));
+        }, geometryFlipV), new LinearLayout.LayoutParams(0, dp(52), 1f));
         composeBody.addView(row, new LinearLayout.LayoutParams(-1, -2));
 
         refreshRotateReadout(geometryRotation);
@@ -23768,7 +23768,11 @@ public class MainActivity extends Activity {
     private View actionCard(int icon, String caption, Runnable tap, boolean active) {
         final LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setGravity(android.view.Gravity.CENTER_HORIZONTAL);
+        // **The glyph and its name sit in the middle of the card, not at its
+        // top.** `CENTER_HORIZONTAL` alone leaves the pair packed against the
+        // top edge with a 20 dp band of nothing underneath, which is what made
+        // the four cards read as not centred.
+        box.setGravity(android.view.Gravity.CENTER);
         box.setBackground(cardBorder(active));
         box.setClickable(true);
         final IconBox glyph = new IconBox(this, icon);
@@ -23777,7 +23781,7 @@ public class MainActivity extends Activity {
         final TextView text = label(caption, 8.5f, active ? UI_BLUE : UI_MUTED, tfHan);
         text.setGravity(android.view.Gravity.CENTER);
         final LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(-1, -2);
-        tlp.topMargin = dp(5);
+        tlp.topMargin = dp(6);
         box.addView(text, tlp);
         box.setOnClickListener(v -> tap.run());
         return box;
