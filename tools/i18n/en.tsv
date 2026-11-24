@@ -1214,3 +1214,74 @@ QQ 群 · 没满，直接加	QQ group · not full, join here
 100 = 完整的胶片；调低就与原片混合 —— 肤色跟着原片回来，因为这里减的是成片本身，不是染料	100 is the whole film; lower mixes back toward the source -- skin tones return with it, because what is diluted here is the print, not the dye
 100 = 完整的胶片；调低就与原片混合 —— 肤色跟着原片回来	100 is the whole film; lower mixes back toward the source, and the skin tones come with it
 fotufilm：135 / 120 的十个片门走的是同一个片边 —— 雾、漏光、齿孔、厂标、DX、日期都生效，和画面一起过颗粒与相纸；Super 35 / 16mm / Super 8 / 4×5 / Instax 那七个是印刷画框，另一套。	fotufilm: the ten 135/120 gates share one rebate -- fog, leaks, sprockets, edge print, DX and dates all apply, and it goes through grain and paper with the picture; the seven Super 35 / 16mm / Super 8 / 4x5 / Instax gauges are print frames, a different strip
+没有胶片：导出的是原图 JPEG	No film: this exports the original JPEG
+画框逐张合成，只写 JPEG	A frame is composed per photo; JPEG only
+这张照片不是实况照片	This photo is not a live photo
+无相纸的负片没有相纸肩部，没有可还的高光	A negative with no paper has no paper shoulder to give back
+Ultra HDR 要第一引擎的相纸曲线	Ultra HDR needs the first engine's paper curve
+fotufilm 只写 JPEG 与 16 位线性 TIFF	fotufilm writes JPEG and 16-bit linear TIFF only
+这一版没有这个写出路径	This build has no writer for that
+原图导出按文件自身像素写	The original is written at the file's own pixels
+批量只写 JPEG · 预览 3400 或原图全尺寸	Batch writes JPEG only · Preview 3400 or Full size
+fotufilm 只按文件自身尺寸出片	fotufilm always develops at the file's own size
+这一档没有实时画质	This size has no realtime step
+这个格式只有全尺寸	This format is full size only
+实况照片	Live photo
+TIFF 16位	TIFF 16-bit
+TIFF 线性	TIFF linear
+JPEG + 增益图	JPEG + gain map
+静帧 + 动图	Still + clip
+编码 16 位	Encoded 16-bit
+通用 · 8 位	General · 8-bit
+原图全尺寸	Full size
+预览 3400	Preview 3400
+当前预览 · 极速	Current preview · fastest
+社交推荐 · 数秒	For sharing · seconds
+约	about
+秒	sec
+原始像素	Native pixels
+单缓冲	Single buffer
+分块渲染	tiled
+本机建议上限	suggested ceiling
+批量导出	Batch export
+张	photos
+原图导出：未冲印的 JPEG，尺寸按文件自身像素	Original export: an undeveloped JPEG at the file's own pixels
+画框逐张合成：只写 JPEG，出片尺寸由模板决定	A frame is composed per photo: JPEG only, size set by the template
+批量逐张冲洗：只写 JPEG · 预览 3400 或原图全尺寸	Batch, one photo at a time: JPEG only · Preview 3400 or Full size
+JPEG + 增益图：HDR 屏高光更亮，普通屏显示为标准 JPEG	JPEG + gain map: brighter highlights on HDR screens, a plain JPEG everywhere else
+桌面后期专用：手机相册通常无法预览 16 位 TIFF	For desktop work: phone galleries usually cannot preview 16-bit TIFF
+16-bit 线性输出 · 保留完整高光余量（供桌面端 Lightroom 拉高光）	16-bit linear output · full highlight headroom (for Lightroom on a desktop)
+仅限桌面端后期（手机版 Lightroom 打开报错属 Adobe 已知问题）	Desktop only (Lightroom mobile refusing it is a known Adobe bug)
+成片固定全尺寸 · 动图按下面的档位重新冲洗	The still is always full size · the clip is redeveloped at the step below
+成片固定全尺寸	The still is always full size
+动图已是	The clip is already
+fotufilm 只按文件自身尺寸出片：没有 3400 / 实时档	fotufilm develops at the file's own size only: no 3400, no realtime
+说明	Info
+导出范围	Scope
+当前照片	This photo
+批量	Batch
+画框逐张合成，批量不套画框	Frames are composed per photo, so batch leaves them off
+常用格式	Everyday formats
+桌面后期	Desktop work
+原生动图	Native clip
+1440 半价档	1440 half-cost
+显影	Develop
+这一帧没有可显影的负片（无相纸 / 反转片 / 画框）	No negative to develop in this frame (no paper / reversal / frame)
+画质与尺寸	Quality and size
+文件格式	File formats
+JPEG：8 位显示值。相册、微信、任何看图软件都打得开，够看也够分享。	JPEG: 8-bit display values. Galleries, WeChat and any viewer open it; good enough to look at and to share.
+Ultra HDR：同一张 JPEG 加一份增益图（ISO 21496-1）。HDR 屏上高光更亮，普通屏和相册看到的还是普通 JPEG，底下的主图与 JPEG 逐字节相同。	Ultra HDR: the same JPEG plus a gain map (ISO 21496-1). Highlights are brighter on an HDR screen; on an ordinary screen and in a gallery it is still a plain JPEG, and the main image underneath is byte-for-byte the JPEG above.
+TIFF 16位：同一个渲染的 16 位写法。相纸最亮那一档有三千多个码，拉高光才有东西可拉；手机相册通常不显示 16 位 TIFF。	TIFF 16-bit: the same render written at 16 bits. The paper's last stop holds thousands of codes, so highlight recovery has something to pull on; phone galleries usually will not show a 16-bit TIFF.
+TIFF 线性：16 位线性输出，不带显示曲线，保留完整高光余量，给桌面端 Lightroom。	TIFF linear: 16-bit linear output with no display curve, keeping the full highlight headroom for Lightroom on a desktop.
+DNG：LinearRaw，给电脑上的 Lightroom / ACR。手机版 Lightroom 打开会报错，那是 Adobe 的已知问题，不必反馈。	DNG: LinearRaw, for Lightroom / ACR on a computer. Lightroom mobile will refuse it - a known Adobe bug, no need to report it.
+实况照片：静帧 + 相机录的那段动图。静帧始终按原图全尺寸冲洗，动图可选原生像素或 1440。	Live photo: the still plus the clip the camera recorded. The still is always developed at full size; the clip can be native pixels or 1440.
+实时画质：按当前预览的像素出片，最快，也是最软的一档。	Realtime: written at the current preview's pixels - the fastest and softest step.
+预览 3400：长边 3400，社交用，几秒钟一张。	Preview 3400: 3400 on the long edge, for sharing, a few seconds each.
+原图全尺寸：按照片自己的像素渲染，26 MP 大约二十秒。	Full size: rendered at the photo's own pixels; 26 MP takes about twenty seconds.
+TIFF 线性 / DNG / 实况照片只有全尺寸；TIFF 16位没有实时档。	TIFF linear / DNG / Live photo are full size only; TIFF 16-bit has no realtime step.
+逐张按各自的胶片、相纸和裁切冲洗，只写 JPEG（预览 3400 或原图全尺寸）。	One photo at a time, each with its own film, paper and crop; JPEG only (Preview 3400 or Full size).
+画框是逐张合成的装饰，不参与批量；开着画框时批量会被置灰。	A frame is a per-photo decoration and takes no part in a batch; with a frame on, batch is greyed out.
+硬件	Hardware
+分块渲染：驱动的单缓冲不够时按带渲染，输出像素不受影响，只是慢一点。	Tiled rendering: when the driver's single buffer is too small the frame is rendered in bands. The output pixels are identical; it is only slower.
+导出说明	Export notes
+成片固定全尺寸 · 动图跟着冲洗	The still is always full size · the clip comes along

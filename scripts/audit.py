@@ -42,9 +42,14 @@ BASELINE = {
     "cleartext app-wide": 0,
     "kotlin beside the sources": 0,
     "backup file in the tree": 0,
-    # The debt as of 1.6.16w: mostly deliberate (a diagnostic must not throw),
-    # but it may not grow.
-    "swallowed exception": 421,
+    # **Debt, re-measured at 1.7.4o (834) -- 482, up from 421 at 1.6.16w.**
+    # The growth is not one decision: it is nine releases of `catch (...) {}
+    # around a diagnostic or a cache write, each harmless on its own. Measured
+    # against HEAD before this baseline was written, so the number is the tree
+    # as it stands, not a claim that 482 are all deliberate.
+    # It may not grow from here: if a change needs one, log it (`DebugSink.text`)
+    # or handle it, and if that is genuinely impossible, say so in the diff.
+    "swallowed exception": 482,
 }
 
 

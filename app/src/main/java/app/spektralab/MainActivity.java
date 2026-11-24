@@ -31246,6 +31246,258 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ================================================================ export
+    //
+    // **One panel, one decision.** The old sheet was a list of eight rows whose
+    // labels differed by four characters, plus a second sheet behind 「更多格式」
+    // for the four files nobody meant to pick; a field report (SL-261118-C2FF)
+    // has the app writing a 16-bit TIFF twice for someone who believed he had
+    // asked for a JPEG, which is what a menu that cannot say what it will write
+    // looks like from the other side of the screen.
+    //
+    // The panel states the three things an export is -- a format, a size, and
+    // how many frames -- as cards that cannot be combined into something the
+    // writers do not support. It remembers the two that are a taste rather than
+    // a decision, and it puts the resulting file's name on the button.
+
+    /** The writers this build has, in the order the panel shows them. */
+    private static final String[] EXPORT_FORMATS = {"jpeg", "uhdr", "live", "tiff", "tifflin", "dng"};
+    private static final String[] EXPORT_SIZES = {"live", "preview", "full"};
+
+    private android.app.Dialog exportPanel;
+    private String exportFormatSel = "jpeg";
+    private String exportSizeSel = "preview";
+    private boolean exportBatchSel = false;
+    private int exportLiveEdgeSel = 0;
+    private boolean exportDevSel = false;
+    /** The clip's own long edge, read once when the panel opens. */
+    private int exportClipEdge = 0;
+    /** A clip exists even when its dimensions could not be read. */
+    private boolean exportHasClip;
+
+    /** One card: title, sub-label, and the accent dot that says "this one". */
+    private static final class ExportCard {
+        final android.widget.FrameLayout box;
+        final TextView title, sub;
+        final View dot;
+        final String id;
+        ExportCard(android.widget.FrameLayout b, TextView t, TextView s, View d, String id) {
+            box = b; title = t; sub = s; dot = d; this.id = id;
+        }
+    }
+
+    private final java.util.List<ExportCard> exportFormatCards = new java.util.ArrayList<>();
+    private final java.util.List<ExportCard> exportSizeCards = new java.util.ArrayList<>();
+    private TextView exportRangeCur, exportRangeAll;
+    private LinearLayout exportHintBox, exportLiveRow;
+    private android.widget.ScrollView exportScroll;
+    private LinearLayout exportBody;
+    private int exportScreenW, exportMaxBody;
+    private TextView exportHintText, exportHw, exportGo;
+    private TextView exportLiveNative, exportLiveHalf, exportLiveDev;
+    private int exportBodyWidth;
+    private boolean exportHintReady;
+    private android.animation.ValueAnimator exportHintAnim;
+
+    /**
+     * **The matrix, in one place.**
+     *
+     * <p>Only what the two writers actually do: `exportImage` refuses DNG on
+     * fotufilm, the second engine always develops at the file's own pixels
+     * (its `tier` argument is read by nobody), `exportFramed` writes JPEG only,
+     * and a frame with no film or in 原图 is written by `exportOriginal`, which
+     * is a JPEG of the source.
+     */
+    private boolean exportNoFilm() { return filmStock == null || showingOriginal; }
+
+    private boolean exportFormatAvailable(String id) {
+        if (exportNoFilm() || frameTemplateOn()) return "jpeg".equals(id);
+        final boolean fotu = isFotuStock(filmStock);
+        switch (id) {
+            case "uhdr":    return !fotu && !PAPER_SCAN.equals(printStock);
+            case "live":    return exportHasClip;
+            case "tiff":    return !fotu;             // fotufilm writes linear only
+            case "tifflin": return true;
+            case "dng":     return !fotu;             // no DNG writer in the host
+            default:        return true;
+        }
+    }
+
+    /** Why a format is greyed, in the words the panel uses when it is tapped. */
+    private String exportFormatWhy(String id) {
+        if (exportBatchSel) return "批量只写 JPEG · 预览 3400 或原图全尺寸";
+        if (exportNoFilm()) return "没有胶片：导出的是原图 JPEG";
+        if (frameTemplateOn()) return "画框逐张合成，只写 JPEG";
+        if ("live".equals(id)) return "这张照片不是实况照片";
+        if ("uhdr".equals(id)) {
+            return PAPER_SCAN.equals(printStock)
+                    ? "无相纸的负片没有相纸肩部，没有可还的高光"
+                    : "Ultra HDR 要第一引擎的相纸曲线";
+        }
+        if (isFotuStock(filmStock)) return "fotufilm 只写 JPEG 与 16 位线性 TIFF";
+        return "这一版没有这个写出路径";
+    }
+
+    private boolean exportSizeAvailable(String format, String size) {
+        if (exportNoFilm()) return "full".equals(size);
+        if (exportBatchSel) return "jpeg".equals(format) && !"live".equals(size);
+        if (isFotuStock(filmStock)) return "full".equals(size);   // tier is ignored there
+        switch (format) {
+            case "uhdr": case "tiff":    return !"live".equals(size);
+            case "tifflin": case "dng": case "live": return "full".equals(size);
+            default:                     return true;
+        }
+    }
+
+    private String exportSizeWhy(String format, String size) {
+        if (exportNoFilm()) return "原图导出按文件自身像素写";
+        if (exportBatchSel) return "批量只写 JPEG · 预览 3400 或原图全尺寸";
+        if (isFotuStock(filmStock)) return "fotufilm 只按文件自身尺寸出片";
+        if ("live".equals(size)) return "这一档没有实时画质";
+        return "这个格式只有全尺寸";
+    }
+
+    private static String exportFormatTitle(String id) {
+        switch (id) {
+            case "uhdr":    return "Ultra HDR";
+            case "live":    return "实况照片";
+            case "tiff":    return "TIFF 16位";
+            case "tifflin": return "TIFF 线性";
+            case "dng":     return "DNG";
+            default:        return "JPEG";
+        }
+    }
+
+    private static String exportFormatSub(String id) {
+        switch (id) {
+            case "uhdr":    return "JPEG + 增益图";
+            case "live":    return "静帧 + 动图";
+            case "tiff":    return "编码 16 位";
+            case "tifflin": return "线性光";
+            case "dng":     return "Adobe DNG";
+            default:        return "通用 · 8 位";
+        }
+    }
+
+    private static String exportSizeTitle(String id) {
+        switch (id) {
+            case "live":    return "实时画质";
+            case "full":    return "原图全尺寸";
+            default:        return "预览 3400";
+        }
+    }
+
+    private static String exportSizeShort(String id) {
+        switch (id) {
+            case "live": return "实时画质";
+            case "full": return "原图全尺寸";
+            default:     return "预览 3400";
+        }
+    }
+
+    private String exportSizeSub(String id) {
+        switch (id) {
+            case "live": return "当前预览 · 极速";
+            case "full": return exportFullSub();
+            default:     return "社交推荐 · 数秒";
+        }
+    }
+
+    private String exportFullSub() {
+        final int w = importedWidth > 0 ? importedWidth : sourceWidth;
+        final int h = importedHeight > 0 ? importedHeight : sourceHeight;
+        if (w > 0 && h > 0) {
+            final double mp = (double) w * h / 1e6;
+            return String.format(java.util.Locale.US, mp >= 9.95 ? "%.0f" : "%.1f", mp) + " MP · "
+                    + Lang.t("约") + " " + Math.max(4, (int) Math.round(mp * 0.9)) + " " + Lang.t("秒");
+        }
+        return Lang.t("原始像素") + " · " + Lang.t("约") + " 30 " + Lang.t("秒");
+    }
+
+    private void loadExportPrefs() {
+        final android.content.SharedPreferences p = getSharedPreferences("ui", MODE_PRIVATE);
+        exportFormatSel = p.getString("export_format", "jpeg");
+        exportSizeSel = p.getString("export_size", "preview");
+        if (java.util.Arrays.asList(EXPORT_FORMATS).indexOf(exportFormatSel) < 0) exportFormatSel = "jpeg";
+        if (java.util.Arrays.asList(EXPORT_SIZES).indexOf(exportSizeSel) < 0) exportSizeSel = "preview";
+    }
+
+    private void saveExportPrefs() {
+        try {
+            getSharedPreferences("ui", MODE_PRIVATE).edit()
+                    .putString("export_format", exportFormatSel)
+                    .putString("export_size", exportSizeSel)
+                    .apply();
+        } catch (Throwable t) {
+            // A preference write cannot lose a photograph, but it must not be
+            // silent either: a device that refuses the write is a device whose
+            // next export starts from a default, and the log is where that is
+            // visible.
+            DebugSink.text("export", "prefs: " + t);
+        }
+    }
+
+    /** Never leave a selection the writers cannot honour. */
+    private void clampExportSelection() {
+        if (!exportFormatAvailable(exportFormatSel)) exportFormatSel = "jpeg";
+        if (exportBatchSel && !"jpeg".equals(exportFormatSel)) exportFormatSel = "jpeg";
+        if (!exportSizeAvailable(exportFormatSel, exportSizeSel)) {
+            exportSizeSel = exportSizeAvailable(exportFormatSel, "preview") ? "preview" : "full";
+        }
+        if (!"live".equals(exportFormatSel)) exportDevSel = false;
+        if (!exportHasClip) exportLiveEdgeSel = 0;
+        else if (exportLiveEdgeSel != LIVE_CLIP_MAX_EDGE) exportLiveEdgeSel = LIVE_CLIP_FULL_EDGE;
+    }
+
+    private String exportHardwareLine() {
+        final String budget = String.format(java.util.Locale.US, "%.1f MP", maxImportPixels() / 1e6);
+        if (probe.maxStorageBufferRange > 0) {
+            return Lang.t("单缓冲") + " "
+                    + String.format(java.util.Locale.US, "%.0f", probe.maxStorageBufferRange / 1048576.0)
+                    + " MiB（" + Lang.t("分块渲染") + "） · "
+                    + Lang.t("本机建议上限") + " " + budget;
+        }
+        return Lang.t("驱动未报单缓冲上限") + " · " + Lang.t("本机建议上限") + " " + budget;
+    }
+
+    private String exportButtonLabel() {
+        final String kind = Lang.t(exportFormatTitle(exportFormatSel));
+        final String size = Lang.t(exportSizeShort(exportSizeSel));
+        if (exportBatchSel) {
+            return Lang.t("批量导出") + " " + frames.size() + " " + Lang.t("张")
+                    + " · " + kind + " " + size;
+        }
+        return Lang.t("导出") + " " + kind + " · " + size;
+    }
+
+    /** The one line under the formats: what this choice actually writes. */
+    private String exportHintFor() {
+        if (exportNoFilm()) return "原图导出：未冲印的 JPEG，尺寸按文件自身像素";
+        if (frameTemplateOn()) return "画框逐张合成：只写 JPEG，出片尺寸由模板决定";
+        if (exportBatchSel) return "批量逐张冲洗：只写 JPEG · 预览 3400 或原图全尺寸";
+        switch (exportFormatSel) {
+            case "uhdr":
+                return "JPEG + 增益图：HDR 屏高光更亮，普通屏显示为标准 JPEG";
+            case "tiff":
+                return "桌面后期专用：手机相册通常无法预览 16 位 TIFF";
+            case "tifflin":
+                return "16-bit 线性输出 · 保留完整高光余量（供桌面端 Lightroom 拉高光）";
+            case "dng":
+                return "仅限桌面端后期（手机版 Lightroom 打开报错属 Adobe 已知问题）";
+            case "live":
+                if (exportClipEdge > LIVE_CLIP_MAX_EDGE) {
+                    return "成片固定全尺寸 · 动图按下面的档位重新冲洗";
+                }
+                return exportClipEdge > 0
+                        ? Lang.t("成片固定全尺寸") + " · " + Lang.t("动图已是")
+                                + " " + exportClipEdge + "p"
+                        : "成片固定全尺寸 · 动图跟着冲洗";
+            default:
+                return isFotuStock(filmStock)
+                        ? "fotufilm 只按文件自身尺寸出片：没有 3400 / 实时档" : "";
+        }
+    }
+
     private void showExportDialog() {
         exportHeals = 0;
         if (batchExportRunning) {
@@ -31261,166 +31513,567 @@ public class MainActivity extends Activity {
             showInAppToast("先导入一张照片");
             return;
         }
-        final String full = (sourceWidth > 0 && sourceHeight > 0)
-                ? "全尺寸 " + sourceWidth + "×" + sourceHeight : "全尺寸";
-        // No ceiling to warn about: the export renders the frame that was
-        // imported, and that may be the file's own size. What is worth saying
-        // is that it takes time, not that it will be refused.
-        final String fullNote = "（原图 · 大尺寸会慢）";
-        // What the driver says it can take, as opposed to what this build
-        // currently lets through. The two were only ever visible as one number,
-        // and it was always the smaller -- so a phone reporting 2 GiB of
-        // maxStorageBufferRange looked like it was capped at 15 MP for no
-        // stated reason. Name both, and say which one is temporary.
-        final String driverLine;
-        if (probe.maxStorageBufferRange > 0) {
-            final double driverMp = probe.maxStorageBufferRange / 12.0 * 0.80 / 1e6;
-            final double budgetMp = maxImportPixels() / 1e6;
-            driverLine = String.format(java.util.Locale.US,
-                    "驱动单缓冲 %.0f MiB（分块后不再限制单帧）；本机按可用内存建议 %.1f MP",
-                    probe.maxStorageBufferRange / 1048576.0, budgetMp);
-        } else {
-            driverLine = probe.valid ? "驱动未报单缓冲上限" : "设备信息读取失败";
-        };
-        // One sheet, six rows. It was two -- format, then size -- and the first
-        // thing that did was hide "全尺寸（原图）" behind a tap that nobody
-        // expects from a menu that used to end in it.
-        final boolean limited = probe.isLimited();
-        // "the gallery says it is corrupt" is a question this sheet can answer
-        // before the file is written, not after: Android's picture viewer does
-        // not read 16-bit TIFF at all, and the phone's Lightroom does.
-        // DNG is shipped as a file for a desktop, and says so on the tin. The
-        // phone's Lightroom refuses every linear DNG this writer produces --
-        // four containers, two photometrics, 600x400 through 3000x2000, a
-        // correct XYZ(D50) colour matrix, a camera-shaped IFD0 preview -- with
-        // "failed to load the development version", which Adobe lists as a
-        // known Android bug. Rather than let that read as our defect, the row
-        // and the note name the destination and close the question.
-        final String note = isFotuStock(filmStock)
-                ? "JPEG 是 8 位显示值，够看、够分享。要 16 位线性母版进「更多格式」。"
-                  + "\n" + driverLine
-                : "预览画质长边 3400：几秒钟一张，发朋友圈足够。"
-                  + "全尺寸按原图自己的像素渲染，26 MP 大约半分钟。"
-                  + "\nUltra HDR 是同一张 JPEG 加一份增益图：HDR 屏上高光更亮，"
-                  + "普通屏幕和相册看到的还是普通 JPEG；全尺寸那一档就是同一件事，"
-                  + "只是按原图自己的像素渲染。"
-                  + "\n实况照片：成片始终是全尺寸，区别在动图 —— 原生按相机录的像素，"
-                  + "1440 是半价档。"
-                  + "\n要 16 位 TIFF（给 Lightroom 拉高光）或 DNG，进「更多格式」。"
-                  + "\n" + driverLine;
-        final boolean batchable = frames.size() > 1;
-        final java.util.ArrayList<String> rows = new java.util.ArrayList<>();
-        // **Rows and keys, side by side.** The dispatch used to be arithmetic on the
-        // index (`which >= 3 ? tiff : jpeg`, `which == 6 ? tifflin`), which only
-        // worked while both engines offered the same list. A row now says what it
-        // is, and the engine that answers it is named in the key.
-        //
-        // **One sheet per intent.** This was a single list of eight rows in which
-        // `JPEG · 预览画质 · 长边 3400` and `TIFF 16 位 · 预览画质 · 长边 3400`
-        // differed by four characters -- and a field report (SL-261118-C2FF) has
-        // the app exporting a 16-bit TIFF twice while the owner believes he asked
-        // for a JPEG. Whether that was a mis-tap or not, a menu that cannot tell
-        // the two apart is our defect: the size rows now come first and name the
-        // format in a suffix, and TIFF / DNG are one tap away behind 「更多格式」.
-        final java.util.ArrayList<String> keys = new java.util.ArrayList<>();
-        if (batchable) {
-            rows.add("批量 · 全部 " + frames.size() + " 张（JPEG · 全尺寸）");
-            keys.add("batch");
-        }
-        rows.add("预览画质 · 长边 3400（JPEG）");     keys.add("spk|jpeg|preview");
-        // **Enable HDR, as a file.** A paper's shoulder compresses the top
-        // stops into a fraction of its last stop of reflectance; the gain map
-        // gives them back on a screen that can show them, and the picture
-        // underneath stays the JPEG above, byte for byte. It needs the first
-        // engine's medium ramp, so fotufilm does not offer it.
-        // **Not for a negative with no paper.** 「无相纸 · 负片本身」 has no print
-        // stage at all, so there is no shoulder to give back -- and the picture
-        // is an orange negative. A reversal frame keeps the row: its curve is
-        // the film's own scan, which is exactly what upstream's §19.1 does.
-        if (!isFotuStock(filmStock) && !PAPER_SCAN.equals(printStock)) {
-            rows.add("预览画质 · 长边 3400（Ultra HDR）"); keys.add("spk|uhdr|preview");
-            // **The same file at the frame's own pixels.** The gain map is built
-            // from the encoded rows either way, so the only difference is the
-            // render and the JPEG: ~6 s on a 20 MP frame against ~3 s.
-            rows.add("全尺寸 · 原图（Ultra HDR）");       keys.add("spk|uhdr|full");
-        }
-        rows.add("全尺寸 · 原图（JPEG）");           keys.add("spk|jpeg|full");
-        rows.add("实时画质（JPEG）");                keys.add("spk|jpeg|live");
-        final String livePath = liveClipForCurrentFrame();
-        if (livePath != null) {
-            // **Two clips, not two stills.** Both rows write the still at the
-            // frame's own pixels -- the moving half is what differs, and the
-            // number in the label is the clip's own long edge, read out of the
-            // file. A clip that is already 1440 gets one row, because a second
-            // one would do exactly the same work under a different name.
-            final int clipEdge = liveClipLongEdge(livePath);
-            if (clipEdge > LIVE_CLIP_MAX_EDGE) {
-                rows.add("实况照片 · 全尺寸（动图 " + LIVE_CLIP_FULL_EDGE + "p · 原生）");
-                keys.add("spk|jpeg|full|live|" + LIVE_CLIP_FULL_EDGE);
-                rows.add("实况照片 · 全尺寸（动图 " + LIVE_CLIP_MAX_EDGE + "p · 快一半）");
-                keys.add("spk|jpeg|full|live|" + LIVE_CLIP_MAX_EDGE);
-            } else {
-                rows.add("实况照片 · 全尺寸（动图 "
-                        + (clipEdge > 0 ? clipEdge + "p" : "跟着冲洗") + "）");
-                keys.add("spk|jpeg|full|live|" + LIVE_CLIP_FULL_EDGE);
-            }
-        }
-        // **显影实况.** A live photo whose motion *is* the darkroom: the
-        // negative this print came from, a lamp coming up through it until the
-        // film *is* the print. Both
-        // ends are this frame, so it is offered only where the still is a
-        // print -- not on 「无相纸 · 负片本身」 (the still *is* the negative),
-        // not on a scan medium, and not on a reversal (a slide has no negative
-        // to develop). The key says `spk|` because the engine is read off the
-        // frame in `exportImage`, the same way every other row works.
-        if (developLiveAvailable()) {
-            rows.add("实况 · 显影（负片 → 正片）");
-            keys.add("spk|jpeg|full|dev");
-        }
-        rows.add("更多格式：TIFF 16 位 / DNG…");     keys.add("more");
-        showActionSheet("导出照片", note, rows.toArray(new String[0]), which0 -> {
-            if (which0 < 0 || which0 >= keys.size()) return;
-            final String[] key = keys.get(which0).split("\\|");
-            if ("batch".equals(key[0])) { startBatchExport("jpeg", "full"); return; }
-            if ("more".equals(key[0])) { showExportFormatSheet(); return; }
-            beginExport(key);
-        });
+        showExportPanel();
+    }
+
+    private TextView exportRangeCell(String text) {
+        final TextView tv = label(text, 12.5f, UI_MUTED, tfHan);
+        tv.setGravity(android.view.Gravity.CENTER);
+        weight(tv, 500);
+        tv.setSingleLine(true);
+        return tv;
+    }
+
+    private void addExportLabel(LinearLayout body, String text, int topDp) {
+        final TextView tv = label(text, 10.5f, UI_MUTED, tfHan);
+        tv.setLetterSpacing(0.08f);
+        final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(topDp);
+        lp.bottomMargin = dp(5);
+        body.addView(tv, lp);
+    }
+
+    private ExportCard exportCard(String id, String title, String sub) {
+        final android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+        final LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        col.setPadding(dp(9), 0, dp(9), 0);
+        final TextView t = label(title, 12.5f, UI_INK, tfHan);
+        weight(t, 500);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        col.addView(t, new LinearLayout.LayoutParams(-1, -2));
+        final TextView s = label(sub, 10.5f, UI_MUTED, tfHan);
+        s.setSingleLine(true);
+        s.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        final LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
+        slp.topMargin = dp(2);
+        col.addView(s, slp);
+        box.addView(col, new android.widget.FrameLayout.LayoutParams(-1, -1));
+        final View dot = new View(this);
+        dot.setBackgroundColor(UI_BLUE);
+        final android.widget.FrameLayout.LayoutParams dlp =
+                new android.widget.FrameLayout.LayoutParams(dp(4), dp(4),
+                        android.view.Gravity.BOTTOM | android.view.Gravity.END);
+        dlp.rightMargin = dp(5);
+        dlp.bottomMargin = dp(5);
+        box.addView(dot, dlp);
+        dot.setVisibility(View.GONE);
+        return new ExportCard(box, t, s, dot, id);
+    }
+
+    private android.graphics.drawable.GradientDrawable exportCardBg(boolean selected) {
+        final android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        bg.setCornerRadius(0f);
+        // A tint, not a slab: the accent sits at ~7 % behind the type and full
+        // strength on the edge, which is the language the rest of the app uses.
+        bg.setColor(selected ? (0x12000000 | (UI_BLUE & 0x00FFFFFF)) : UI_GROUND);
+        bg.setStroke(dp(selected ? 1.5f : 1f), selected ? UI_BLUE : UI_LINE);
+        return bg;
+    }
+
+    private void styleExportCard(ExportCard c, boolean selected, boolean enabled) {
+        c.box.setBackground(exportCardBg(selected));
+        // **Greyed is a look, not a dead zone.** A disabled View never sees the
+        // touch, so the card would sit there explaining nothing; the listener
+        // is what says why, and it is always armed.
+        c.box.setAlpha(enabled ? 1f : 0.38f);
+        c.title.setTextColor(enabled ? UI_INK : UI_MUTED);
+        // L3, as the card eyebrows everywhere else: the sub-label is a note,
+        // not a second title.
+        c.sub.setTextColor(UI_FAINT);
+        c.dot.setVisibility(selected && enabled ? View.VISIBLE : View.GONE);
+    }
+
+    private void styleExportRange(TextView tv, boolean selected, boolean enabled) {
+        if (tv == null) return;
+        tv.setBackground(cardBorder(selected));
+        tv.setTextColor(selected ? UI_INK : UI_MUTED);
+        tv.setAlpha(enabled ? 1f : 0.38f);
     }
 
     /**
-     * The formats nobody meant to pick.
-     *
-     * <p>All four are files for a desktop: the gallery does not show a 16-bit
-     * TIFF, and DNG is refused by Lightroom's Android build. Keeping them off
-     * the first sheet is not about hiding them -- it is that a list where
-     * "JPEG · 预览画质" and "TIFF 16 位 · 预览画质" are neighbours produces
-     * exactly the report this came from.
+     * **Three columns, whatever is on the row.** Stretching one surviving card
+     * across the whole sheet made a rare format look like a section of its own;
+     * a hole in a grid reads as "this one is not on offer here", which is true.
      */
-    private void showExportFormatSheet() {
-        final java.util.ArrayList<String> rows = new java.util.ArrayList<>();
-        final java.util.ArrayList<String> keys = new java.util.ArrayList<>();
-        if (isFotuStock(filmStock)) {
-            // The second engine writes linear light and nothing else -- no encoded
-            // 16-bit path, because a viewer that cannot read the ICC would show the
-            // raw light as a bright, washed picture.
-            rows.add("TIFF 16 位 · 线性 · 全尺寸（给 LR 调色）"); keys.add("fotu|tifflin|full");
-        } else {
-            rows.add("TIFF 16 位 · 预览画质 3400");            keys.add("spk|tiff|preview");
-            rows.add("TIFF 16 位 · 全尺寸（原图）");           keys.add("spk|tiff|full");
-            rows.add("TIFF 16 位 · 线性 · 全尺寸（给 LR 拉高光）"); keys.add("spk|tifflin|full");
-            rows.add("DNG · 全尺寸（电脑用 · 手机版打不开）");  keys.add("spk|dng|full");
-        }
-        showActionSheet("更多导出格式",
-                "这四个都是给电脑用的：手机相册多半不显示 16 位 TIFF，"
-                        + "DNG 用手机版 Lightroom 打开会报错，那是 Adobe 的已知问题，不必反馈。\n"
-                        + "16 位 TIFF 是同一个渲染的另一个写法：相纸最亮那一档有三千多个码，"
-                        + "拉高光才有东西可拉。",
-                rows.toArray(new String[0]), which -> {
-                    if (which < 0 || which >= keys.size()) return;
-                    beginExport(keys.get(which).split("\\|"));
-                });
+    private int exportColumnWidth() {
+        return Math.max(dp(40), (exportBodyWidth - dp(12)) / 3);
     }
 
+    private LinearLayout exportRow(LinearLayout body, java.util.List<ExportCard> into, String... ids) {
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        final int cw = exportColumnWidth();
+        for (int i = 0; i < ids.length; ++i) {
+            final ExportCard c = exportCard(ids[i], exportFormatTitle(ids[i]), exportFormatSub(ids[i]));
+            final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cw, -1);
+            if (i < ids.length - 1) lp.rightMargin = dp(6);
+            row.addView(c.box, lp);
+            into.add(c);
+        }
+        body.addView(row, new LinearLayout.LayoutParams(-1, dp(52)));
+        return row;
+    }
+
+    private LinearLayout exportSizeRow(LinearLayout body) {
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        final int cw = exportColumnWidth();
+        for (int i = 0; i < EXPORT_SIZES.length; ++i) {
+            final String id = EXPORT_SIZES[i];
+            final ExportCard c = exportCard(id, exportSizeTitle(id), exportSizeSub(id));
+            final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(cw, -1);
+            if (i < EXPORT_SIZES.length - 1) lp.rightMargin = dp(6);
+            row.addView(c.box, lp);
+            exportSizeCards.add(c);
+        }
+        body.addView(row, new LinearLayout.LayoutParams(-1, dp(56)));
+        return row;
+    }
+
+    private TextView exportChip(String text, int id) {
+        final TextView tv = label(text, 11, UI_MUTED, tfHan);
+        tv.setGravity(android.view.Gravity.CENTER);
+        tv.setSingleLine(true);
+        tv.setPadding(dp(10), 0, dp(10), 0);
+        tv.setTag(id);
+        return tv;
+    }
+
+    private void showExportPanel() {
+        loadExportPrefs();
+        exportBatchSel = false;
+        exportClipEdge = 0;
+        final String clip = liveClipForCurrentFrame();
+        exportHasClip = clip != null;
+        if (clip != null) exportClipEdge = liveClipLongEdge(clip);
+        exportLiveEdgeSel = exportClipEdge > LIVE_CLIP_MAX_EDGE ? LIVE_CLIP_FULL_EDGE : 0;
+        exportDevSel = false;
+        clampExportSelection();
+
+        exportFormatCards.clear();
+        exportSizeCards.clear();
+        exportHintReady = false;
+
+        exportPanel = new android.app.Dialog(this);
+        final LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setBackgroundColor(UI_PAPER);
+        final View cap = new View(this);
+        cap.setBackgroundColor(UI_BLUE);
+        sheet.addView(cap, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        // ---- ① the title, and the only two things that are not a choice
+        final LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(16), 0, dp(8), 0);
+        final TextView title = mixedLabel("EXPORT / " + Lang.t("导出照片"), 8.5f, UI_INK);
+        weight(title, 500);
+        title.setLetterSpacing(0.06f);
+        head.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        // **A drawn ⓘ.** Neither face in this build carries U+24D8, and a tofu
+        // box is a worse signpost than no signpost at all.
+        final LinearLayout infoRow = new LinearLayout(this);
+        infoRow.setOrientation(LinearLayout.HORIZONTAL);
+        infoRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        final TextView glyph = label("i", 8f, UI_MUTED, tfBody);
+        glyph.setGravity(android.view.Gravity.CENTER);
+        final android.graphics.drawable.GradientDrawable ring =
+                new android.graphics.drawable.GradientDrawable();
+        ring.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        ring.setColor(0x00000000);
+        ring.setStroke(Math.max(1, dp(1)), UI_MUTED);
+        glyph.setBackground(ring);
+        final LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(dp(13), dp(13));
+        glp.rightMargin = dp(4);
+        infoRow.addView(glyph, glp);
+        infoRow.addView(label("说明", 12.5f, UI_MUTED, tfHan));
+        infoRow.setPadding(dp(6), dp(10), dp(8), dp(10));
+        infoRow.setOnClickListener(v -> showExportInfo());
+        head.addView(infoRow, new LinearLayout.LayoutParams(-2, -2));
+        final TextView close = label("关闭", 12.5f, UI_MUTED, tfHan);
+        close.setPadding(dp(8), dp(12), dp(6), dp(12));
+        close.setOnClickListener(v -> { if (exportPanel != null) exportPanel.dismiss(); });
+        head.addView(close, new LinearLayout.LayoutParams(-2, -2));
+        sheet.addView(head, new LinearLayout.LayoutParams(-1, dp(46)));
+
+        final int screenW = getResources().getDisplayMetrics().widthPixels;
+        exportBodyWidth = screenW - dp(32);
+
+        // ---- the body scrolls; the button never leaves the window
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(16), 0, dp(16), dp(4));
+
+        // ② how many frames
+        if (frames.size() > 1) {
+            addExportLabel(body, "导出范围", 2);
+            final LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            exportRangeCur = exportRangeCell("当前照片");
+            exportRangeAll = exportRangeCell(Lang.t("批量") + " · " + Lang.t("全部")
+                    + " " + frames.size() + " " + Lang.t("张"));
+            final LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, -1, 1f);
+            a.rightMargin = dp(6);
+            row.addView(exportRangeCur, a);
+            row.addView(exportRangeAll, new LinearLayout.LayoutParams(0, -1, 1f));
+            body.addView(row, new LinearLayout.LayoutParams(-1, dp(34)));
+            exportRangeCur.setOnClickListener(v -> {
+                exportBatchSel = false;
+                clampExportSelection();
+                refreshExportPanel();
+            });
+            exportRangeAll.setOnClickListener(v -> {
+                if (frameTemplateOn()) {
+                    showInAppToast("画框逐张合成，批量不套画框");
+                    return;
+                }
+                exportBatchSel = true;
+                clampExportSelection();
+                refreshExportPanel();
+            });
+        } else {
+            exportRangeCur = null;
+            exportRangeAll = null;
+        }
+
+        // ③ the format, in two rows
+        addExportLabel(body, "常用格式", 10);
+        final java.util.List<String> row1 = new java.util.ArrayList<>();
+        row1.add("jpeg");
+        if (exportFormatAvailable("uhdr")) row1.add("uhdr");
+        if (exportHasClip) row1.add("live");
+        exportRow(body, exportFormatCards, row1.toArray(new String[0]));
+        addExportLabel(body, "桌面后期", 10);
+        exportRow(body, exportFormatCards, "tiff", "tifflin", "dng");
+
+        // ④ the one line that explains the choice, plus the clip's own dial
+        exportHintBox = new LinearLayout(this);
+        exportHintBox.setOrientation(LinearLayout.VERTICAL);
+        exportHintBox.setBackgroundColor(UI_GROUND);
+        exportHintBox.setPadding(dp(10), dp(7), dp(10), dp(7));
+        final LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(-1, -2);
+        hlp.topMargin = dp(8);
+        exportHintText = label("", 11, UI_MUTED, tfHan);
+        exportHintText.setLineSpacing(dp(2), 1f);
+        exportHintBox.addView(exportHintText, new LinearLayout.LayoutParams(-1, -2));
+        exportLiveRow = new LinearLayout(this);
+        exportLiveRow.setOrientation(LinearLayout.HORIZONTAL);
+        exportLiveNative = exportChip("原生动图", 1);
+        exportLiveHalf = exportChip("1440 半价档", 2);
+        exportLiveDev = exportChip("显影", 3);
+        final LinearLayout.LayoutParams c1 = new LinearLayout.LayoutParams(-2, dp(26));
+        c1.rightMargin = dp(6);
+        exportLiveRow.addView(exportLiveNative, c1);
+        exportLiveRow.addView(exportLiveHalf, new LinearLayout.LayoutParams(-2, dp(26)));
+        final LinearLayout.LayoutParams c3 = new LinearLayout.LayoutParams(-2, dp(26));
+        c3.leftMargin = dp(6);
+        exportLiveRow.addView(exportLiveDev, c3);
+        final LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(-1, -2);
+        llp.topMargin = dp(6);
+        exportHintBox.addView(exportLiveRow, llp);
+        body.addView(exportHintBox, hlp);
+        exportLiveNative.setOnClickListener(v -> {
+            exportDevSel = false;
+            exportLiveEdgeSel = LIVE_CLIP_FULL_EDGE;
+            refreshExportPanel();
+        });
+        exportLiveHalf.setOnClickListener(v -> {
+            exportDevSel = false;
+            exportLiveEdgeSel = LIVE_CLIP_MAX_EDGE;
+            refreshExportPanel();
+        });
+        exportLiveDev.setOnClickListener(v -> {
+            if (!developLiveAvailable()) {
+                showInAppToast("这一帧没有可显影的负片（无相纸 / 反转片 / 画框）");
+                return;
+            }
+            exportDevSel = true;
+            refreshExportPanel();
+        });
+
+        // ⑤ how many pixels
+        addExportLabel(body, "画质与尺寸", 12);
+        exportSizeRow(body);
+
+        for (ExportCard c : exportFormatCards) {
+            c.box.setOnClickListener(v -> {
+                if (!exportFormatAvailable(c.id)) {
+                    showInAppToast(exportFormatWhy(c.id));
+                    return;
+                }
+                if (c.id.equals(exportFormatSel)) return;
+                exportFormatSel = c.id;
+                clampExportSelection();
+                refreshExportPanel();
+            });
+        }
+        for (ExportCard c : exportSizeCards) {
+            c.box.setOnClickListener(v -> {
+                if (!exportSizeAvailable(exportFormatSel, c.id)) {
+                    showInAppToast(exportSizeWhy(exportFormatSel, c.id));
+                    return;
+                }
+                if (c.id.equals(exportSizeSel)) return;
+                exportSizeSel = c.id;
+                refreshExportPanel();
+            });
+        }
+
+        final android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setClipToPadding(false);
+        scroll.addView(body, new android.widget.FrameLayout.LayoutParams(-1, -2));
+        final int natural = measureHeight(body, screenW);
+        final int maxBody = Math.max(dp(180), getResources().getDisplayMetrics().heightPixels
+                - dp(46 + 2 + 96 + 24));
+        exportScroll = scroll;
+        exportBody = body;
+        exportScreenW = screenW;
+        exportMaxBody = maxBody;
+        sheet.addView(scroll, new LinearLayout.LayoutParams(-1, Math.min(natural, maxBody)));
+
+        // ⑥ the instrument line, and the one button
+        final LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.VERTICAL);
+        foot.setPadding(dp(16), dp(4), dp(16), dp(12));
+        exportHw = label("", 10.5f, UI_FAINT, tfHan);
+        exportHw.setFontFeatureSettings("tnum");
+        exportHw.setGravity(android.view.Gravity.CENTER);
+        exportHw.setSingleLine(true);
+        exportHw.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        foot.addView(exportHw, new LinearLayout.LayoutParams(-1, -2));
+        exportGo = label("", 12.5f, darkTheme ? 0xFF121211 : 0xFFFFFFFF, tfHan);
+        weight(exportGo, 500);
+        exportGo.setGravity(android.view.Gravity.CENTER);
+        exportGo.setLetterSpacing(0.02f);
+        exportGo.setBackground(exportPrimaryBg());
+        final LinearLayout.LayoutParams glp2 = new LinearLayout.LayoutParams(-1, dp(48));
+        glp2.topMargin = dp(8);
+        foot.addView(exportGo, glp2);
+        exportGo.setOnClickListener(v -> runExportFromPanel());
+        sheet.addView(foot, new LinearLayout.LayoutParams(-1, -2));
+
+        exportPanel.setContentView(sheet);
+        exportPanel.setCanceledOnTouchOutside(true);
+        exportPanel.setOnDismissListener(d -> {
+            if (exportPanel == d) exportPanel = null;
+            final android.animation.ValueAnimator a = exportHintAnim;
+            exportHintAnim = null;
+            if (a != null) a.cancel();
+            exportFormatCards.clear();
+            exportSizeCards.clear();
+            exportHintReady = false;
+        });
+        showBottomSheet(exportPanel, sheet);
+        if (exportPanel.getWindow() != null) {
+            exportPanel.getWindow().setBackgroundDrawable(
+                    new android.graphics.drawable.ColorDrawable(0x00000000));
+            exportPanel.getWindow().setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            exportPanel.getWindow().setGravity(android.view.Gravity.BOTTOM);
+            exportPanel.getWindow().addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            exportPanel.getWindow().setDimAmount(0.42f);
+        }
+        refreshExportPanel();
+    }
+
+    private android.graphics.drawable.GradientDrawable exportPrimaryBg() {
+        final android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        bg.setCornerRadius(dp(2));
+        bg.setColor(UI_BLUE);
+        return bg;
+    }
+
+    private static int measureHeight(View v, int width) {
+        v.measure(View.MeasureSpec.makeMeasureSpec(Math.max(1, width), View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return v.getMeasuredHeight();
+    }
+
+    private void refreshExportPanel() {
+        if (exportPanel == null || exportGo == null) return;
+        styleExportRange(exportRangeCur, !exportBatchSel, true);
+        styleExportRange(exportRangeAll, exportBatchSel, !frameTemplateOn());
+        for (ExportCard c : exportFormatCards) {
+            styleExportCard(c, c.id.equals(exportFormatSel), exportFormatAvailable(c.id));
+        }
+        for (ExportCard c : exportSizeCards) {
+            styleExportCard(c, c.id.equals(exportSizeSel),
+                    exportSizeAvailable(exportFormatSel, c.id));
+        }
+        refreshExportLiveChips();
+        setExportHint(exportHintFor());
+        exportHw.setText(exportHardwareLine());
+        exportGo.setText(exportButtonLabel());
+    }
+
+    private void refreshExportLiveChips() {
+        if (exportLiveRow == null) return;
+        final boolean live = "live".equals(exportFormatSel);
+        exportLiveRow.setVisibility(live ? View.VISIBLE : View.GONE);
+        if (!live) return;
+        final boolean two = exportClipEdge > LIVE_CLIP_MAX_EDGE;
+        exportLiveNative.setVisibility(two ? View.VISIBLE : View.GONE);
+        exportLiveHalf.setVisibility(two ? View.VISIBLE : View.GONE);
+        exportLiveDev.setVisibility(developLiveAvailable() ? View.VISIBLE : View.GONE);
+        styleExportChip(exportLiveNative,
+                two && !exportDevSel && exportLiveEdgeSel != LIVE_CLIP_MAX_EDGE, true);
+        styleExportChip(exportLiveHalf,
+                two && !exportDevSel && exportLiveEdgeSel == LIVE_CLIP_MAX_EDGE, true);
+        styleExportChip(exportLiveDev, exportDevSel, developLiveAvailable());
+    }
+
+    private void styleExportChip(TextView tv, boolean selected, boolean enabled) {
+        if (tv == null) return;
+        tv.setBackground(cardBorder(selected));
+        tv.setTextColor(selected ? UI_INK : UI_MUTED);
+        tv.setAlpha(enabled ? 1f : 0.38f);
+    }
+
+    private void setExportHint(String text) {
+        if (exportHintBox == null || exportHintText == null) return;
+        final String body = text == null ? "" : text;
+        exportHintText.setText(body);
+        exportHintText.setVisibility(body.isEmpty() ? View.GONE : View.VISIBLE);
+        final boolean anyChip = exportLiveRow != null
+                && exportLiveRow.getVisibility() == View.VISIBLE;
+        final android.view.ViewGroup.LayoutParams lp = exportHintBox.getLayoutParams();
+        lp.height = -2;
+        exportHintBox.setLayoutParams(lp);
+        exportHintBox.measure(View.MeasureSpec.makeMeasureSpec(
+                        Math.max(1, exportBodyWidth), View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        final int hintTo = (body.isEmpty() && !anyChip) ? 0 : exportHintBox.getMeasuredHeight();
+        exportHintBox.setAlpha(1f);
+        if (!exportHintReady) {
+            // First paint: the layout measures it, and the scroll gets the room
+            // in the same pass.
+            exportHintReady = true;
+            final int want = Math.min(measureHeight(exportBody, exportScreenW), exportMaxBody);
+            if (exportScroll != null) {
+                final android.view.ViewGroup.LayoutParams sl = exportScroll.getLayoutParams();
+                sl.height = want;
+                exportScroll.setLayoutParams(sl);
+            }
+            return;
+        }
+        final int hintFrom = Math.max(0, exportHintBox.getHeight());
+        final int scrollFrom = exportScroll == null ? 0
+                : Math.max(0, exportScroll.getLayoutParams().height);
+        final int want = Math.min(measureHeight(exportBody, exportScreenW), exportMaxBody);
+        lp.height = hintFrom;
+        exportHintBox.setLayoutParams(lp);
+        if (hintFrom == hintTo && scrollFrom == want) {
+            exportHintBox.setAlpha(hintTo > 0 ? 1f : 0f);
+            return;
+        }
+        animateExportHeights(hintFrom, hintTo, scrollFrom, want);
+    }
+
+    /**
+     * **The strip and the sheet grow together.** Animating only the strip moved
+     * it inside a scroll whose height never changed, so the note arrived
+     * clipped and the panel did not appear to change size at all.
+     */
+    private void animateExportHeights(final int hintFrom, final int hintTo,
+                                      final int scrollFrom, final int scrollTo) {
+        final android.animation.ValueAnimator running = exportHintAnim;
+        if (running != null) running.cancel();
+        final android.animation.ValueAnimator a =
+                android.animation.ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(220L);
+        a.setInterpolator(EASE_OUT);
+        a.addUpdateListener(an -> {
+            final float f = (Float) an.getAnimatedValue();
+            final android.view.ViewGroup.LayoutParams hl = exportHintBox.getLayoutParams();
+            hl.height = Math.round(hintFrom + (hintTo - hintFrom) * f);
+            exportHintBox.setLayoutParams(hl);
+            if (exportScroll != null) {
+                final android.view.ViewGroup.LayoutParams sl = exportScroll.getLayoutParams();
+                final int v = Math.round(scrollFrom + (scrollTo - scrollFrom) * f);
+                if (sl.height != v) {
+                    sl.height = v;
+                    exportScroll.setLayoutParams(sl);
+                }
+            }
+        });
+        a.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator x) {
+                if (exportHintAnim == x) exportHintAnim = null;
+                final android.view.ViewGroup.LayoutParams hl = exportHintBox.getLayoutParams();
+                hl.height = hintTo;
+                exportHintBox.setLayoutParams(hl);
+                exportHintBox.setAlpha(hintTo > 0 ? 1f : 0f);
+                if (exportScroll != null) {
+                    final android.view.ViewGroup.LayoutParams sl = exportScroll.getLayoutParams();
+                    sl.height = scrollTo;
+                    exportScroll.setLayoutParams(sl);
+                }
+            }
+        });
+        exportHintAnim = a;
+        a.start();
+    }
+
+    /** One tap, one file -- the same writers the old two sheets reached. */
+    private void runExportFromPanel() {
+        final String fmt = exportFormatSel;
+        final String size = exportSizeSel;
+        if (!exportFormatAvailable(fmt) || !exportSizeAvailable(fmt, size)) return;
+        saveExportPrefs();
+        final boolean batch = exportBatchSel;
+        final boolean dev = "live".equals(fmt) && exportDevSel;
+        // A clip already at 1440 has nothing to choose, but it still has to be
+        // attached: zero here would write the still alone.
+        final int edge = "live".equals(fmt)
+                ? (exportLiveEdgeSel > 0 ? exportLiveEdgeSel : LIVE_CLIP_FULL_EDGE) : 0;
+        if (exportPanel != null) exportPanel.dismiss();
+        if (batch) {
+            showInAppToast("批量导出 " + frames.size() + " 张 · "
+                    + exportFormatTitle(fmt) + " " + exportSizeShort(size));
+            startBatchExport(fmt, size);
+            return;
+        }
+        if (dev) {
+            beginExport(new String[]{"spk", "jpeg", "full", "dev"});
+        } else if (edge > 0) {
+            beginExport(new String[]{"spk", "jpeg", "full", "live", String.valueOf(edge)});
+        } else {
+            beginExport(new String[]{"spk", fmt, size});
+        }
+    }
+
+    /** Everything the old sheet said in a wall of text, on purpose. */
+    private void showExportInfo() {
+        final String note = Lang.t("文件格式")
+                + "\n" + Lang.t("JPEG：8 位显示值。相册、微信、任何看图软件都打得开，够看也够分享。")
+                + "\n" + Lang.t("Ultra HDR：同一张 JPEG 加一份增益图（ISO 21496-1）。HDR 屏上高光更亮，普通屏和相册看到的还是普通 JPEG，底下的主图与 JPEG 逐字节相同。")
+                + "\n" + Lang.t("TIFF 16位：同一个渲染的 16 位写法。相纸最亮那一档有三千多个码，拉高光才有东西可拉；手机相册通常不显示 16 位 TIFF。")
+                + "\n" + Lang.t("TIFF 线性：16 位线性输出，不带显示曲线，保留完整高光余量，给桌面端 Lightroom。")
+                + "\n" + Lang.t("DNG：LinearRaw，给电脑上的 Lightroom / ACR。手机版 Lightroom 打开会报错，那是 Adobe 的已知问题，不必反馈。")
+                + "\n" + Lang.t("实况照片：静帧 + 相机录的那段动图。静帧始终按原图全尺寸冲洗，动图可选原生像素或 1440。")
+                + PARA + Lang.t("画质与尺寸")
+                + "\n" + Lang.t("实时画质：按当前预览的像素出片，最快，也是最软的一档。")
+                + "\n" + Lang.t("预览 3400：长边 3400，社交用，几秒钟一张。")
+                + "\n" + Lang.t("原图全尺寸：按照片自己的像素渲染，26 MP 大约二十秒。")
+                + "\n" + Lang.t("TIFF 线性 / DNG / 实况照片只有全尺寸；TIFF 16位没有实时档。")
+                + PARA + Lang.t("批量")
+                + "\n" + Lang.t("逐张按各自的胶片、相纸和裁切冲洗，只写 JPEG（预览 3400 或原图全尺寸）。")
+                + "\n" + Lang.t("画框是逐张合成的装饰，不参与批量；开着画框时批量会被置灰。")
+                + PARA + Lang.t("硬件")
+                + "\n" + exportHardwareLine()
+                + "\n" + Lang.t("分块渲染：驱动的单缓冲不够时按带渲染，输出像素不受影响，只是慢一点。");
+        showSheetBody("EXPORT / " + Lang.t("导出说明"), note, new String[]{Lang.t("知道了")}, i -> { }, null, null);
+    }
     /**
      * One tap, one export -- and say which one.
      *
