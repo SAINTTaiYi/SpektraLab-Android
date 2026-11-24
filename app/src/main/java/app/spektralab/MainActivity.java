@@ -33,6 +33,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import app.spektralab.engine.SpektraLabEngine;
 import app.spektralab.engine.FotuFilm;
+import app.spektralab.engine.GpsExif;
 import app.spektralab.engine.JpegExif;
 import app.spektralab.engine.TiffExif;
 import java.io.InputStream;
@@ -263,6 +264,9 @@ public class MainActivity extends Activity {
     private float canvasPinchStartPanX = 0f, canvasPinchStartPanY = 0f;
     /** The draggable frame over the canvas, alive only on 构图 → 裁切. */
     private CropOverlay cropOverlay;
+    /** True while 构图 (裁切 / 旋转) is the page in front: the picture sits
+     *  in a safe margin and the canvas HUDs step aside. */
+    private boolean composeFocus;
     private float geometryRotation = 0.0f;
     private float geometryCropW = 1.0f, geometryCropH = 1.0f;
     private float geometryCropX = 0.0f, geometryCropY = 0.0f;
@@ -2291,6 +2295,8 @@ public class MainActivity extends Activity {
         boolean digitalIntermediate = false, outputCctf = true;
         boolean diBlueComp = false;
         float hueCorrection = 1f;
+        /** 胶片强度: 1 = the print alone, 0 = the frame it came from. */
+        float filmStrength = 1f;
         /** RFC-023's remaining curve shape. */
         float shadowRolloff = 2f, maxLift = 4f;
         /** Choices: lens filter, the norm, and the rebate/date layout. */
@@ -2386,6 +2392,15 @@ public class MainActivity extends Activity {
         String liveClip;
         /** Microseconds into that clip where the still was taken. */
         long liveTsUs;
+        /**
+         * Where this photograph was taken, when something could say.
+         *
+         * <p>Nearly always read from **another file**: a phone's raw carries no
+         * GPS and the JPEG the camera wrote beside it does. Kept on the frame,
+         * and persisted with it, because the export that needs it can run hours
+         * later -- after the grant is gone and the sibling is out of reach.
+         */
+        GpsExif.Fix gps;
         Frame(Uri uri, boolean raw, String name) {
             this.uri = uri; this.raw = raw; this.name = name;
         }
@@ -2437,6 +2452,7 @@ public class MainActivity extends Activity {
             putNum(o, "highlight", l.highlightRoom);
             o.put("hmig", 1);            // see the one-time lift in `lookFromJson`
             putNum(o, "shadow", l.shadowRoom);
+            putNum(o, "fs", l.filmStrength);
             o.put("hlm", l.hlManual ? 1 : 0);
             putNum(o, "hlk", l.hlKnee);
             putNum(o, "hlro", l.hlRolloff);
@@ -2642,6 +2658,8 @@ public class MainActivity extends Activity {
         l.glareAmount = (float) o.optDouble("glare", 1.0);
         l.highlightRoom = (float) o.optDouble("highlight", 0.0);
         l.shadowRoom = (float) o.optDouble("shadow", 0.0);
+        l.filmStrength = (float) o.optDouble("fs", 1.0);
+        if (!(l.filmStrength >= 0f && l.filmStrength <= 1f)) l.filmStrength = 1f;
         l.hlManual = o.optInt("hlm", 0) != 0;
         l.hlKnee = (float) o.optDouble("hlk", 2.0);
         l.hlRolloff = (float) o.optDouble("hlro", 2.0);
@@ -2870,8 +2888,21 @@ public class MainActivity extends Activity {
         return l;
     }
 
+    /**
+     * Where a chip's 42 dp picture lives.
+     *
+     * <p>**`getCacheDir` was the wrong place for it.** The system empties that
+     * directory whenever it wants room, and the strip is the only thing that
+     * remembers which frames this session holds -- so a swept cache left a row
+     * of empty boxes with a photograph behind each one. Reported as 「照片栏空白，
+     * 只有框框」: five grey frames, one of them outlined, and nothing in any of
+     * them, because `readThumb` answers "no file" and nothing rebuilt it.
+     * `filesDir` is not swept.
+     */
     private java.io.File thumbFile(Uri uri) {
-        return new java.io.File(getCacheDir(),
+        final java.io.File dir = new java.io.File(getFilesDir(), "thumbs");
+        if (!dir.isDirectory()) dir.mkdirs();
+        return new java.io.File(dir,
                 "thumb_" + Integer.toHexString(uri.toString().hashCode()) + ".png");
     }
 
@@ -2885,9 +2916,40 @@ public class MainActivity extends Activity {
     private Bitmap readThumb(Uri uri) {
         try {
             final java.io.File f = thumbFile(uri);
-            if (!f.isFile()) return null;
-            return android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
+            if (f.isFile()) {
+                final Bitmap b = android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
+                if (b != null) return b;
+            }
+        } catch (Throwable ignored) { }
+        // **A missing thumb is rebuilt, not left blank.** The frame's own private
+        // copy is still in `filesDir` (that is where `getFilePathFromUri` puts
+        // it), so the chip costs one small decode -- and only once, because the
+        // result is written back where the next launch will find it.
+        return rebuildThumb(uri);
+    }
+
+    /** Decodes a chip's picture from the frame's private copy, and caches it. */
+    private Bitmap rebuildThumb(Uri uri) {
+        try {
+            final String path = getFilePathFromUri(uri);
+            if (path == null) return null;
+            final android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            // 8 keeps a 12 MP frame at ~380 px: far more than 42 dp needs, and
+            // about 30 ms instead of 300.
+            o.inSampleSize = 8;
+            o.inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888;
+            final Bitmap big = android.graphics.BitmapFactory.decodeFile(path, o);
+            if (big == null) return null;
+            final int w = Math.max(1, dp(42));
+            final int h = Math.max(1, Math.round(w * big.getHeight() / (float) big.getWidth()));
+            final Bitmap small = android.graphics.Bitmap.createScaledBitmap(big, w, h, true);
+            if (small != big && !big.isRecycled()) big.recycle();
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(thumbFile(uri))) {
+                small.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out);
+            } catch (Throwable ignored) { }
+            return small;
         } catch (Throwable t) {
+            try { DebugSink.text("thumb", "rebuild failed " + uri + ": " + t); } catch (Throwable ignored) { }
             return null;
         }
     }
@@ -2906,6 +2968,7 @@ public class MainActivity extends Activity {
                     o.put("live", f.liveClip);
                     o.put("lts", f.liveTsUs);
                 }
+                if (f.gps != null) o.put("gps", f.gps.encode());
                 arr.put(o);
             }
             final org.json.JSONObject root = new org.json.JSONObject();
@@ -2953,6 +3016,7 @@ public class MainActivity extends Activity {
                 // **The clip, if it is still there.** The file lives in
                 // `filesDir`, which survives the process but not "clear data";
                 // a missing one just means this frame exports as a still.
+                frame.gps = GpsExif.Fix.decode(o.optString("gps", ""));
                 final String lc = o.optString("live", "");
                 if (!lc.isEmpty() && new java.io.File(lc).isFile()) {
                     frame.liveClip = lc;
@@ -3087,12 +3151,44 @@ public class MainActivity extends Activity {
      * the camera recorded", which is what a 画质-first export wants.
      */
     private int liveClipEdge;
+    /**
+     * 显影实况: the next export wants a negative-to-positive clip behind the print.
+     *
+     * <p>Read and cleared at the export door, exactly like {@link #liveClipEdge},
+     * because a request left armed would attach a darkroom to whatever the next
+     * export happened to be.
+     */
+    private boolean developLiveWanted;
     /** path -> the clip's own long edge. Read once per clip; the sheet asks on
      *  the UI thread and `MediaExtractor.setDataSource` on a local file is a
      *  couple of milliseconds, but not twice. */
     private final java.util.HashMap<String, Integer> liveClipDims = new java.util.HashMap<>();
     /** True while the export's clip loop owns the engine; see {@link #renderImage}. */
     private volatile boolean liveClipRendering;
+    /**
+     * The fix for the export that is running, taken at the door.
+     *
+     * <p>`currentFrame` moves with the user and the write happens on a worker
+     * minutes later, so the frame's own GPS is read once, on the caller's
+     * thread, and handed to both writers from here.
+     */
+    private volatile GpsExif.Fix pendingExportGps;
+    /**
+     * 「胶片强度」: 1 is the developed print, 0 the frame it came from.
+     *
+     * <p>A mix of two pictures in display space, not a parameter of the engine.
+     * It has to be: the complaint that asked for it is 「用层间抑制去减淡会让
+     * 人物肤色发白」 -- and no dye-level knob can avoid that, because the dye is
+     * the thing tinting the skin. Mixing back toward the source returns the
+     * source's own skin tones in exactly that proportion.
+     */
+    private float filmStrength = 1.0f;
+    /** The developed frame and the source it came from, for the strength dial. */
+    /** The row's own bar, so the release path can tell the mix from a render. */
+    private SeekBar strengthBar;
+    private int[] strengthDev, strengthSrc;
+    private int strengthW, strengthH;
+    private String strengthKey = "";
     /** The LIVE pill on the canvas: the frame has a clip, and it is the play control. */
     private TextView liveBadge;
     /** The same pill for the HDR screen preview: it changes what the canvas
@@ -14048,6 +14144,16 @@ public class MainActivity extends Activity {
                 if (compare != null) compare.setHolding(true);
             };
             @Override public boolean onTouch(View v, android.view.MotionEvent event) {
+                // **A faded-out pill still eats the tap.** `setEnabled(false)`
+                // does not stop an OnTouchListener, and this listener never
+                // says no -- so while 构图 has the canvas, hand the gesture
+                // back to the frame underneath instead of swallowing it. The
+                // bottom-right crop corner sits exactly here.
+                if (composeFocus) {
+                    v.removeCallbacks(arm);
+                    if (compare != null) compare.setHolding(false);
+                    return false;
+                }
                 switch (event.getActionMasked()) {
                     case android.view.MotionEvent.ACTION_DOWN:
                         held = false;
@@ -15971,6 +16077,19 @@ public class MainActivity extends Activity {
         overscanFormat = look.overscanFormat;
         overscanPair = look.overscanPair && "135_half".equals(look.overscanFormat);
         if (isFotuStock(look.filmStock)) overscanFormat = fotuGaugeOf(look.filmStock);
+        // **The border a 1.7.4j look carries is the rebate's now.** Between
+        // 1.7.1w and 1.7.4j a fotufilm frame drew its edge with the PrintFrame
+        // on every gate, including 135 and the 120s; those ten gates are the
+        // rebate's as of 1.7.4k, and the print frame no longer answers for
+        // them. A look saved in that window therefore has `pfKind = film` on a
+        // 135 gate -- which would draw nothing at all. Hand it to the rebate,
+        // switch and all: the picture keeps the border it was saved with.
+        if (pfKind != null && !"none".equals(pfKind) && !isPrintFrameGauge(overscanFormat)) {
+            pfKind = "none";
+            overscanOn = true;
+            try { DebugSink.text("border", "look migrated: print frame on "
+                    + overscanFormat + " -> rebate"); } catch (Throwable ignored) { }
+        }
         printExposure = look.printExposure;
         meterMethod = sanitizeMeter(look.meterMethod);
         refreshMeterChip();
@@ -16639,8 +16758,8 @@ public class MainActivity extends Activity {
                 shelfHandle.setClickable(false);
             } else {
                 shelfHandle.setVisibility(View.VISIBLE);
-                shelfHandle.setAlpha(on);
-                shelfHandle.setClickable(p > 0.9f);
+                shelfHandle.setAlpha(composeFocus ? 0f : on);
+                shelfHandle.setClickable(!composeFocus && p > 0.9f);
             }
         }
         if (shelfEdgeBack != null) {
@@ -16687,6 +16806,470 @@ public class MainActivity extends Activity {
 
     
 
+    // =====================================================================
+    // 胶片强度 -- the film at less than full strength
+    // =====================================================================
+
+    /** Is there a mix to do at all? At 100 nothing about the old path changes. */
+    private boolean strengthMixActive() {
+        return filmStrength < 0.9995f;
+    }
+
+    /**
+     * The developed frame, kept so the dial can mix without rendering again.
+     *
+     * <p>**The dial must not cost a render.** It changes nothing the engine is
+     * told; the two pictures it blends are both already here (this one, and
+     * {@link #strengthSrc}). One pass over 3 MP is about 12 ms, which is why the
+     * slider can answer under the finger while every other 冲印 control waits
+     * for release.
+     *
+     * <p>Called on the render thread, with the pixels **after** the glow pass:
+     * a mix that dropped the glow would make the canvas disagree with the export
+     * the moment the dial left 100.
+     */
+    private void keepStrengthPair(int[] dev, int w, int h, String tier) {
+        final String key = (sourceUri == null ? "-" : sourceUri.toString())
+                + "|" + (isFotuStock(filmStock) ? "f" : "s") + "|" + tier + "|" + w + "x" + h;
+        if (!key.equals(strengthKey) || strengthDev == null || strengthDev.length != w * h) {
+            strengthDev = dev;
+            strengthSrc = null;
+            strengthW = w;
+            strengthH = h;
+            strengthKey = key;
+        } else {
+            strengthDev = dev;
+        }
+        if (strengthMixActive() && strengthSrc == null) strengthSrc = fetchStrengthSource(w, h, tier);
+    }
+
+    /** Forgets both halves; a new photograph is not the old one at any strength. */
+    private void forgetStrengthPair() {
+        strengthDev = null;
+        strengthSrc = null;
+        strengthW = 0;
+        strengthH = 0;
+        strengthKey = "";
+    }
+
+    /**
+     * The export, with 胶片强度 applied.
+     *
+     * <p>**Only the JPEG still goes through here.** Ultra HDR's gain map and the
+     * TIFF/DNG masters describe a developed frame; a mix of it and its source is
+     * a different picture, and a half-strength master with a full-strength gain
+     * map is not a photograph anyone can open. Those formats stay at 100.
+     *
+     * <p>Banded, both ways: the developed frame is copied out a band at a time
+     * and the source is blended into it in place, so a 20 MP export costs one
+     * bitmap and two band buffers instead of three full frames of ints.
+     */
+    private int[] exportJpegMixed(SpektraLabEngine.Session s, String path, int quality, String tier) {
+        final int[] dims = s.renderBegin(tier);
+        final int w = dims[0], h = dims[1];
+        if (w <= 0 || h <= 0) throw new IllegalStateException("engine returned an empty frame");
+        final android.graphics.Bitmap bmp =
+                android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+        if (bmp == null) throw new IllegalStateException("no bitmap for " + w + "x" + h);
+        final int band = Math.max(1, Math.min(h, 256));
+        final int[] dev = new int[w * band];
+        final int[] src = new int[w * band];
+        try {
+            for (int y = 0; y < h; y += band) {
+                final int n = Math.min(band, h - y);
+                if (s.copyArgbRange(dev, y, n) != w * n)
+                    throw new IllegalStateException("copy short at row " + y);
+                bmp.setPixels(dev, 0, w, 0, y, w, n);
+            }
+            // The source replaces the result slot, so it is read after the print
+            // is safely in the bitmap -- see `spkSourcePixels`.
+            final int[] sd = s.exportSource(tier);
+            if (sd != null && sd[0] == w && sd[1] == h) {
+                for (int y = 0; y < h; y += band) {
+                    final int n = Math.min(band, h - y);
+                    if (s.copyArgbRange(src, y, n) != w * n) break;
+                    bmp.getPixels(dev, 0, w, 0, y, w, n);
+                    mixTowardSource(dev, src, filmStrength);
+                    bmp.setPixels(dev, 0, w, 0, y, w, n);
+                }
+            } else {
+                try {
+                    DebugSink.text("strength", "export source is "
+                            + (sd == null ? "none" : sd[0] + "x" + sd[1])
+                            + ", frame is " + w + "x" + h + " -- exported at full strength");
+                } catch (Throwable ignored) { }
+            }
+            if (!SpektraLabEngine.writeBitmapJpeg(bmp, path, quality))
+                throw new IllegalStateException("the JPEG writer refused " + path);
+            return new int[]{w, h};
+        } finally {
+            bmp.recycle();
+        }
+    }
+
+    /** The same frame before the film: the first engine exports it, fotu has it on disk. */
+    private int[] fetchStrengthSource(int w, int h, String tier) {
+        final long t0 = nowMs();
+        try {
+            final int[] px = isFotuStock(filmStock) ? fotuSourcePixels(w, h)
+                    : spkSourcePixels(w, h, tier);
+            try {
+                DebugSink.text("strength", "source " + w + "x" + h
+                        + (px == null ? " unavailable" : " in " + (nowMs() - t0) + " ms"));
+            } catch (Throwable ignored) { }
+            return px;
+        } catch (Throwable t) {
+            try { DebugSink.text("strength", "source failed: " + t); } catch (Throwable ignored) { }
+            return null;
+        }
+    }
+
+    /**
+     * The engine's own 「原图」 at this tier.
+     *
+     * <p>`spk_export_source` writes into the same result slot a render does, so
+     * it must be asked for **after** the print has been copied out -- which is
+     * exactly the order {@link #keepStrengthPair} runs in. It also drops the
+     * tier's cache entry (the plane it borrowed must not be reused under it), so
+     * the render *after* this one rebuilds the tier once. That is the price of
+     * one source, paid once per photograph and tier.
+     */
+    private int[] spkSourcePixels(int w, int h, String tier) {
+        final SpektraLabEngine.Session s = session;
+        if (s == null) return null;
+        final int[] dims = s.exportSource(tier);
+        if (dims == null || dims[0] != w || dims[1] != h) {
+            try {
+                DebugSink.text("strength", "source is "
+                        + (dims == null ? "none" : dims[0] + "x" + dims[1])
+                        + ", frame is " + w + "x" + h + " -- no mix");
+            } catch (Throwable ignored) { }
+            return null;
+        }
+        final int[] px = new int[w * h];
+        return s.copyArgbRange(px, 0, h) == w * h ? px : null;
+    }
+
+    /** The second engine has no source output: the file it developed from is the source. */
+    private int[] fotuSourcePixels(int w, int h) {
+        // **A raw's source is the canvas' own preview, not the file.** Decoding a
+        // DNG with `BitmapFactory` returns the camera's embedded JPEG -- seventy
+        // per cent of the frame, already carrying the camera's own look -- so
+        // mixing with it would blend two different pictures. The 1024 px the
+        // canvas holds IS this frame's source: right colour, right crop, right
+        // exposure. The detail a mix loses is detail the print still supplies.
+        if (isRawFile && beforeBitmap != null && !beforeBitmap.isRecycled()) {
+            final android.graphics.Bitmap fit = liveTailFrame(beforeBitmap, w, h);
+            final android.graphics.Bitmap use = fit == null ? beforeBitmap : fit;
+            try {
+                final int[] px = new int[w * h];
+                use.getPixels(px, 0, w, 0, 0, w, h);
+                return px;
+            } finally {
+                if (use != beforeBitmap && !use.isRecycled()) use.recycle();
+            }
+        }
+        final String srcPath = fotuSourceFile();
+        if (srcPath == null) return null;
+        final java.io.File src = new java.io.File(srcPath);
+        final android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+        o.inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888;
+        // **P3, because the print is.** fotu's writer encodes Display P3; a
+        // source decoded as sRGB and blended with it would tint the whole mix.
+        try {
+            o.inPreferredColorSpace = android.graphics.ColorSpace.get(
+                    android.graphics.ColorSpace.Named.DISPLAY_P3);
+        } catch (Throwable ignored) { }
+        android.graphics.Bitmap b = android.graphics.BitmapFactory.decodeFile(src.getAbsolutePath(), o);
+        if (b == null) return null;
+        try {
+            final android.graphics.Bitmap fit = liveTailFrame(b, w, h);
+            final android.graphics.Bitmap use = fit == null ? b : fit;
+            final int[] px = new int[w * h];
+            use.getPixels(px, 0, w, 0, 0, w, h);
+            if (use != b && !use.isRecycled()) use.recycle();
+            return px;
+        } finally {
+            if (!b.isRecycled()) b.recycle();
+        }
+    }
+
+    /**
+     * The film mixed back toward its own source, in display space.
+     *
+     * <p>Both sides are 8-bit sRGB-ish values already through their own display
+     * transforms, so this is a plain lerp -- and that is the point: no dye is
+     * being reduced, the developed picture is being *diluted*, which is the only
+     * way "a bit less film" can keep the skin tones the source had.
+     */
+    private static void mixTowardSource(int[] dev, int[] src, float strength) {
+        final int a = Math.round(Math.max(0f, Math.min(1f, strength)) * 256f);
+        if (a >= 256) return;
+        final int b = 256 - a;
+        for (int i = 0; i < dev.length; ++i) {
+            final int d = dev[i], o = src[i];
+            dev[i] = 0xFF000000
+                    | (((((d >> 16) & 0xFF) * a + ((o >> 16) & 0xFF) * b) >> 8) << 16)
+                    | (((((d >> 8) & 0xFF) * a + ((o >> 8) & 0xFF) * b) >> 8) << 8)
+                    | ((((d & 0xFF) * a + (o & 0xFF) * b) >> 8));
+        }
+    }
+
+    /**
+     * The second engine's export, mixed the same way.
+     *
+     * <p>fotu's encoder already wrote a JPEG, so this is one decode, one blend
+     * and one encode -- a second generation on the pixels. It happens only below
+     * 100, and the alternative (a half-strength canvas over a full-strength
+     * file) is worse than a generation.
+     */
+    private java.io.File mixFotuFileTowardsSource(java.io.File file) {
+        android.graphics.Bitmap b = null;
+        try {
+            b = decodeMutable(file.getAbsolutePath());
+            if (b == null) return file;
+            final int w = b.getWidth(), h = b.getHeight();
+            final int[] src = fotuSourcePixels(w, h);
+            if (src == null) return file;
+            final int[] dev = new int[w * h];
+            b.getPixels(dev, 0, w, 0, 0, w, h);
+            mixTowardSource(dev, src, filmStrength);
+            b.setPixels(dev, 0, w, 0, 0, w, h);
+            final java.io.File out = new java.io.File(file.getParentFile(),
+                    file.getName().replace(".jpg", "") + "-mix.jpg");
+            if (!SpektraLabEngine.writeBitmapJpeg(b, out.getAbsolutePath(), 95)) return file;
+            file.delete();
+            return out;
+        } catch (Throwable t) {
+            try { DebugSink.text("strength", "fotu mix failed: " + t); } catch (Throwable ignored) { }
+            return file;
+        } finally {
+            if (b != null && !b.isRecycled()) b.recycle();
+        }
+    }
+
+    /** {@link #applyStrengthToCanvas}'s body, for a bitmap the caller already holds. */
+    private void applyStrengthToBitmap(Bitmap shown) {
+        if (shown == null || shown.isRecycled()) return;
+        if (strengthDev == null || strengthSrc == null) return;
+        if (shown.getWidth() != strengthW || shown.getHeight() != strengthH) return;
+        final int[] out = strengthDev.clone();
+        mixTowardSource(out, strengthSrc, filmStrength);
+        shown.setPixels(out, 0, strengthW, 0, 0, strengthW, strengthH);
+    }
+
+    /**
+     * The dial moved: re-mix what is already in memory.
+     *
+     * <p>No render, no JNI call to the engine, no allocation of a frame. If the
+     * source has not been fetched yet (the dial has just left 100 for the first
+     * time on this photograph) it is fetched now, once.
+     */
+    private void applyStrengthToCanvas() {
+        final Bitmap shown = lastRenderedBitmap;
+        if (shown == null || shown.isRecycled()) return;
+        if (strengthDev == null || strengthW <= 0 || strengthH <= 0) return;
+        if (shown.getWidth() != strengthW || shown.getHeight() != strengthH) return;
+        if (strengthDev.length != strengthW * strengthH) return;
+        if (strengthMixActive() && strengthSrc == null) {
+            strengthSrc = fetchStrengthSource(strengthW, strengthH, strengthTier());
+            if (strengthSrc == null) return;
+        }
+        final int[] out = strengthDev.clone();
+        if (strengthMixActive() && strengthSrc != null) mixTowardSource(out, strengthSrc, filmStrength);
+        shown.setPixels(out, 0, strengthW, 0, 0, strengthW, strengthH);
+        if (compare != null) compare.invalidate();
+    }
+
+    /** The tier the kept pair came from, for the second fetch (if it ever happens). */
+    private String strengthTier() {
+        if (strengthKey.isEmpty()) return "live";
+        // uri|engine|tier|WxH -- the tier is the second-to-last field.
+        final int last = strengthKey.lastIndexOf('|');
+        final int prev = last > 0 ? strengthKey.lastIndexOf('|', last - 1) : -1;
+        return prev < 0 || last <= prev + 1 ? "live" : strengthKey.substring(prev + 1, last);
+    }
+
+    // =====================================================================
+    // The location, and the JPEG that has one
+    // =====================================================================
+
+    /**
+     * Is 「同名 JPG 的位置」 on?
+     *
+     * <p>On by default, and read every time rather than cached: the settings page
+     * can flip it while a frame is open, and the next export must honour that.
+     */
+    private boolean matchCompanionJpeg() {
+        try {
+            return getSharedPreferences("ui", MODE_PRIVATE)
+                    .getBoolean("match_raw_jpeg", true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /**
+     * Give this frame a position, if a file nearby has one.
+     *
+     * <p>**A phone's raw never carries GPS.** The camera writes the fix into the
+     * JPEG it develops from the same shutter press -- same folder, same base
+     * name, one extension over -- and the DNG has none. So "keep the location"
+     * is a question about a *different file* from the one being developed, which
+     * is why this is a lookup and not a field copy.
+     *
+     * <p>Called once per frame, on the thread that files it. A missing sibling,
+     * a denied permission and a JPEG with no GPS IFD all end the same way: no
+     * position, and nothing written about it in the export.
+     */
+    private void attachSourceGps(Frame frame) {
+        if (frame == null || frame.gps != null) return;
+        if (!matchCompanionJpeg()) return;
+        try {
+            frame.gps = sourceGpsFor(frame.uri, frame.raw, frame.name);
+            if (frame.gps != null) {
+                try { DebugSink.text("gps", frame.name + ": " + frame.gps.describe()); } catch (Throwable ignored) { }
+            }
+        } catch (Throwable t) {
+            try { DebugSink.text("gps", frame.name + ": " + t); } catch (Throwable ignored) { }
+        }
+    }
+
+    /** The fix for this photograph: its own if it is a JPEG, its sibling's if it is a raw. */
+    private GpsExif.Fix sourceGpsFor(Uri uri, boolean raw, String name) {
+        if (uri == null) return null;
+        if (!raw) {
+            final GpsExif.Fix own = readGpsOf(uri);
+            if (own != null) return own;
+        }
+        final Uri sibling = findCompanionJpeg(uri, name);
+        if (sibling == null) {
+            try { DebugSink.text("gps", "no JPEG beside " + name); } catch (Throwable ignored) { }
+            return null;
+        }
+        final GpsExif.Fix fix = readGpsOf(sibling);
+        try {
+            DebugSink.text("gps", name + " <- " + sibling.getLastPathSegment()
+                    + ": " + (fix == null ? "no fix in it" : fix.describe()));
+        } catch (Throwable ignored) { }
+        return fix;
+    }
+
+    /** The first {@code 64 KB} of a file, through our own IFD walk. */
+    private GpsExif.Fix readGpsOf(Uri uri) {
+        if (uri == null) return null;
+        java.io.InputStream in = null;
+        try {
+            in = getContentResolver().openInputStream(uri);
+            if (in == null) return null;
+            // One megabyte, not 64 KB: a DNG keeps its Exif IFD where the
+            // writer felt like putting it (see GpsExif.WINDOW).
+            final byte[] head = new byte[GpsExif.WINDOW];
+            int off = 0, n;
+            while (off < head.length && (n = in.read(head, off, head.length - off)) > 0) off += n;
+            if (off < 32) return null;
+            return GpsExif.read(off == head.length ? head : java.util.Arrays.copyOf(head, off));
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (in != null) { try { in.close(); } catch (Throwable ignored) { } }
+        }
+    }
+
+    /**
+     * The JPEG the camera wrote beside this raw: same folder, same base name.
+     *
+     * <p>Phones name the pair identically apart from the extension
+     * (`IMG_20260205_165748.dng` / `IMG_20260205_165748.jpg`), so the match is a
+     * string one. A ROM that tags the raw -- `foo_raw.dng` beside `foo.jpg` --
+     * is covered by trying the stem without the suffix.
+     *
+     * <p>The sibling is looked up **through MediaStore**, not by guessing a path:
+     * the app has a `content://` grant for the raw it was handed, not for the
+     * folder, so a constructed `File` path would fail on every Android 11+ phone.
+     */
+    private Uri findCompanionJpeg(Uri rawUri, String rawName) {
+        String base = rawName == null ? "" : rawName.trim();
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) base = base.substring(0, dot);
+        if (base.isEmpty() && rawUri != null) {
+            base = getFileName(rawUri);
+            dot = base == null ? -1 : base.lastIndexOf('.');
+            if (dot > 0) base = base.substring(0, dot);
+        }
+        if (base == null || base.isEmpty()) return null;
+
+        final java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (String ext : new String[]{".jpg", ".jpeg", ".JPG", ".JPEG"}) names.add(base + ext);
+        final String lower = base.toLowerCase(java.util.Locale.US);
+        for (String suffix : new String[]{"_raw", "-raw", " raw"}) {
+            if (lower.endsWith(suffix)) {
+                final String stem = base.substring(0, base.length() - suffix.length());
+                for (String ext : new String[]{".jpg", ".jpeg", ".JPG", ".JPEG"}) names.add(stem + ext);
+            }
+        }
+        final String[] candidates = names.toArray(new String[0]);
+
+        // **Same folder first.** Two cameras in one library produce the same
+        // file name all the time, and the wrong sibling's fix is worse than none.
+        final String dir = relativePathOf(rawUri);
+        Uri hit = dir == null ? null : queryImage(dir, candidates);
+        if (hit == null && dir != null) hit = queryImage(null, candidates);
+        return hit;
+    }
+
+    /** The folder a MediaStore entry lives in; null before Android 10 or off-index. */
+    private String relativePathOf(Uri uri) {
+        if (uri == null || android.os.Build.VERSION.SDK_INT < 29) return null;
+        try (android.database.Cursor c = getContentResolver().query(uri,
+                new String[]{android.provider.MediaStore.MediaColumns.RELATIVE_PATH},
+                null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) return c.getString(0);
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    /** A MediaStore image by display name, optionally inside one folder. */
+    private Uri queryImage(String relativePath, String[] names) {
+        if (names == null || names.length == 0) return null;
+        final StringBuilder where = new StringBuilder();
+        final java.util.ArrayList<String> args = new java.util.ArrayList<>();
+        for (int i = 0; i < names.length; ++i) {
+            if (i > 0) where.append(" OR ");
+            where.append(android.provider.MediaStore.MediaColumns.DISPLAY_NAME).append("=?");
+            args.add(names[i]);
+        }
+        String sel = where.toString();
+        if (relativePath != null && !relativePath.isEmpty()) {
+            sel = android.provider.MediaStore.MediaColumns.RELATIVE_PATH + "=? AND (" + sel + ")";
+            args.add(0, relativePath);
+        }
+        try (android.database.Cursor c = getContentResolver().query(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                new String[]{android.provider.MediaStore.MediaColumns._ID},
+                sel, args.toArray(new String[0]), null)) {
+            if (c != null && c.moveToFirst()) {
+                return android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0));
+            }
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    /** The open frame's fix, or null. Read on the caller's thread, never on the worker. */
+    private GpsExif.Fix currentGps() {
+        if (!matchCompanionJpeg()) return null;
+        final int i = currentFrame;
+        if (i < 0 || i >= frames.size()) return null;
+        return frames.get(i).gps;
+    }
+
+    /** Turned on after the fact: give every frame that has none a chance. */
+    private void refreshGpsForAllFrames() {
+        for (Frame f : new java.util.ArrayList<>(frames)) attachSourceGps(f);
+        saveSessionState();
+    }
+
     /** File the frame that just finished importing, once. */
     private void rememberFrame(Uri uri, int reopenIndex) {
         if (uri == null) return;
@@ -16713,6 +17296,7 @@ public class MainActivity extends Activity {
                 // also what makes a re-decoded (tone-shifted) frame show its own
                 // new thumbnail rather than the old one.
                 final Frame reopened = frames.get(reopenIndex);
+                attachSourceGps(reopened);
                 if (beforeBitmap != null) {
                     try {
                         final int w = Math.max(1, dp(42));
@@ -16727,6 +17311,7 @@ public class MainActivity extends Activity {
             }
         }
         final Frame frame = new Frame(uri, isRawFile, name);
+        attachSourceGps(frame);
         frame.look = captureLook();
         frame.original = true;            // an import lands on 原图
         if (beforeBitmap != null) {
@@ -22217,6 +22802,14 @@ public class MainActivity extends Activity {
                                     }
                                 })),
                         new LinearLayout.LayoutParams(-1, -2));
+                strengthBar = rangeRow(printBody, "胶片强度",
+                        "100 = 完整的胶片；调低就与原片混合 —— 肤色跟着原片回来，"
+                                + "因为这里减的是成片本身，不是染料",
+                        0f, 1f, filmStrength, 0.01f, v -> {
+                            filmStrength = v;
+                            applyStrengthToCanvas();
+                            schedulePersist();
+                        }, 1f);
                 printRow("放大曝光 越右越暗");
                 printRow("高光保护");
                 printRow("暗部保护");
@@ -22736,7 +23329,10 @@ public class MainActivity extends Activity {
     private TextView composeTabView(String text, int page) {
         final TextView tv = label(text, 12, UI_MUTED, tfHan);
         tv.setGravity(android.view.Gravity.CENTER);
-        tv.setOnClickListener(v -> showComposePage(page));
+        tv.setOnClickListener(v -> {
+            setComposeFocus(true);
+            showComposePage(page);
+        });
         return tv;
     }
 
@@ -22744,6 +23340,41 @@ public class MainActivity extends Activity {
         final int flags = tv.getPaintFlags();
         tv.setPaintFlags(on ? (flags | android.graphics.Paint.UNDERLINE_TEXT_FLAG)
                 : (flags & ~android.graphics.Paint.UNDERLINE_TEXT_FLAG));
+    }
+
+    /**
+     * **构图 owns the whole canvas.**
+     *
+     * <p>Entering it pulls the picture into a safe margin (so all four corners
+     * of the crop frame are inside the comfortable part of the glass, and away
+     * from the system back gesture) and takes the three canvas HUDs off the
+     * corners. Leaving it, 应用裁切 or 取消 puts both back -- picking a ratio,
+     * tapping 裁切 / 旋转, or coming back to the tab arms it again.
+     */
+    private void setComposeFocus(boolean on) {
+        if (composeFocus == on) return;
+        composeFocus = on;
+        final long ms = on ? 180L : 240L;
+        final View[] hud = {shelfHandle, comparePill, previewFoot};
+        for (View v : hud) {
+            if (v == null) continue;
+            v.animate().cancel();
+            v.animate().alpha(on ? 0f : 1f).setDuration(ms)
+                    .setInterpolator(xfEase()).start();
+            if (on) {
+                // Faded out is not the same as gone: a 0-alpha pill still eats
+                // the tap that was meant for the corner underneath it.
+                v.setEnabled(false);
+                v.setClickable(false);
+            } else {
+                v.setEnabled(true);
+                // 文件名 / 状态行从来不吃点击；那两块本来要。
+                v.setClickable(v != previewFoot);
+            }
+        }
+        syncCanvasOverflow();
+        if (compare != null) compare.setComposeInset(on);
+        Probe.log("crop", "compose focus " + on);
     }
 
     private void showComposePage(int page) {
@@ -22879,6 +23510,7 @@ public class MainActivity extends Activity {
             pendingCropX = 0f; pendingCropY = 0f;
             pendingCropW = 1f; pendingCropH = 1f;
             cropRatioIndex = -1;
+            setComposeFocus(false);
             showComposePage(0);
         });
         final LinearLayout.LayoutParams cancelLp = new LinearLayout.LayoutParams(dp(58), dp(30));
@@ -22950,6 +23582,9 @@ public class MainActivity extends Activity {
      */
     private void applyCropRatio(int index) {
         cropRatioIndex = index;
+        // Picking a ratio is starting a crop: bring the safe margin back if
+        // 应用 / 取消 had just let it go.
+        setComposeFocus(true);
         if (index < 0) {
             pendingCropW = 1f; pendingCropH = 1f;
             pendingCropX = 0f; pendingCropY = 0f;
@@ -23024,6 +23659,8 @@ public class MainActivity extends Activity {
         }
         cropRatioIndex = -1;
         commitCompose();
+        // Done cropping: the picture goes back to the full-width preview.
+        setComposeFocus(false);
         showComposePage(0);
     }
 
@@ -23469,7 +24106,8 @@ public class MainActivity extends Activity {
         private final android.graphics.RectF image = new android.graphics.RectF();
         private float nx = 0f, ny = 0f, nw = 1f, nh = 1f;
         private float aspect = 0f;                 // picture w/h; 0 = free
-        private int drag = 0;                      // 0 none, 1 move, 2 TL, 3 TR, 4 BL, 5 BR
+        /** 0 none, 1 move, 2 TL, 3 TR, 4 BL, 5 BR, 6 left, 7 top, 8 right, 9 bottom. */
+        private int drag = 0;
         private float downX, downY, sx, sy, sw, sh;
         /** True while the last drag actually held the card's ratio. */
         private boolean ratioHeld;
@@ -23477,12 +24115,142 @@ public class MainActivity extends Activity {
          *  apart from two drags. The box owns every DOWN inside the picture, so
          *  without this the canvas never sees a double tap on this page. */
         private long lastTapMs = 0L;
+        /**
+         * **0 = the frame at rest, 1 = a finger is on it.**
+         *
+         * <p>It drives the two things that move while the frame is being
+         * adjusted: the mask outside the frame lifts from 60 % to 40 % black
+         * (so the part being thrown away stays legible) and the thirds come up
+         * to full strength, then fall back to a whisper when the finger goes.
+         */
+        private float activeT = 0f;
+        private android.animation.ValueAnimator activeAnim;
+        /** A fresh page lands the frame where it belongs; a ratio card *moves*
+         *  it there. Set when the view is shown, cleared by the first `sync`. */
+        private boolean snapNext = true;
+        private android.animation.ValueAnimator boxAnim;
+        private int boxGen = 0;
+        private final android.graphics.Paint brush =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
 
         CropOverlay() { super(MainActivity.this); }
 
+        /**
+         * The frame the pending crop describes.
+         *
+         * <p>**A fresh page snaps, a new ratio eases.** Picking 4:3 from 3:2 is
+         * a change of shape, and a shape that jumps reads as a different
+         * picture; 200 ms of the curve the canvas already uses says it is the
+         * same picture, re-cut.
+         */
         void sync(float x, float y, float w, float h, float a) {
-            nx = x; ny = y; nw = w; nh = h; aspect = a;
-            invalidate();
+            final android.animation.ValueAnimator running = boxAnim;
+            boxAnim = null;
+            if (running != null) running.cancel();
+            // Consume the "just shown" flag even if this call is a no-op: the
+            // next ratio card is a move, and it must ease.
+            final boolean snap = snapNext;
+            snapNext = false;
+            final boolean same = Math.abs(x - nx) < 1e-4f && Math.abs(y - ny) < 1e-4f
+                    && Math.abs(w - nw) < 1e-4f && Math.abs(h - nh) < 1e-4f
+                    && Math.abs(a - aspect) < 1e-4f;
+            if (same) return;
+            if (snap || getVisibility() != View.VISIBLE) {
+                nx = x; ny = y; nw = w; nh = h; aspect = a;
+                invalidate();
+                return;
+            }
+            final int gen = ++boxGen;
+            final float x0 = nx, y0 = ny, w0 = nw, h0 = nh, a0 = aspect;
+            final android.animation.ValueAnimator an =
+                    android.animation.ValueAnimator.ofFloat(0f, 1f);
+            an.setDuration(200L);
+            an.setInterpolator(xfEase());
+            an.addUpdateListener(v -> {
+                final float f = (float) v.getAnimatedValue();
+                nx = x0 + (x - x0) * f;
+                ny = y0 + (y - y0) * f;
+                nw = w0 + (w - w0) * f;
+                nh = h0 + (h - h0) * f;
+                aspect = a0 + (a - a0) * f;
+                invalidate();
+            });
+            an.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator v) {
+                    if (gen != boxGen) return;          // a newer sync took over
+                    if (boxAnim == v) boxAnim = null;
+                    nx = x; ny = y; nw = w; nh = h; aspect = a;
+                    invalidate();
+                }
+            });
+            boxAnim = an;
+            an.start();
+        }
+
+        /** The mask and the thirds follow the finger, not the box. */
+        private void animateActive(boolean on) {
+            final float to = on ? 1f : 0f;
+            final android.animation.ValueAnimator running = activeAnim;
+            activeAnim = null;
+            if (running != null) running.cancel();
+            if (Math.abs(activeT - to) < 0.01f) { activeT = to; invalidate(); return; }
+            final float from = activeT;
+            final android.animation.ValueAnimator a =
+                    android.animation.ValueAnimator.ofFloat(from, to);
+            a.setDuration(on ? 140L : 260L);
+            a.setInterpolator(xfEase());
+            a.addUpdateListener(v -> { activeT = (float) v.getAnimatedValue(); invalidate(); });
+            a.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator v) {
+                    if (activeAnim == v) activeAnim = null;
+                    activeT = to;
+                    invalidate();
+                }
+            });
+            activeAnim = a;
+            a.start();
+        }
+
+        @Override public void setVisibility(int v) {
+            final boolean was = getVisibility() == View.VISIBLE;
+            super.setVisibility(v);
+            if (v == View.VISIBLE && !was) {
+                // The next `sync` positions the frame; it must not slide there
+                // from whatever the last page left in these fields.
+                snapNext = true;
+                applyGestureExclusions();
+            } else if (v != View.VISIBLE && was) {
+                // There is no "clear" on the platform: an empty list is the
+                // way to hand the edges back.
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    setSystemGestureExclusionRects(new java.util.ArrayList<>());
+                }
+            }
+        }
+
+        @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
+            super.onSizeChanged(w, h, ow, oh);
+            applyGestureExclusions();
+        }
+
+        /**
+         * **The back gesture must not own the crop edge.**
+         *
+         * <p>Both screen edges are handed to this view while the frame is up,
+         * so a drag that starts on the left or right handle cannot turn into a
+         * system back -- which was the other half of 「拖拉左右裁切边时误触
+         * 返回」. The system caps how much of an edge it will release, but what
+         * it does release is exactly the strip a thumb lands in.
+         */
+        private void applyGestureExclusions() {
+            if (android.os.Build.VERSION.SDK_INT < 29) return;
+            final int w = getWidth(), h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            final int strip = Math.max(1, Math.round(dp(34f)));
+            final java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>(2);
+            rects.add(new android.graphics.Rect(0, 0, strip, h));
+            rects.add(new android.graphics.Rect(w - strip, 0, w, h));
+            setSystemGestureExclusionRects(rects);
         }
 
         private void pullImage() {
@@ -23497,56 +24265,108 @@ public class MainActivity extends Activity {
             if (image.isEmpty() || image.width() <= 0f) return;
 
             final float l = px(nx), t = py(ny), r = px(nx + nw), b = py(ny + nh);
+            final float vw = getWidth(), vh = getHeight();
 
-            final android.graphics.Paint dim = new android.graphics.Paint();
-            dim.setColor(0x99000000);
-            canvas.drawRect(0, 0, getWidth(), t, dim);
-            canvas.drawRect(0, b, getWidth(), getHeight(), dim);
-            canvas.drawRect(0, t, l, b, dim);
-            canvas.drawRect(r, t, getWidth(), b, dim);
+            // ---- what is being thrown away: 60 % at rest, 40 % while adjusting
+            final int dim = Math.round(255f * (0.60f - 0.20f * activeT));
+            brush.setStyle(android.graphics.Paint.Style.FILL);
+            brush.setColor(dim << 24);
+            canvas.drawRect(0f, 0f, vw, t, brush);
+            canvas.drawRect(0f, b, vw, vh, brush);
+            canvas.drawRect(0f, t, l, b, brush);
+            canvas.drawRect(r, t, vw, b, brush);
 
-            final android.graphics.Paint edge =
-                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            edge.setStyle(android.graphics.Paint.Style.STROKE);
-            edge.setStrokeWidth(dp(1.4f));
-            edge.setColor(0xFFFFFFFF);
-            canvas.drawRect(l, t, r, b, edge);
-
-            final android.graphics.Paint thirds =
-                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            thirds.setStyle(android.graphics.Paint.Style.STROKE);
-            thirds.setStrokeWidth(dp(0.8f));
-            thirds.setColor(0x66FFFFFF);
-            for (int i = 1; i < 3; ++i) {
-                final float x = l + (r - l) * i / 3f;
-                final float y = t + (b - t) * i / 3f;
-                canvas.drawLine(x, t, x, b, thirds);
-                canvas.drawLine(l, y, r, y, thirds);
+            // ---- thirds: sharp under the finger, a whisper after it
+            final int gridA = Math.round(26f + 190f * activeT);
+            if (gridA > 4) {
+                brush.setStyle(android.graphics.Paint.Style.STROKE);
+                brush.setStrokeWidth(Math.max(1f, dp(0.75f)));
+                brush.setColor((gridA << 24) | 0x00FFFFFF);
+                for (int i = 1; i < 3; ++i) {
+                    final float x = l + (r - l) * i / 3f;
+                    final float y = t + (b - t) * i / 3f;
+                    canvas.drawLine(x, t, x, b, brush);
+                    canvas.drawLine(l, y, r, y, brush);
+                }
             }
 
-            final android.graphics.Paint grip =
-                    new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-            grip.setStyle(android.graphics.Paint.Style.STROKE);
-            grip.setStrokeWidth(dp(3f));
-            grip.setColor(0xFFFFFFFF);
-            final float arm = Math.min(dp(22), Math.min(r - l, b - t) * 0.28f);
-            canvas.drawLine(l, t, l + arm, t, grip);
-            canvas.drawLine(l, t, l, t + arm, grip);
-            canvas.drawLine(r, t, r - arm, t, grip);
-            canvas.drawLine(r, t, r, t + arm, grip);
-            canvas.drawLine(l, b, l + arm, b, grip);
-            canvas.drawLine(l, b, l, b - arm, grip);
-            canvas.drawLine(r, b, r - arm, b, grip);
-            canvas.drawLine(r, b, r, b - arm, grip);
+            final float boxW = r - l, boxH = b - t;
+
+            // ---- the hairline, over a soft dark halo: it has to survive a
+            // white dress, a black suit and a strip of sprocket holes
+            brush.setStyle(android.graphics.Paint.Style.STROKE);
+            brush.setStrokeCap(android.graphics.Paint.Cap.BUTT);
+            for (int pass = 0; pass < 2; ++pass) {
+                brush.setColor(pass == 0 ? 0x55000000 : 0xE6FFFFFF);
+                brush.setStrokeWidth(pass == 0 ? dp(2.6f) : dp(1f));
+                canvas.drawRect(l, t, r, b, brush);
+            }
+
+            // ---- L corners: 17 dp arms at 2.75 dp, the part that reads at a glance
+            final float arm = Math.min(dp(17f), Math.min(boxW, boxH) * 0.30f);
+            if (arm > dp(3f)) {
+                final float stroke = dp(2.75f);
+                brush.setStrokeCap(android.graphics.Paint.Cap.SQUARE);
+                for (int pass = 0; pass < 2; ++pass) {
+                    brush.setColor(pass == 0 ? 0x59000000 : 0xFFFFFFFF);
+                    brush.setStrokeWidth(pass == 0 ? stroke + dp(2.2f) : stroke);
+                    canvas.drawLine(l, t, l + arm, t, brush);        // top left
+                    canvas.drawLine(l, t, l, t + arm, brush);
+                    canvas.drawLine(r, t, r - arm, t, brush);        // top right
+                    canvas.drawLine(r, t, r, t + arm, brush);
+                    canvas.drawLine(l, b, l + arm, b, brush);        // bottom left
+                    canvas.drawLine(l, b, l, b - arm, brush);
+                    canvas.drawLine(r, b, r - arm, b, brush);        // bottom right
+                    canvas.drawLine(r, b, r, b - arm, brush);
+                }
+                brush.setStrokeCap(android.graphics.Paint.Cap.BUTT);
+            }
+
+            // ---- the restrained short grips at the middle of each edge
+            final float grip = Math.min(dp(15f), Math.min(boxW, boxH) * 0.22f);
+            if (grip > dp(5f) && boxW > dp(88f) && boxH > dp(88f)) {
+                final float cx = (l + r) / 2f, cy = (t + b) / 2f;
+                final float gs = dp(2.4f);
+                for (int pass = 0; pass < 2; ++pass) {
+                    brush.setColor(pass == 0 ? 0x4D000000 : 0xCCFFFFFF);
+                    brush.setStrokeWidth(pass == 0 ? gs + dp(1.8f) : gs);
+                    canvas.drawLine(cx - grip, t, cx + grip, t, brush);
+                    canvas.drawLine(cx - grip, b, cx + grip, b, brush);
+                    canvas.drawLine(l, cy - grip, l, cy + grip, brush);
+                    canvas.drawLine(r, cy - grip, r, cy + grip, brush);
+                }
+            }
         }
 
-        private int cornerAt(float x, float y) {
-            final float tolerance = dp(30);
+        /**
+         * **The handle under a point.**
+         *
+         * <p>Every one of them owns 44 dp of glass -- in a square around the
+         * corner and a band along the edge, reaching *outside* the frame as
+         * well, which is what the new safe margin is for. Priority is corners
+         * > edges > the inside, so shrinking the frame can never turn a corner
+         * drag into a pan of the picture.
+         */
+        private int hitAt(float x, float y) {
+            final float hot = dp(44f);
             final float l = px(nx), t = py(ny), r = px(nx + nw), b = py(ny + nh);
-            if (Math.hypot(x - l, y - t) < tolerance) return 2;
-            if (Math.hypot(x - r, y - t) < tolerance) return 3;
-            if (Math.hypot(x - l, y - b) < tolerance) return 4;
-            if (Math.hypot(x - r, y - b) < tolerance) return 5;
+            int best = 0;
+            float bestD = Float.MAX_VALUE;
+            final int[] ids = {2, 3, 4, 5};
+            final float[] cxs = {l, r, l, r};
+            final float[] cys = {t, t, b, b};
+            for (int i = 0; i < 4; ++i) {
+                final float dx = x - cxs[i], dy = y - cys[i];
+                if (Math.abs(dx) <= hot && Math.abs(dy) <= hot) {
+                    final float d = dx * dx + dy * dy;
+                    if (d < bestD) { bestD = d; best = ids[i]; }
+                }
+            }
+            if (best != 0) return best;
+            if (Math.abs(x - l) <= hot && y > t + hot && y < b - hot) return 6;
+            if (Math.abs(x - r) <= hot && y > t + hot && y < b - hot) return 8;
+            if (Math.abs(y - t) <= hot && x > l + hot && x < r - hot) return 7;
+            if (Math.abs(y - b) <= hot && x > l + hot && x < r - hot) return 9;
             if (x > l && x < r && y > t && y < b) return 1;
             return 0;
         }
@@ -23556,7 +24376,7 @@ public class MainActivity extends Activity {
             if (image.width() <= 0f) return false;
             switch (e.getActionMasked()) {
                 case android.view.MotionEvent.ACTION_DOWN: {
-                    final int hit = cornerAt(e.getX(), e.getY());
+                    final int hit = hitAt(e.getX(), e.getY());
                     if (hit == 0) return false;
                     final long now = android.os.SystemClock.uptimeMillis();
                     if (now - lastTapMs < 320L) {
@@ -23571,6 +24391,7 @@ public class MainActivity extends Activity {
                     // A box that already has a card's shape starts out held;
                     // a free / "整幅" box starts out not.
                     ratioHeld = aspect > 0.0001f;
+                    animateActive(true);
                     final android.view.ViewParent parent = getParent();
                     if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
                     return true;
@@ -23581,6 +24402,7 @@ public class MainActivity extends Activity {
                     // gesture, and Android does not re-dispatch to a sibling.
                     // So the pinch is forwarded explicitly.
                     drag = 0;
+                    animateActive(false);
                     return compare != null && compare.onTouchEvent(e);
                 case android.view.MotionEvent.ACTION_MOVE: {
                     if (e.getPointerCount() > 1 && compare != null) return compare.onTouchEvent(e);
@@ -23600,6 +24422,7 @@ public class MainActivity extends Activity {
                     } else if (compare != null) {
                         compare.onTouchEvent(e);        // close a pinch cleanly
                     }
+                    animateActive(false);
                     return true;
                 }
             }
@@ -23610,10 +24433,16 @@ public class MainActivity extends Activity {
             final float dxN = (x - downX) / Math.max(1f, image.width());
             final float dyN = (y - downY) / Math.max(1f, image.height());
             final float min = 0.04f;
+            // The ratio is in picture pixels; normalised space is stretched by
+            // the picture's own aspect.
+            final float ratioN = (aspect > 0.0001f && image.width() > 0f)
+                    ? aspect * (image.height() / image.width()) : 0f;
 
             if (drag == 1) {
                 nx = Math.max(0f, Math.min(1f - sw, sx + dxN));
                 ny = Math.max(0f, Math.min(1f - sh, sy + dyN));
+            } else if (drag >= 6) {
+                dragEdge(dxN, dyN, ratioN, min);
             } else {
                 // The opposite corner is the anchor.
                 final boolean left = (drag == 2 || drag == 4);
@@ -23627,11 +24456,8 @@ public class MainActivity extends Activity {
 
                 float w = Math.abs(mx - ax);
                 float h = Math.abs(my - ay);
-                if (aspect > 0.0001f && image.width() > 0f) {
-                    // The ratio is in picture pixels; normalised space is
-                    // stretched by the picture's own aspect.
-                    final float aspN = aspect * (image.height() / image.width());
-                    if (w / Math.max(1e-5f, h) > aspN) h = w / aspN; else w = h * aspN;
+                if (ratioN > 0f) {
+                    if (w / Math.max(1e-5f, h) > ratioN) h = w / ratioN; else w = h * ratioN;
                     // **Shrink both sides together at the picture edge.**
                     // Clamping w and h independently here (what the old code
                     // did) changes the ratio the moment a drag reaches an
@@ -23668,6 +24494,77 @@ public class MainActivity extends Activity {
                 nw = w; nh = h;
             }
             invalidate();
+        }
+
+        /**
+         * **An edge drag, and what it means for the other dimension.**
+         *
+         * <p>Free ratio: only that one side moves. A card's ratio: the
+         * opposite edge is the anchor and the perpendicular dimension grows or
+         * shrinks about the box's own centre -- which is how the editors this
+         * is modelled on behave, and the only reading that does not drift the
+         * frame off the subject while the finger travels.
+         */
+        private void dragEdge(float dxN, float dyN, float ratioN, float min) {
+            if (drag == 6 || drag == 8) {
+                final float mx = Math.max(0f, Math.min(1f,
+                        (drag == 6 ? sx : sx + sw) + dxN));
+                final float x0 = drag == 6 ? mx : sx;
+                final float x1 = drag == 6 ? sx + sw : mx;
+                float w = Math.max(min, x1 - x0);
+                float h = sh, y0 = sy;
+                if (ratioN > 0f) {
+                    final float cy = sy + sh * 0.5f;
+                    final float room = 2f * Math.min(cy, 1f - cy);
+                    w = Math.max(min, Math.min(w, drag == 6 ? x1 : 1f - x0));
+                    h = w / ratioN;
+                    if (h > room) { h = room; w = h * ratioN; }
+                    // **Both sides, or neither.** Clamping one dimension to
+                    // the floor on its own is how a 2:3 box collapsed into a
+                    // 1:1 one by touching its own edge.
+                    if (w < min || h < min) {
+                        final float lift = Math.max(min / Math.max(1e-6f, w),
+                                min / Math.max(1e-6f, h));
+                        w *= lift; h *= lift;
+                    }
+                    y0 = cy - h * 0.5f;
+                    ratioHeld = true;
+                } else {
+                    ratioHeld = false;
+                }
+                nw = Math.max(min, Math.min(1f, w));
+                nh = Math.max(min, Math.min(1f, h));
+                nx = Math.max(0f, Math.min(1f - nw, drag == 6 ? x1 - nw : x0));
+                ny = Math.max(0f, Math.min(1f - nh, y0));
+            } else {
+                final float my = Math.max(0f, Math.min(1f,
+                        (drag == 7 ? sy : sy + sh) + dyN));
+                final float y0 = drag == 7 ? my : sy;
+                final float y1 = drag == 7 ? sy + sh : my;
+                float h = Math.max(min, y1 - y0);
+                float w = sw, x0 = sx;
+                if (ratioN > 0f) {
+                    final float cx = sx + sw * 0.5f;
+                    final float room = 2f * Math.min(cx, 1f - cx);
+                    h = Math.max(min, Math.min(h, drag == 7 ? y1 : 1f - y0));
+                    w = h * ratioN;
+                    if (w > room) { w = room; h = w / ratioN; }
+                    // Both sides, or neither -- see the horizontal branch.
+                    if (w < min || h < min) {
+                        final float lift = Math.max(min / Math.max(1e-6f, w),
+                                min / Math.max(1e-6f, h));
+                        w *= lift; h *= lift;
+                    }
+                    x0 = cx - w * 0.5f;
+                    ratioHeld = true;
+                } else {
+                    ratioHeld = false;
+                }
+                nw = Math.max(min, Math.min(1f, w));
+                nh = Math.max(min, Math.min(1f, h));
+                nx = Math.max(0f, Math.min(1f - nw, x0));
+                ny = Math.max(0f, Math.min(1f - nh, drag == 7 ? y1 - nh : y0));
+            }
         }
 
         private void commitCrop() {
@@ -24629,11 +25526,9 @@ public class MainActivity extends Activity {
         if (!overscanOn) return "未开启 · 点进去设置";
         final int at = edgeIds.indexOf(overscanFormat);
         final String gate = at >= 0 && at < edgeLabels.size() ? edgeLabels.get(at) : overscanFormat;
-        // **Two engines, two strips.** fotufilm's border is its own PrintFrame:
-        // the base colour comes from the stock's dMin and there is no fog, no
-        // leak and no frame number -- those three belong to the first engine's
-        // rebate, where they are still on the page.
-        if (isFotuStock(filmStock)) return gate + (edgeTextOn ? " · 厂印" : "");
+        // **One strip now, on both engines** -- the host's `rebate::` is the same
+        // code, so the summary reads the same numbers whichever engine owns the
+        // frame.
         return gate + " · 雾 " + fmt1(edgeFog) + " · 漏光 " + fmt1(edgeLeaks)
                 + " · 张数 " + (frameNumber < 0.5f ? "自动" : String.valueOf(Math.round(frameNumber)));
     }
@@ -25129,6 +26024,8 @@ public class MainActivity extends Activity {
         final int fw = src.getWidth(), fh = src.getHeight();
         new Thread(() -> {
             final long t0 = nowMs();
+            // The writer appends whatever the JNI was told; nothing had told it.
+            pushExportMetadata();
             final java.io.File tmp = new java.io.File(getCacheDir(),
                     "export_framed_" + System.currentTimeMillis() + ".jpg");
             boolean ok;
@@ -25292,9 +26189,7 @@ public class MainActivity extends Activity {
         edgePage = new LinearLayout(this);
         edgePage.setOrientation(LinearLayout.VERTICAL);
         edgePage.addView(pageHead("片边 / REBATE"), new LinearLayout.LayoutParams(-1, dp(38)));
-        edgeFotuNote = label("fotufilm：片边是它自己的印刷边框 —— 光箱下的片基、齿孔、厂标"
-                + "（官方那张表里有的才印），和画面一起过颗粒与相纸。雾、漏光、张数、日期是"
-                + "第一引擎的 rebate，这边没有。", 7.5f, UI_MUTED, tfHan);
+        edgeFotuNote = label("fotufilm：135 / 120 的十个片门走的是同一个片边 —— 雾、漏光、齿孔、厂标、DX、日期都生效，和画面一起过颗粒与相纸；Super 35 / 16mm / Super 8 / 4×5 / Instax 那七个是印刷画框，另一套。", 7.5f, UI_MUTED, tfHan);
         edgeFotuNote.setPadding(dp(2), 0, dp(2), dp(6));
         edgeFotuNote.setVisibility(View.GONE);
         edgePage.addView(edgeFotuNote, new LinearLayout.LayoutParams(-1, -2));
@@ -25789,30 +26684,17 @@ public class MainActivity extends Activity {
         if (dateMark != null) dateMark.setLit(dateOn);
         Probe.log("toggle", "sync overscan=" + overscanOn + " date=" + dateOn
                 + " edgeText=" + edgeTextOn);
-        // **Three of the rebate's controls are the emulsion's, not the drawing's.**
-        // 漏光 is light leaking through the base, 光圈值 is the gate's own
-        // defocus, 日期亮度 is how hard the red LED burnt; a strip composed in
-        // Java has a flat base and a flat date. Hidden rather than dimmed --
-        // there is nothing to reach for on this engine.
+        // **The page is one page again.** fotufilm used to have its own border
+        // (the PrintFrame) and this whole page was greyed out for it: fog, leaks,
+        // gate shape, dates and frame numbers were "the first engine's". Now the
+        // host compiles the same `overscan.cpp` (`rebate::`), so the rebate's
+        // rows, its card and its two shape pickers all apply on both engines;
+        // what decides which strip draws is the gate, not the engine.
         final boolean drawn = isFotuStock(filmStock);
-        hideRebateRow(edgeLeaksBar, drawn);
-        hideRebateRow(edgeFNumValue, drawn);
-        hideRebateRow(dateEvBar, drawn);
-        // **片基雾 / 片边张数也是 rebate 的。** fotufilm 的片边是光箱下的胶片本身
-        // ——片基色由胶片的 dMin 算（不是一根雾滑杆），张数 web 端也不印。
-        hideRebateRow(edgeFogBar, drawn);
-        hideRebateRow(frameNoBar, drawn);
-        if (edgeCardDate != null) edgeCardDate.setVisibility(drawn ? View.GONE : View.VISIBLE);
-        if (edgeCardPf != null) edgeCardPf.setVisibility(drawn ? View.VISIBLE : View.GONE);
-        // **One border card per engine.** fotufilm's gauge follows the film and
-        // its strip is the host's PrintFrame, so the rebate page had nothing on
-        // it but rows that did nothing -- while the page that *does* apply was
-        // next to it. The rebate card goes with the rebate.
-        if (edgeCardRebate != null) edgeCardRebate.setVisibility(drawn ? View.GONE : View.VISIBLE);
-        if (drawn && (edgePageIndex == 0 || edgePageIndex == 1)) openEdgePage(-1);
-        // 片边模式 and 片门形状 choose how the engine *cuts* the mask -- the
-        // sprocket profile and the gate's lip. A drawn strip has one of each.
-        if (edgeShapeRow != null) edgeShapeRow.setVisibility(drawn ? View.GONE : View.VISIBLE);
+        if (edgeCardDate != null) edgeCardDate.setVisibility(View.VISIBLE);
+        if (edgeCardPf != null) edgeCardPf.setVisibility(View.VISIBLE);
+        if (edgeCardRebate != null) edgeCardRebate.setVisibility(View.VISIBLE);
+        if (edgeShapeRow != null) edgeShapeRow.setVisibility(View.VISIBLE);
         if (edgeFotuNote != null) edgeFotuNote.setVisibility(drawn ? View.VISIBLE : View.GONE);
         refreshPairRows();
         refreshEdgeCards();
@@ -26409,6 +27291,8 @@ public class MainActivity extends Activity {
             final int bottom = stageH + Math.round(dragPhotoLift * dragPhoto);
             final int top = Math.round(topBar * dragPhoto);
             compare.setAnchor(top, bottom);
+            // The composition measures its safe margin from below the bar.
+            compare.setSafeTop(topBar);
         }
     }
 
@@ -28066,6 +28950,8 @@ public class MainActivity extends Activity {
         filterScale = 1.0f;
         preflash = 0.0f;
         hueCorrection = 1f;
+        filmStrength = 1f;
+        setBarProgress(strengthBar, 0f, 1f, filmStrength);
         refreshKnob();
         if (session != null) { applyParams(); renderImage(); }
     }
@@ -28760,6 +29646,14 @@ public class MainActivity extends Activity {
     }
 
     private void onEdgeChanged() {
+        // **The strength changes nothing the engine was told.** Both pictures it
+        // mixes are already in memory, so the release path is one pass over the
+        // pixels -- no parameters, no render.
+        if (lastEditedBar == strengthBar && strengthBar != null) {
+            applyStrengthToCanvas();
+            schedulePersist();
+            return;
+        }
         // **On the original there is no chain to re-render.** Glow is a pure
         // post-process over whatever the canvas holds, so the only thing to do
         // is rebuild that one copy; `renderImage` would answer "pick a film"
@@ -29709,7 +30603,12 @@ public class MainActivity extends Activity {
                     // frame the live path produces is the film's, so asking for
                     // it pulled the canvas off the original on the first pixel
                     // of movement. Release rebuilds whichever view is up.
-                    if (!glowBars.contains(bar) || !showingOriginal) requestLivePreview();
+                    // **The strength is a mix, not a render.** `apply` above has
+                    // already blended the two pictures in memory; asking for a
+                    // live frame would spend half a second drawing what the mix
+                    // just made for free.
+                    if (bar != strengthBar
+                            && (!glowBars.contains(bar) || !showingOriginal)) requestLivePreview();
                 }
             }
             @Override public void onStartTrackingTouch(SeekBar sb) { }
@@ -29847,6 +30746,8 @@ public class MainActivity extends Activity {
         // 而且它替你收起来的照片栏要在这里还回去 —— 切页签和点 v 是同一件事。
         if (shelfExpanded && active != 0) collapseShelfAndRestore();
         activeTabIndex = active;
+        // **构图 is a different viewport, not just another panel.**
+        setComposeFocus(active == 4);
         // **The print page is rebuilt on entry, not just revealed.** Its rows
         // are created with `printLatitude` baked in (a gated row is born
         // gated -- see `printRow`), and the field is restored from a look at a
@@ -30464,6 +31365,18 @@ public class MainActivity extends Activity {
                 keys.add("spk|jpeg|full|live|" + LIVE_CLIP_FULL_EDGE);
             }
         }
+        // **显影实况.** A live photo whose motion *is* the darkroom: the
+        // negative this print came from, a lamp coming up through it until the
+        // film *is* the print. Both
+        // ends are this frame, so it is offered only where the still is a
+        // print -- not on 「无相纸 · 负片本身」 (the still *is* the negative),
+        // not on a scan medium, and not on a reversal (a slide has no negative
+        // to develop). The key says `spk|` because the engine is read off the
+        // frame in `exportImage`, the same way every other row works.
+        if (developLiveAvailable()) {
+            rows.add("实况 · 显影（负片 → 正片）");
+            keys.add("spk|jpeg|full|dev");
+        }
         rows.add("更多格式：TIFF 16 位 / DNG…");     keys.add("more");
         showActionSheet("导出照片", note, rows.toArray(new String[0]), which0 -> {
             if (which0 < 0 || which0 >= keys.size()) return;
@@ -30531,8 +31444,10 @@ public class MainActivity extends Activity {
                 ? (key.length > 4 ? Math.max(0, parseIntSafe(key[4], LIVE_CLIP_MAX_EDGE))
                                   : LIVE_CLIP_MAX_EDGE)
                 : 0;
+        developLiveWanted = key.length > 3 && "dev".equals(key[3]);
         showInAppToast("导出：" + exportLabel(key[1], key[2])
-                + (liveClipEdge > 0 ? " · 实况（动图 ≤" + liveClipEdge + "）" : ""));
+                + (liveClipEdge > 0 ? " · 实况（动图 ≤" + liveClipEdge + "）" : "")
+                + (developLiveWanted ? " · 显影实况" : ""));
         exportImage(key[1], key[2]);
     }
 
@@ -30649,6 +31564,22 @@ public class MainActivity extends Activity {
         private boolean splitMode = false;
         /** 0 off, 1 thirds + centre cross. Set by 构图 → 旋转 only. */
         private int gridMode = 0;
+
+        /**
+         * **The composition stands inside a safe margin.**
+         *
+         * <p>Entering 构图 (裁切 / 旋转) pulls the picture 30 dp in from the
+         * sides and 26 dp from the band's top and bottom, so all four corners
+         * of the crop frame sit in the comfortable part of the glass -- and
+         * away from the system back gesture. 0 = the full-width preview every
+         * other page uses.
+         */
+        private static final float COMPOSE_INSET_X_DP = 30f;
+        private static final float COMPOSE_INSET_Y_DP = 26f;
+        private float cropInset = 0f;
+        private android.animation.ValueAnimator insetAnim;
+        /** The box the picture is fitted into, recomputed every frame. */
+        private float fitL, fitR, fitT, fitB, fitW, fitH;
 
         /**
          * **Rotation is a drag on the picture, not a slider.**
@@ -31055,10 +31986,16 @@ public class MainActivity extends Activity {
             // its *width* and is allowed to run past the panel's top edge; a
             // cover scale would crop the frame, and a crop that changes when a
             // panel opens is exactly the thing that was wrong.
-            final float fill = Math.min(vw / bmp.getWidth(), vh / bmp.getHeight());
+            computeFit(vw, vh);
+            // **Fit into the safe box, never beyond it.** `fitW` / `fitH` are
+            // the whole view at rest and the inset band while 构图 is in
+            // front, so the same arithmetic serves both: the picture keeps its
+            // shape, only the room it is given changes.
+            final float fill = Math.min(fitW / bmp.getWidth(), fitH / bmp.getHeight());
             final float scale = fill * zoom * (rotateMode ? ROTATE_SHRINK : 1f);
             final float w = bmp.getWidth() * scale, h = bmp.getHeight() * scale;
-            final float left = (vw - w) / 2f + panX, top = pictureTop(h) + panY;
+            final float left = (fitL + fitR) / 2f - w / 2f + panX;
+            final float top = pictureTop(h) + panY;
             dst.set(left, top, left + w, top + h);
             if (previewRotation == 0f) {
                 canvas.drawBitmap(bmp, null, dst, paint);
@@ -31111,12 +32048,90 @@ public class MainActivity extends Activity {
             invalidate();
         }
 
+        /**
+         * **Where the picture's own area starts, under the bar.**
+         *
+         * <p>The chart of the bar sits over the canvas, so a portrait frame at
+         * rest begins under it. Composing has to measure its safe margin from
+         * the first pixel the user can see, not from the top of the stage --
+         * otherwise the top of the crop frame lands behind the wordmark, which
+         * is exactly the corner that could not be grabbed.
+         */
+        private int safeTopPx;
+
+        void setSafeTop(int px) {
+            px = Math.max(0, px);
+            if (px == safeTopPx) return;
+            safeTopPx = px;
+            invalidate();
+        }
+
         /** The picture's top edge, for a picture `h` px tall. */
         private float pictureTop(float h) {
-            final float a = anchorTop;
-            final float b = anchorBottom > a ? Math.min(anchorBottom, getHeight()) : getHeight();
-            if (h <= b - a) return a + (b - a - h) / 2f;
-            return a;
+            // The band is already inset by `computeFit`: `fitT` / `fitB` are
+            // where the picture may sit *this frame*, safe margin included.
+            if (h <= fitB - fitT) return fitT + (fitB - fitT - h) / 2f;
+            return fitT;
+        }
+
+        /**
+         * The box the picture is fitted into, for the current inset.
+         *
+         * <p>At rest this is exactly what the old code did -- the whole view,
+         * with the picture allowed to run under the panel -- because a tall
+         * picture filling the frame by its width is the preview, not a crop.
+         * While composing it becomes the band between the bars, pulled in by
+         * the safe margin, so the whole photograph (and with it the crop frame)
+         * is inside the reachable part of the glass.
+         */
+        private void computeFit(float vw, float vh) {
+            final float ix = cropInset * density * COMPOSE_INSET_X_DP;
+            final float iy = cropInset * density * COMPOSE_INSET_Y_DP;
+            // While composing the band starts under the top bar: its safe
+            // margin is measured from the first visible row, not from y = 0.
+            final float a = anchorTop
+                    + cropInset * Math.max(0, safeTopPx - anchorTop);
+            final float b = anchorBottom > a ? Math.min(anchorBottom, vh) : vh;
+            fitL = ix;
+            fitR = Math.max(fitL + 1f, vw - ix);
+            fitT = a + iy;
+            fitB = Math.max(fitT + 1f, b - iy);
+            fitW = fitR - fitL;
+            fitH = Math.max(1f, vh + cropInset * ((b - a) - vh) - 2f * iy);
+        }
+
+        /** In / out of the composition's safe margin, 280 ms, no overshoot. */
+        void setComposeInset(boolean on) {
+            final float to = on ? 1f : 0f;
+            final android.animation.ValueAnimator running = insetAnim;
+            insetAnim = null;
+            if (running != null) running.cancel();
+            if (Math.abs(cropInset - to) < 0.001f) {
+                cropInset = to;
+                clampPan();
+                invalidate();
+                return;
+            }
+            final float from = cropInset;
+            final android.animation.ValueAnimator a =
+                    android.animation.ValueAnimator.ofFloat(from, to);
+            a.setDuration(Math.max(160L, Math.round(280f * Math.abs(to - from))));
+            a.setInterpolator(xfEase());
+            a.addUpdateListener(v -> {
+                cropInset = (float) v.getAnimatedValue();
+                clampPan();
+                invalidate();
+            });
+            a.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(android.animation.Animator v) {
+                    if (insetAnim == v) insetAnim = null;
+                    cropInset = to;
+                    clampPan();
+                    invalidate();
+                }
+            });
+            insetAnim = a;
+            a.start();
         }
 
         private float coverScale(float w, float h, float deg) {
@@ -31132,10 +32147,11 @@ public class MainActivity extends Activity {
             if (base == null || base.getWidth() == 0) return;
             final float vw = getWidth(), vh = getHeight();
             if (vw <= 0 || vh <= 0) return;
-            final float scale = Math.min(vw / base.getWidth(), vh / base.getHeight()) * zoom;
+            computeFit(vw, vh);
+            final float scale = Math.min(fitW / base.getWidth(), fitH / base.getHeight()) * zoom;
             final float w = base.getWidth() * scale, h = base.getHeight() * scale;
-            final float maxX = Math.max(0f, (w - vw) / 2f);
-            final float maxY = Math.max(0f, (h - vh) / 2f);
+            final float maxX = Math.max(0f, (w - fitW) / 2f);
+            final float maxY = Math.max(0f, (h - fitH) / 2f);
             panX = Math.max(-maxX, Math.min(maxX, panX));
             panY = Math.max(-maxY, Math.min(maxY, panY));
         }
@@ -32052,6 +33068,14 @@ public class MainActivity extends Activity {
                 }));
 
         settingsGroup("工作区 \u00b7 WORKSPACE");
+        settingsAdd(settingsSwitch("同名 JPG 的位置",
+                "导入 RAW 时读同目录同名 JPG 的位置，导出 JPEG 写回；DNG 母版不带位置",
+                matchCompanionJpeg(), on -> {
+                    getSharedPreferences("ui", MODE_PRIVATE).edit()
+                            .putBoolean("match_raw_jpeg", on).apply();
+                    if (on) refreshGpsForAllFrames();
+                }));
+        settingsRule();
         settingsAdd(settingsRow("预设", presetCountLine(), null, true, this::showPresetsPanel));
         settingsRule();
         settingsAdd(settingsRow("重新扫描相册", "在系统相册里删完照片后，重新读一遍", null, true, () -> {
@@ -33052,6 +34076,7 @@ public class MainActivity extends Activity {
         fotuSourcePathFor = null;
         fotuSourceDead = null;
         fotuGeneration++;
+        forgetStrengthPair();
         // Whatever is rendering belongs to the photograph being replaced.
         renderEpoch++;
         // **The previous photograph's dimensions are not this one's.**
@@ -33957,6 +34982,7 @@ public class MainActivity extends Activity {
         fotuSourcePathFor = null;
         fotuSourceDead = null;
         fotuGeneration++;
+        forgetStrengthPair();
         // **This decode has a serial number.** A RAW takes three to five seconds, and the strip
         // is right there: tap chip A, tap chip B before A finishes, and A's worker woke up last
         // -- closed B's session, installed A's pixels and drew A under B's chip. That is the
@@ -36747,11 +37773,61 @@ public class MainActivity extends Activity {
         // the first engine's rebate flag: keeping it in this condition meant a
         // fotufilm frame could only be given a border by visiting 片边 -- the
         // one page that does nothing for this engine.
+        // **Two strips, one at a time.** The ten 135/120 carriers are the first
+        // engine's rebate -- the same `overscan.cpp`, compiled into the host as
+        // `rebate::` by `extract.py` -- and the seven gauges ported from
+        // fotufilm are the print frame's. Which one draws follows the gate, not
+        // a switch: a 135 gate drawn with the print frame would be two borders
+        // on one picture, and a super8 gauge drawn with the rebate is a gauge
+        // the rebate does not know (`unknown format 'super8'`).
+        final boolean rebateDraw = withRebate && overscanOn
+                && !isPrintFrameGauge(overscanFormat);
         final boolean pfDraw = withRebate
-                && (isFotuStock(filmStock)
-                        ? (pfKind != null && !"none".equals(pfKind))
-                        : (overscanOn || (pfKind != null && !"none".equals(pfKind))))
+                && isPrintFrameGauge(overscanFormat)
+                && (pfKind != null && !"none".equals(pfKind))
                 && pfAvailable(pfKindHere);
+        if (rebateDraw) {
+            // The film outside the frame, through the same pipeline as the
+            // picture: `rebate:1` makes the host lay the frame on a strip, and
+            // everything after it -- grain, halation, paper -- runs over the
+            // whole canvas. The parameters are the first engine's own
+            // (`rebate::Ctx` reads the same table), which is the point of the
+            // port: one page, one set of numbers, both engines.
+            if (b.length() > 0) b.append(';');
+            // **The gate the rebate prints comes from the gate, not from the
+            // scale page's slot.** `formatIndex` indexes the 尺度 list, and that
+            // list shares `EDGE_MM`, so it is seventeen cards long: index 13 is
+            // the 4x5 *sheet*. A look whose scale card read "120 mm" therefore
+            // made the host hear `rgate:4x5` while the gate was still 135, and
+            // the render died with `unknown format '4x5'`. The rebate knows only
+            // the ten carriers; `>= 10` is that list's length.
+            int gate = gateIndex(overscanFormat);
+            if (gate < 0 || gate >= 10) gate = 0;
+            b.append("rebate:1");
+            b.append(";rgate:").append(EDGE_IDS[gate]);
+            b.append(";rfog:").append(f("%.2f", Math.max(0f, Math.min(4f, edgeFog))));
+            b.append(";rleaks:").append(f("%.2f", Math.max(0f, Math.min(4f, edgeLeaks))));
+            if (frameNumber > 0.5f) b.append(";rnum:").append(Math.round(frameNumber));
+            if (edgeFNumber > 0.5f) b.append(";rfn:").append(f("%.1f", edgeFNumber));
+            if (edgeCarrier != null && !"none".equals(edgeCarrier)) b.append(";rcar:").append(edgeCarrier);
+            if (edgeHoles != null && "black".equals(edgeHoles)) b.append(";rholes:").append("black");
+            b.append(";rcam:").append(cameraSeed);
+            b.append(";rfr:").append(frameSeed);
+            // **The stock's own inscription.** The host looks it up from the
+            // table of verified edge prints, the same one the first engine
+            // reads -- "200 / FUJI / CA24" on a C200, not the catalogue's
+            // "FUJIFILM C200".
+            if (edgeTextOn) b.append(";etext:1");
+            if (dateOn && dateText != null && !dateText.isEmpty()) {
+                b.append(";rdate:").append(dateText.replace(';', ' ').replace('|', ' '));
+                b.append(";rplace:").append(datePlacement);
+                b.append(";rcorner:").append(dateCorner);
+                b.append(";rstyle:").append(dateStyle);
+                b.append(";rsize:").append(f("%.2f", dateSize));
+                b.append(";rinsx:").append(f("%.2f", dateInsetX));
+                b.append(";rinsy:").append(f("%.2f", dateInsetY));
+            }
+        }
         if (pfDraw) {
             if (b.length() > 0) b.append(';');
             b.append("pf:").append(pfKindHere);
@@ -37097,6 +38173,21 @@ public class MainActivity extends Activity {
                 fotuGateHealed = false;
                 final Bitmap shown = frameApply(fotuWithRebate(bmp));
                 lastRenderedBitmap = shown;
+                // 胶片强度, same as the first engine's: keep the pair, then let
+                // the mix decide what the canvas shows. The source here is the
+                // file this frame was developed from (or the canvas' own preview
+                // when that file is a raw), fetched once per photograph.
+                if (shown != null && !shown.isRecycled()) {
+                    try {
+                        final int sw = shown.getWidth(), sh = shown.getHeight();
+                        if ((long) sw * sh <= 12_000_000L) {
+                            final int[] settled = new int[sw * sh];
+                            shown.getPixels(settled, 0, sw, 0, 0, sw, sh);
+                            keepStrengthPair(settled, sw, sh, "live");
+                            if (strengthMixActive() && strengthSrc != null) applyStrengthToBitmap(shown);
+                        }
+                    } catch (Throwable ignored) { }
+                }
                 showingOriginal = false;
                 setOriginalVisual(false);
                 if (compare != null) compare.setAfter(shown);
@@ -37446,7 +38537,7 @@ public class MainActivity extends Activity {
     }
 
     private void exportFotu(String format, String tier, final Runnable onDone,
-                            final int liveEdgeIn) {
+                            final int liveEdgeIn, final boolean devLive) {
         final boolean tiff = "tifflin".equals(format) || "tiff".equals(format);
         final String ext = tiff ? ".tif" : ".jpg";
         final String mime = tiff ? "image/tiff" : "image/jpeg";
@@ -37503,6 +38594,12 @@ public class MainActivity extends Activity {
                 file = fotuDevelop(id, medium, edge, "x", true, tiff ? "tif" : "jpg",
                         withSlot(geo, tiff ? fotuExifSlot() : ""));
                 verifyFotuExport(file, tiff);
+                // 胶片强度, the same dial the first engine uses. A TIFF master is
+                // not a picture to dilute -- it stays at 100, like DNG and HDR.
+                if (!tiff && strengthMixActive()) {
+                    file = mixFotuFileTowardsSource(file);
+                    verifyFotuExport(file, false);
+                }
                 // **History first, motion last.** `JpegExif.inject` drops every
                 // APP1 it meets and writes its own, and our motion declaration
                 // *is* an APP1: run it after the clip is attached -- which is
@@ -37520,6 +38617,19 @@ public class MainActivity extends Activity {
                     runOnUiThread(() -> statusText.setText("导出中：动图逐帧冲洗（fotufilm）..."));
                     final java.io.File withClip = attachLiveClip(file, liveClipPath, liveTsUs,
                             (c, st) -> renderFotuLiveClip(c, liveEdge, st));
+                    if (withClip != null) {
+                        final java.io.File stillOnly = file;
+                        file = withClip;
+                        stillOnly.delete();
+                        liveDone[0] = true;
+                    }
+                }
+                // **The darkroom, when that is what was asked for.** The still
+                // is finished and annotated; the clip goes on last, after
+                // `annotateFotuExport` has had its way with the APP1 segments.
+                if (!liveDone[0] && devLive) {
+                    runOnUiThread(() -> statusText.setText("导出中：显影动图（负片 → 正片）..."));
+                    final java.io.File withClip = attachDevelopLive(file, null, true);
                     if (withClip != null) {
                         final java.io.File stillOnly = file;
                         file = withClip;
@@ -37571,8 +38681,9 @@ public class MainActivity extends Activity {
                     final String hint = tiff ? "（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）" : "";
                     statusText.setText("已导出 " + what + " · fotufilm · " + (ms / 1000) + " 秒"
                             + (edge > 0 ? "（按本机内存，长边 " + edge + " px）" : "") + hint);
-                    final String liveNote = liveDone[0] ? " · 实况（含动图）"
-                            : (liveClipPath != null ? " · 动图未写入" : "");
+                    final String liveNote = liveDone[0]
+                            ? (devLive ? " · 显影实况（含动图）" : " · 实况（含动图）")
+                            : ((liveClipPath != null || devLive) ? " · 动图未写入" : "");
                     showInAppToast("已保存到相册：" + base + ext
                             + (edge > 0 ? "（原图太大，按本机上限缩到长边 " + edge + " px）" : "")
                             + liveNote + hint);
@@ -37636,6 +38747,28 @@ public class MainActivity extends Activity {
      * metadata: the orientation is ours (1), and a field the source could not
      * give is omitted rather than written blank.
      */
+    /**
+     * The metadata for a file Java, not the engine, is about to write.
+     *
+     * <p>Two exports build their pixels in Java -- a designed card (the canvas
+     * already holds the print) and the original (there is no film at all) -- and
+     * both hand a bitmap to `writeBitmapJpeg`, whose native side appends
+     * whatever the JNI was last told. Nothing told it anything, so the second
+     * export of a session carried the **first** one's camera and position. Both
+     * callers set it here, once, from the frame on screen.
+     */
+    private void pushExportMetadata() {
+        try {
+            final String[] meta = rawFilePath != null ? sourceExifForExport() : jpegSourceExif();
+            SpektraLabEngine.setExportExif(meta[0], meta[1], meta[2],
+                    meta[3], meta[4], meta[5], meta[6]);
+        } catch (Throwable t) {
+            try { SpektraLabEngine.setExportExif("", "", "", "", "", "", ""); } catch (Throwable ignored) { }
+        }
+        final GpsExif.Fix gps = pendingExportGps;
+        SpektraLabEngine.setExportGps(gps == null ? "" : gps.encode());
+    }
+
     private void annotateFotuExport(java.io.File file, String stockId, String medium) {
         try {
             // **The encoder already carried the source's own record.** `ffc_encode`
@@ -37645,7 +38778,14 @@ public class MainActivity extends Activity {
             // the Mac app's exports carry. Only when there is no APP1 at all --
             // a raw container whose decoder reports none -- is there anything
             // left for this method to add.
-            if (JpegExif.hasExif(file)) {
+            // **Unless there is a position to add.** The segment can only be
+            // written by building it whole, so a frame with a fix takes this
+            // road even when the encoder already wrote one: the seven capture
+            // fields below are rebuilt from the same source the encoder used,
+            // and the maker notes it had kept are lost. A position is worth
+            // more than the lens model.
+            final GpsExif.Fix gps = pendingExportGps;
+            if (JpegExif.hasExif(file) && gps == null) {
                 try {
                     DebugSink.text("exif", "fotufilm export: the encoder carried the source record"
                             + " (" + stockId + "/" + medium + ")");
@@ -37667,13 +38807,15 @@ public class MainActivity extends Activity {
             meta.aperture = f[4];
             meta.iso = f[5];
             meta.focal = f[6];
+            meta.gps = gps;
             final byte[] app1 = JpegExif.buildApp1(meta);
             if (app1 == null) return;
             final boolean ok = JpegExif.inject(file, app1);
             try {
                 DebugSink.text("exif", "fotufilm export " + (ok ? "APP1 " + app1.length + " B" : "APP1 refused")
                         + " " + stockId + "/" + medium + " " + size[0] + "x" + size[1]
-                        + " from " + java.util.Arrays.toString(f));
+                        + " from " + java.util.Arrays.toString(f)
+                        + (gps == null ? "" : " + position " + gps.describe()));
             } catch (Throwable ignored) { }
         } catch (Throwable ignored) { }
     }
@@ -37696,7 +38838,16 @@ public class MainActivity extends Activity {
         final float h = Math.max(0.005f, Math.min(1f, geometryCropH));
         final float x = Math.max(0f, Math.min(1f - w, geometryCropX));
         final float y = Math.max(0f, Math.min(1f - h, geometryCropY));
-        final float rot = Math.max(-45f, Math.min(45f, geometryRotation));
+        // **The host turns the same way the engine does, and that is the
+        // opposite of this field.** `geometryRotation` is positive clockwise --
+        // it is what `canvas.rotate(previewRotation)` shows under the finger --
+        // and the first engine is told `-geometryRotation` for exactly that
+        // reason (`sendGeometry`). The host's map is that engine's map, constant
+        // for constant, so it needs the same negation: measured on a horizontal
+        // bar, `geo:…|+8|…` came back **-8.01°** while the preview showed +8°.
+        // The report was 「松手后角度和实时预览的不一样」 -- the picture landed
+        // tilted the other way, exactly twice the error it was shown.
+        final float rot = Math.max(-45f, Math.min(45f, -geometryRotation));
         final int turns = ((geometryTurns % 4) + 4) % 4;
         final int flips = (geometryFlipH ? 1 : 0) | (geometryFlipV ? 2 : 0);
         if (turns == 0 && flips == 0 && Math.abs(rot) < 1e-4f
@@ -38276,6 +39427,15 @@ public class MainActivity extends Activity {
 
     /** 影调: what the print's tone curve does, including the region switch. */
     private void buildFotuToneGroup() {
+        final View[] strength = fotuRow(fotuBody, "胶片强度",
+                0f, 1f, () -> filmStrength, v -> {
+                    filmStrength = v;
+                    applyStrengthToCanvas();
+                    schedulePersist();
+                },
+                "100 = 完整的胶片；调低就与原片混合 —— 肤色跟着原片回来", 1f);
+        strengthBar = strength != null && strength.length > 1 && strength[1] instanceof SeekBar
+                ? (SeekBar) strength[1] : null;
         fotuRow(fotuBody, "曝光", -2f, 2f, () -> fotuEv, v -> fotuEv = v,
                 "fotufilm 的曝光在这里：改的是底片的受光量，密度和色彩都跟着变。"
                 + "光学页的「曝光」是冲印之后的推拉，拉不回已经到白的高光", 0f);
@@ -38651,6 +39811,18 @@ public class MainActivity extends Activity {
                 // frame, so the canvas, the histogram and the film thumbnail all
                 // see the same glowed picture.
                 glowInPlace(bmp);
+                // 胶片强度: this frame, kept with the source it came from, so the
+                // dial can mix the two without a render. Read back after the glow
+                // -- a mix that dropped the glow would make the canvas disagree
+                // with the export the moment the dial left 100.
+                if (w * h <= 12_000_000) {
+                    try {
+                        final int[] settled = new int[w * h];
+                        bmp.getPixels(settled, 0, w, 0, 0, w, h);
+                        keepStrengthPair(settled, w, h, "live");
+                        if (strengthMixActive() && strengthSrc != null) applyStrengthToBitmap(bmp);
+                    } catch (Throwable ignored) { }
+                }
                 CrashTrail.markNow(MainActivity.this, "render:setPixels");
                 // **The canvas, not just the export.** The reports say the ruler
                 // is already visible while editing, and `log_edge_profile` only
@@ -38992,6 +40164,51 @@ public class MainActivity extends Activity {
      * that is handed 12 MP answers with silence, not an error.
      */
     private static final int LIVE_CLIP_FULL_EDGE = 2160;
+
+    // ------------------------------------------------------------------
+    // 显影实况 -- the develop clip
+    // ------------------------------------------------------------------
+
+    /** 1440 on the long edge: a phone clip's size, and three seconds under 1 MB. */
+    private static final int DEV_CLIP_EDGE = 1440;
+    /** The reference clip's own rate. */
+    private static final int DEV_CLIP_FPS = 30;
+    /** 1.20 s of negative -- the film, before the lamp is on. */
+    private static final int DEV_NEG_FRAMES = 36;
+    /**
+     * 0.87 s of the lamp coming up **behind** the film.
+     *
+     * <p>The light is behind the sheet, not across it: a negative is transparent,
+     * so the whole frame lights up at once and the base -- the layer under the
+     * emulsion, the thinnest part of the film -- is what blazes first.
+     */
+    private static final int DEV_LIGHT_FRAMES = 26;
+    /** 0.93 s of the print. 90 frames, 3.0 s. */
+    private static final int DEV_POS_FRAMES = 28;
+    private static final int DEV_FRAMES = DEV_NEG_FRAMES + DEV_LIGHT_FRAMES + DEV_POS_FRAMES;
+    private static final int DEV_NEG_END = DEV_NEG_FRAMES;
+    private static final int DEV_LIGHT_END = DEV_NEG_END + DEV_LIGHT_FRAMES;
+    /**
+     * How hard the film blazes while the lamp is behind it.
+     *
+     * <p>Scaled by the negative's own brightness per pixel, so the base and the
+     * sky glare and the dense parts stay dark -- the glare is the light that got
+     * *through*, which is why it has the film's structure and not a flat white.
+     * At full blaze the thin parts clip to white, which is also what hides the
+     * one frame where the picture changes over.
+     */
+    private static final float DEV_BLAZE = 0.85f;
+    /** Where in the light stage the picture turns over: from 34 % to 92 %. */
+    private static final float DEV_MIX_FROM = 0.34f;
+    private static final float DEV_MIX_TO = 0.92f;
+    /**
+     * Contrast given back at the middle of the change-over.
+     *
+     * <p>A negative is bright where its print is dark, so a straight average of
+     * the two is a flat grey -- a dissolve, not a develop. Pushing contrast back
+     * around the moment they cross keeps the picture from going to fog.
+     */
+    private static final float DEV_CONTRAST = 0.55f;
 
     /** A carved-out clip waiting to be attached to the frame being imported. */
     private static final class LiveClip {
@@ -40004,6 +41221,440 @@ public class MainActivity extends Activity {
         }
     }
 
+
+    // =====================================================================
+    // 显影实况 -- one still, and the darkroom behind it
+    // =====================================================================
+
+    /**
+     * Can this frame be offered 「实况 · 显影」?
+     *
+     * <p>It needs **a print and the negative it came from**, so the answer is
+     * no wherever one of the two does not exist: 「无相纸 · 负片本身」 exports
+     * the negative as the still, a scan medium has no negative at all, and a
+     * reversal is developed once and never printed -- its `scan_film` output is
+     * already the positive. A designed card owns its own write path, and a
+     * batch walks the strip without rendering.
+     */
+    private boolean developLiveAvailable() {
+        if (filmStock == null || showingOriginal) return false;
+        if (batchExportRunning || frameTemplateOn()) return false;
+        if (PAPER_SCAN.equals(printStock)) return false;
+        if ("negative".equals(printStock) || "cineon-log".equals(printStock)) return false;
+        if (isReversalCard(filmStock)) return false;
+        if (isFotuStock(filmStock)) return FotuFilm.idOf(filmStock) != null;
+        return session != null;
+    }
+
+    /**
+     * Half of the pair: the print's own JPEG, sampled down to the clip.
+     *
+     * <p>**The last frame of the clip is the file itself**, so the still a
+     * gallery shows while the clip is held and the frame the clip ends on are
+     * the same pixels -- decoding the export and not the canvas is what
+     * guarantees that, whatever size the render happened to be.
+     */
+    private static android.graphics.Bitmap decodeDevelopEnd(java.io.File jpeg, int edge) {
+        try {
+            final android.graphics.BitmapFactory.Options bounds =
+                    new android.graphics.BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(jpeg.getAbsolutePath(), bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+            int sample = 1;
+            while (Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= edge) sample *= 2;
+            final android.graphics.BitmapFactory.Options o =
+                    new android.graphics.BitmapFactory.Options();
+            o.inSampleSize = sample;
+            o.inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888;
+            final android.graphics.Bitmap full =
+                    android.graphics.BitmapFactory.decodeFile(jpeg.getAbsolutePath(), o);
+            if (full == null) return null;
+            final int lw = full.getWidth(), lh = full.getHeight();
+            final int longEdge = Math.max(lw, lh);
+            if (longEdge <= edge) return full;
+            final float k = edge / (float) longEdge;
+            final android.graphics.Bitmap small = android.graphics.Bitmap.createScaledBitmap(
+                    full, Math.max(2, Math.round(lw * k)), Math.max(2, Math.round(lh * k)), true);
+            if (small != full) full.recycle();
+            return small;
+        } catch (Throwable t) {
+            try { DebugSink.text("develop", "decode " + jpeg.getName() + ": " + t); }
+            catch (Throwable ignored) { }
+            return null;
+        }
+    }
+
+    /**
+     * The other half: the film this print came from, at the clip's size.
+     *
+     * <p>`PAPER_SCAN` is the canvas' own 「无相纸 · 直接看胶片」: `applyParamsTo`
+     * turns the sentinel into `scan_film` plus a paper to open, so this is one
+     * call and not a second parameter set that has to be kept in step with the
+     * first. Everything else -- the crop, the gate, the rebate, the grain --
+     * comes from the fields the print was rendered with, which is the whole
+     * reason the two ends can be cut together.
+     *
+     * <p>It has to run **before** the export suspends or closes the preview
+     * session, so the export thread takes it first thing.
+     */
+    private android.graphics.Bitmap spkNegativeForDevelop(int edge) {
+        final SpektraLabEngine.Session s = session;
+        if (s == null || filmStock == null) return null;
+        synchronized (renderMutex) {
+            if (s != session) return null;
+            try {
+                applyParamsTo(s, filmStock, PAPER_SCAN, edge, "sRGB", true);
+                final int[] dims = s.renderBegin("live");
+                final int w = dims == null || dims.length < 2 ? 0 : dims[0];
+                final int h = dims == null || dims.length < 2 ? 0 : dims[1];
+                if (w <= 0 || h <= 0) {
+                    reportLive("develop: the negative has no size", java.util.Arrays.toString(dims));
+                    return null;
+                }
+                final int[] px = new int[w * h];
+                if (s.copyArgbRange(px, 0, h) != w * h) {
+                    reportLive("develop: short copy from the negative", w + "x" + h);
+                    return null;
+                }
+                final android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                        w, h, android.graphics.Bitmap.Config.ARGB_8888);
+                bmp.setPixels(px, 0, w, 0, 0, w, h);
+                return bmp;
+            } catch (Throwable t) {
+                reportLive("develop: the negative would not render", String.valueOf(t));
+                return null;
+            } finally {
+                try { s.renderEnd(); } catch (Throwable ignored) { }
+                // **Put the print back.** The canvas and the next export both
+                // read this session, and a session left on `scan_film` develops
+                // the negative for both of them -- which is the frame the owner
+                // would find on the canvas a second later.
+                try { applyParamsTo(s, filmStock, printStock, LIVE_LONG_EDGE, "sRGB", true); }
+                catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    /**
+     * The same end, through the second engine's own 「无相纸 · 负片本身」 medium.
+     *
+     * <p>fotufilm takes a path, so this is one develop -- the host's `negative`
+     * medium is a calibrated skeleton, not a filter: the orange base and the
+     * three layers' densities are measured data, and it is the medium the paper
+     * strip already offers.
+     */
+    private android.graphics.Bitmap fotuNegativeForDevelop(int edge) {
+        java.io.File f = null;
+        try {
+            final String id = FotuFilm.idOf(filmStock);
+            if (id == null) return null;
+            f = fotuDevelop(id, "negative", edge, "devneg", true, "jpg", fotuGeoSlot());
+            return decodeDevelopEnd(f, edge);
+        } catch (Throwable t) {
+            reportLive("develop: the fotufilm negative would not develop", String.valueOf(t));
+            return null;
+        } finally {
+            if (f != null) f.delete();
+        }
+    }
+
+    /**
+     * The YUV 4:2:0 payload `fillYuv420` writes, as bytes that can be reused.
+     *
+     * <p>Ninety frames are fourteen pictures, and the sequence is sorted, so
+     * the conversion runs once per picture instead of once per frame: a
+     * per-frame `fillYuv420` measured 3.8 s on a 1.3 MP clip, where fourteen
+     * conversions plus ninety copies come to well under a second. The bytes are
+     * the same ones -- same coefficients, same order, same interleave.
+     */
+    private static void fillDevelopPayload(byte[] out, int[] argb, int w, int h,
+                                           boolean semiPlanar) {
+        int p = 0;
+        for (int y = 0; y < h; ++y) {
+            final int base = y * w;
+            for (int x = 0; x < w; ++x) {
+                final int c = argb[base + x];
+                out[p++] = (byte) luma((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+            }
+        }
+        final int cw = w / 2, ch = h / 2;
+        final byte[] u = new byte[cw * ch], v = new byte[cw * ch];
+        for (int y = 0; y < ch; ++y) {
+            for (int x = 0; x < cw; ++x) {
+                int sr = 0, sg = 0, sb = 0;
+                for (int dy = 0; dy < 2; ++dy) {
+                    final int base = ((y * 2 + dy) * w) + x * 2;
+                    for (int dx = 0; dx < 2; ++dx) {
+                        final int c = argb[base + dx];
+                        sr += (c >> 16) & 0xFF;
+                        sg += (c >> 8) & 0xFF;
+                        sb += c & 0xFF;
+                    }
+                }
+                u[y * cw + x] = (byte) chromaU(sr >> 2, sg >> 2, sb >> 2);
+                v[y * cw + x] = (byte) chromaV(sr >> 2, sg >> 2, sb >> 2);
+            }
+        }
+        if (semiPlanar) {
+            for (int i = 0; i < u.length; ++i) { out[p++] = u[i]; out[p++] = v[i]; }
+        } else {
+            System.arraycopy(u, 0, out, p, u.length);
+            p += u.length;
+            System.arraycopy(v, 0, out, p, v.length);
+        }
+    }
+
+    /** One prepared payload into the encoder, the same way `queueFrame` does. */
+    private static void queuePayload(ClipWriter cw, byte[] payload, long ptsUs,
+                                     android.media.MediaCodec.BufferInfo info) {
+        int in = cw.codec.dequeueInputBuffer(20000);
+        for (int guard = 0; in < 0 && guard < 200; ++guard) {
+            drainVideo(cw, info, false);
+            in = cw.codec.dequeueInputBuffer(20000);
+        }
+        if (in < 0) throw new IllegalStateException("encoder never gave an input buffer");
+        final java.nio.ByteBuffer buf = cw.codec.getInputBuffer(in);
+        if (buf == null) throw new IllegalStateException("no encoder input buffer");
+        buf.clear();
+        buf.put(payload);
+        cw.codec.queueInputBuffer(in, 0, cw.size, ptsUs, 0);
+    }
+
+    /**
+     * One frame of the lamp coming up **behind** the film.
+     *
+     * <p>The light does not cross the frame -- it is behind it. A negative is a
+     * transparent sheet with the base underneath, so the whole picture lights up
+     * together, and what blazes is whatever the film lets through: the base, the
+     * sky, everything thin. The dense parts stay dark, which is why this reads as
+     * a sheet of film being backlit instead of a white flash.
+     *
+     * <p>Two things happen on top of each other. The **glare** (`blaze`) rises
+     * and falls over the stage, scaled per pixel by the negative's brightness.
+     * The **change-over** runs from `DEV_MIX_FROM` to `DEV_MIX_TO`: by then the
+     * glare is near its peak, so the one frame where a bright negative and a dark
+     * print would cross is covered by light. Both are zero at the ends, so the
+     * first frame is the negative and the last is the print, pixel for pixel.
+     */
+    private static void lightFrame(int[] neg, int[] pos, int[] dst, float t,
+                                   float meanNeg, float meanPos,
+                                   float warmR, float warmG, float warmB) {
+        final float blaze = (float) Math.pow(Math.sin(Math.PI * t), 1.2) * DEV_BLAZE;
+        float s = (t - DEV_MIX_FROM) / (DEV_MIX_TO - DEV_MIX_FROM);
+        if (s < 0f) s = 0f;
+        if (s > 1f) s = 1f;
+        s = s * s * (3f - 2f * s);
+        final float m = meanNeg + (meanPos - meanNeg) * s;
+        final float k = 1f + DEV_CONTRAST * 4f * s * (1f - s);
+        for (int p = 0; p < dst.length; ++p) {
+            final int a = neg[p], b = pos[p];
+            final int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+            final int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+            final float gl = blaze * (ar * 0.30f + ag * 0.59f + ab * 0.11f) * (1f / 255f);
+            final float gr = (ar + (br - ar) * s - m) * k + m + gl * warmR;
+            final float gg = (ag + (bg - ag) * s - m) * k + m + gl * warmG;
+            final float gb = (ab + (bb - ab) * s - m) * k + m + gl * warmB;
+            int r = gr < 0f ? 0 : (gr > 255f ? 255 : (int) gr);
+            int g = gg < 0f ? 0 : (gg > 255f ? 255 : (int) gg);
+            int bl = gb < 0f ? 0 : (gb > 255f ? 255 : (int) gb);
+            dst[p] = 0xFF000000 | (r << 16) | (g << 8) | bl;
+        }
+    }
+
+    /**
+     * Ninety frames of a three-second develop, encoded from **two renders and
+     * one lamp**: the negative, twenty-six steps of it being lit from behind,
+     * and the print.
+     *
+     * <p>That is the whole trick. A clip of a real scene costs one render a
+     * frame; this costs the two stills the export already has (the print is the
+     * file itself, decoded) plus one render of the negative, and the encoder
+     * does the rest. Measured on this phone: a second and a half for the lot.
+     */
+    private java.io.File buildDevelopClip(android.graphics.Bitmap neg, android.graphics.Bitmap pos,
+                                          int w, int h) {
+        final int[] negPx = new int[w * h];
+        final int[] posPx = new int[w * h];
+        final int[] cur = new int[w * h];
+        neg.getPixels(negPx, 0, w, 0, 0, w, h);
+        pos.getPixels(posPx, 0, w, 0, 0, w, h);
+        // The two pictures' own lightness, for the contrast the change-over
+        // needs: without it the middle of the change is flat grey.
+        float sumN = 0f, sumP = 0f;
+        for (int q = 0; q < negPx.length; ++q) {
+            final int a = negPx[q], b = posPx[q];
+            sumN += ((a >> 16) & 0xFF) * 0.30f + ((a >> 8) & 0xFF) * 0.59f + (a & 0xFF) * 0.11f;
+            sumP += ((b >> 16) & 0xFF) * 0.30f + ((b >> 8) & 0xFF) * 0.59f + (b & 0xFF) * 0.11f;
+        }
+        final float meanNeg = sumN / negPx.length;
+        final float meanPos = sumP / negPx.length;
+        final android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+        final long stepUs = 1000000L / DEV_CLIP_FPS;
+        ClipWriter cw = null;
+        try {
+            // Frame 0 is the probe frame `openClipWriter` proves the encoder
+            // with, exactly as the clip path feeds its own first frame.
+            cw = openClipWriter(w, h, DEV_CLIP_FPS, negPx, 0L, null, -1, info);
+            if (cw == null) return null;
+            // **Only when the encoder took plain YUV planes.** The flexible
+            // format (0x7F420888) hands back an `Image` with its own strides, and
+            // there `queueFrame`'s per-frame conversion is the only correct path.
+            final boolean semi = cw.format == 21;
+            final byte[] payload = (cw.format == 21 || cw.format == 19)
+                    && cw.size == w * h * 3 / 2 ? new byte[cw.size] : null;
+            int builtKind = Integer.MIN_VALUE;
+            for (int i = 1; i < DEV_FRAMES; ++i) {
+                final int[] frame;
+                final int kind;
+                if (i < DEV_NEG_END) {
+                    kind = 0;
+                    frame = negPx;
+                } else if (i < DEV_LIGHT_END) {
+                    kind = 1 + (i - DEV_NEG_END);
+                    // Linear in reach, not eased: the front has a fixed distance
+                    // to cover and the eye reads a constant climb as light
+                    // flooding in. Easing it left a third of a second of
+                    // near-static glow at the top corners.
+                    final float t = (i - DEV_NEG_END + 1) / (float) DEV_LIGHT_FRAMES;
+                    lightFrame(negPx, posPx, cur, t, meanNeg, meanPos, 150f, 122f, 82f);
+                    frame = cur;
+                } else {
+                    kind = 200;
+                    frame = posPx;
+                }
+                if (payload == null) {
+                    queueFrame(cw, frame, (long) i * stepUs, info);
+                } else {
+                    if (kind != builtKind) {
+                        fillDevelopPayload(payload, frame, w, h, semi);
+                        builtKind = kind;
+                    }
+                    queuePayload(cw, payload, (long) i * stepUs, info);
+                }
+            }
+            // **The end marker can be refused.** Ninety stills go in faster than
+            // real time, so every input buffer is still held by the encoder when
+            // the loop ends; asking once lost the marker and the drain below then
+            // waited out its whole deadline and stopped the file by hand (a 3 s
+            // clip arrived after 31 s). Drain, then ask again.
+            int eos = -1;
+            for (int guard = 0; eos < 0 && guard < 400; ++guard) {
+                eos = cw.codec.dequeueInputBuffer(20000);
+                if (eos < 0) drainVideo(cw, info, false);
+            }
+            if (eos >= 0) {
+                cw.codec.queueInputBuffer(eos, 0, 0, (long) DEV_FRAMES * stepUs,
+                        android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+            } else {
+                reportLive("develop: the encoder never freed a buffer for the end marker",
+                        DEV_FRAMES + " frames");
+            }
+            final long deadline = nowMs() + 30000;
+            while (nowMs() < deadline) {
+                if (drainVideo(cw, info, true)) break;
+            }
+            // The bytes only reach disk at `stop()`; `finally` skips a second one.
+            try { cw.mux.stop(); } catch (Throwable ignored) { }
+            cw.started = false;
+            return cw.file;
+        } catch (Throwable t) {
+            reportLive("develop: the clip would not encode", w + "x" + h + ": " + t);
+            if (cw != null) cw.file.delete();
+            return null;
+        } finally {
+            if (cw != null) {
+                try { cw.codec.stop(); } catch (Throwable ignored) { }
+                try { cw.codec.release(); } catch (Throwable ignored) { }
+                try { if (cw.started) cw.mux.stop(); } catch (Throwable ignored) { }
+                try { cw.mux.release(); } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    /**
+     * 显影实况: the finished still, with the darkroom that made it in front.
+     *
+     * <p>The container is the same one the live-photo path writes --
+     * `MotionPhoto.segment` declares the motion and `MotionPhoto.assemble` puts
+     * the XMP between the JPEG and the clip -- and the declared timestamp is
+     * the **last** frame, which is the print, so a gallery shows the print and
+     * only plays the develop when the file is held.
+     *
+     * <p>The motion is a lamp, not a dissolve: the negative is a transparent
+     * sheet, so what you see of it is the light that gets through -- the print.
+     * `buildDevelopClip` walks that front from the bottom edge upward, warm
+     * where the film is thin, and the print is what it leaves behind.
+     *
+     * <p>@param neg a negative already rendered at the clip's size, or null to
+     *            develop one here (the second engine's path, which does not
+     *            need the canvas session and can do it at the end).
+     */
+    private java.io.File attachDevelopLive(java.io.File still, android.graphics.Bitmap neg,
+                                           boolean fotuEngine) {
+        android.graphics.Bitmap pos = null;
+        java.io.File mp4 = null;
+        try {
+            pos = decodeDevelopEnd(still, DEV_CLIP_EDGE);
+            if (pos == null) {
+                reportLive("develop: the print will not decode", still.getAbsolutePath());
+                return null;
+            }
+            int w = pos.getWidth() & ~1;
+            int h = pos.getHeight() & ~1;
+            if (w < 32 || h < 32) {
+                reportLive("develop: the print is too small", pos.getWidth() + "x" + pos.getHeight());
+                return null;
+            }
+            if (w != pos.getWidth() || h != pos.getHeight()) {
+                final android.graphics.Bitmap cut = liveTailFrame(pos, w, h);
+                if (cut == null) return null;
+                if (cut != pos) { pos.recycle(); pos = cut; }
+            }
+            if (neg == null) {
+                neg = fotuEngine ? fotuNegativeForDevelop(Math.max(w, h))
+                                 : spkNegativeForDevelop(Math.max(w, h));
+            }
+            if (neg == null) return null;
+            // **One box for both ends.** The two renders are the same picture at
+            // the same aspect, but the negative's canvas comes back a pixel or
+            // two off the print's after rounding; cropping the middle out is the
+            // same rule the live path uses for its tail frame.
+            final android.graphics.Bitmap fixed = liveTailFrame(neg, w, h);
+            if (fixed == null) return null;
+            if (fixed != neg) { neg.recycle(); neg = fixed; }
+            mp4 = buildDevelopClip(neg, pos, w, h);
+            if (mp4 == null) return null;
+            final long lastPts = (long) (DEV_FRAMES - 1) * (1000000L / DEV_CLIP_FPS);
+            final byte[] seg = MotionPhoto.segment(mp4.length(), lastPts);
+            if (seg == null) {
+                reportLive("develop: no XMP segment", "" + mp4.length());
+                return null;
+            }
+            final java.io.File out = new java.io.File(getCacheDir(),
+                    "export_dev_" + System.currentTimeMillis() + ".jpg");
+            if (!MotionPhoto.assemble(still, seg, mp4, out)) {
+                reportLive("develop: assembling the file failed",
+                        still.length() + " + " + mp4.length());
+                out.delete();
+                return null;
+            }
+            try {
+                DebugSink.send("live-ok", "develop clip: " + w + "x" + h + ", " + DEV_FRAMES
+                        + " frames, still " + still.length() + " + xmp " + seg.length
+                        + " + clip " + mp4.length() + " = " + out.length());
+            } catch (Throwable ignored) { }
+            return out;
+        } catch (Throwable t) {
+            try { DebugSink.send("live-fail", "develop clip: " + t); } catch (Throwable ignored) { }
+            return null;
+        } finally {
+            if (neg != null && !neg.isRecycled()) neg.recycle();
+            if (pos != null && !pos.isRecycled()) pos.recycle();
+            if (mp4 != null) mp4.delete();
+        }
+    }
+
     /**
      * Bring up an encoder **and prove it produces a format**, which is the only
      * honest test of a colour format.
@@ -40585,6 +42236,7 @@ public class MainActivity extends Activity {
         String name = getFileName(uri);
         if (name == null || name.isEmpty()) name = "photo";
         final Frame frame = new Frame(uri, isRawName(name), name);
+        attachSourceGps(frame);
         frame.look = defaultLook();
         frame.thumb = systemThumb(uri);
         frames.add(frame);
@@ -41280,6 +42932,8 @@ public class MainActivity extends Activity {
         }
         cancelLivePreview();
         if (sharePill != null) sharePill.setVisibility(View.GONE);
+        // Same writer, same gap: the original is a bitmap handed straight to it.
+        pushExportMetadata();
         final boolean rawSource = rawFilePath != null;
         final String path = rawSource ? rawFilePath
                 : (sourceUri != null ? getFilePathFromUri(sourceUri) : null);
@@ -41400,6 +43054,16 @@ public class MainActivity extends Activity {
 
     private void exportImage(String format, String tier, final Runnable onDone) {
         CrashTrail.mark(this, "export:begin");
+        // **Read once, at the door**, for the same reason the live clip is: every
+        // return below leaves the export unstarted, and a fix left over from the
+        // last one would label the next file with another photograph's position.
+        pendingExportGps = currentGps();
+        // **Read once, at the door.** Every early return below -- a designed
+        // card, an export already running, no session, no film -- would
+        // otherwise leave the request armed, and the *next* export, whatever it
+        // is, would attach a clip to it.
+        final boolean devLive = developLiveWanted && "jpeg".equals(format) && !batchExportRunning;
+        developLiveWanted = false;
         // **A designed card owns the whole write path.** Its own size is the
         // print size and the canvas already holds the composite, so there is
         // nothing to render again and nothing to upscale.
@@ -41427,7 +43091,7 @@ public class MainActivity extends Activity {
                 if (onDone != null) onDone.run();
                 return;
             }
-            exportFotu(format, tier, onDone, liveEdge);
+            exportFotu(format, tier, onDone, liveEdge, devLive);
             return;
         }
         // **One export at a time.** Two of these at once is two full renders of
@@ -41500,6 +43164,13 @@ public class MainActivity extends Activity {
         stopPrefetch();
         new Thread(() -> {
             exportThread = Thread.currentThread();
+            // **The negative, before anything can take the session away.** The
+            // export path is allowed to suspend or close the preview session to
+            // make room for its own frame, and this is the only moment the
+            // frame is certainly still resident. A bitmap, not a path: the
+            // second engine would have to develop it twice.
+            final android.graphics.Bitmap developNeg =
+                    devLive ? spkNegativeForDevelop(DEV_CLIP_EDGE) : null;
             java.io.File tmp = new java.io.File(getCacheDir(), "export_" + System.currentTimeMillis() + ext);
             try {
                 runOnUiThread(() -> {
@@ -42153,6 +43824,11 @@ public class MainActivity extends Activity {
                             // appends one APP1 segment and then the ICC profile;
                             // nothing reopens the finished file afterwards.
                             try {
+                                // **Start clean.** Both the capture fields and the
+                                // fix belong to this frame; a leftover from the
+                                // previous export would stamp this file with
+                                // another photograph's camera and position.
+                                SpektraLabEngine.setExportExif("", "", "", "", "", "", "");
                                 if (rawFilePath != null && session != null) {
                                     final String[] meta = sourceExifForExport();
                                     SpektraLabEngine.setExportExif(meta[0], meta[1], meta[2],
@@ -42166,6 +43842,11 @@ public class MainActivity extends Activity {
                                     SpektraLabEngine.setExportExif(meta[0], meta[1], meta[2],
                                             meta[3], meta[4], meta[5], meta[6]);
                                 }
+                                // **After the reset and after the capture fields**,
+                                // because that call assigns a fresh struct.
+                                final GpsExif.Fix gps = pendingExportGps;
+                                SpektraLabEngine.setExportGps(gps == null ? "" : gps.encode());
+                                if (gps != null) DebugSink.text("exif", "position: " + gps.describe());
                             } catch (Throwable metaError) {
                                 DebugSink.text("exif", "export metadata skipped: " + metaError);
                             }
@@ -42192,6 +43873,13 @@ public class MainActivity extends Activity {
                                         ? exportSession.exportTiff(tmp.getAbsolutePath(), tier)
                                         : uhdr
                                         ? exportSession.exportUltraHdr(tmp.getAbsolutePath(), 95, 512, tier)
+                                        // **The dial, applied where the file is written.** A mix
+                                        // below 100 cannot go through the engine's own encoder --
+                                        // it renders and encodes in one native call, and the two
+                                        // pictures being blended are one of its outputs and the
+                                        // frame that output came from.
+                                        : strengthMixActive()
+                                        ? exportJpegMixed(exportSession, tmp.getAbsolutePath(), 95, tier)
                                         : exportSession.exportJpeg(tmp.getAbsolutePath(), 95, 512, tier);
                             } finally {
                                 stopTick(wtick);
@@ -42260,6 +43948,19 @@ public class MainActivity extends Activity {
                 if (liveClipPath != null) {
                     runOnUiThread(() -> statusText.setText("导出中：动图逐帧冲洗..."));
                     final java.io.File withClip = attachLiveClip(tmp, liveClipPath, liveTsUs, liveEdge);
+                    if (withClip != null) {
+                        final java.io.File stillOnly = tmp;
+                        tmp = withClip;
+                        stillOnly.delete();
+                        liveDone[0] = true;
+                    }
+                }
+                // **The darkroom, when that is what was asked for.** Same place
+                // as the live clip: one file goes to the album, so this happens
+                // before the write and not after it.
+                if (!liveDone[0] && devLive) {
+                    runOnUiThread(() -> statusText.setText("导出中：显影动图（负片 → 正片）..."));
+                    final java.io.File withClip = attachDevelopLive(tmp, developNeg, false);
                     if (withClip != null) {
                         final java.io.File stillOnly = tmp;
                         tmp = withClip;
@@ -42438,8 +44139,9 @@ public class MainActivity extends Activity {
                     final String tiffHint = tiff
                             ? "（TIFF：点导出旁边的「分享」发给手机版 Lightroom 即可使用）"
                             : dng ? "（DNG：线性 16 位，给电脑上的 Lightroom / ACR；手机版打不开，已知问题，不必反馈）" : "";
-                    final String liveNote = liveDone[0] ? " · 实况（含动图）"
-                            : (liveClipPath != null ? " · 动图未写入" : "");
+                    final String liveNote = liveDone[0]
+                            ? (devLive ? " · 显影实况（含动图）" : " · 实况（含动图）")
+                            : ((liveClipPath != null || devLive) ? " · 动图未写入" : "");
                     if (!exportCorruptNow)
                         showInAppToast("已保存 " + fw + "x" + fh + canvasNote + " · " + sizeLabel
                                 + liveNote + uhdrNote + tiffHint);

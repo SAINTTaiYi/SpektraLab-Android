@@ -1206,3 +1206,11 @@ QQ 群 · 没满，直接加	QQ group · not full, join here
 已删除 · 从下面选一张继续	Deleted · pick one from the strip
 展开胶片网格	Show the film grid
 收起胶片网格	Hide the film grid
+实况 · 显影（负片 → 正片）	Live · develop (negative → print)
+导出中：显影动图（负片 → 正片）...	Exporting: develop clip (negative → print)...
+同名 JPG 的位置	Position from the matching JPG
+导入 RAW 时读同目录同名 JPG 的位置，导出 JPEG 写回；DNG 母版不带位置	On import, read the position from the JPG beside the raw and write it back on export; the DNG master never carries it
+胶片强度	Film strength
+100 = 完整的胶片；调低就与原片混合 —— 肤色跟着原片回来，因为这里减的是成片本身，不是染料	100 is the whole film; lower mixes back toward the source -- skin tones return with it, because what is diluted here is the print, not the dye
+100 = 完整的胶片；调低就与原片混合 —— 肤色跟着原片回来	100 is the whole film; lower mixes back toward the source, and the skin tones come with it
+fotufilm：135 / 120 的十个片门走的是同一个片边 —— 雾、漏光、齿孔、厂标、DX、日期都生效，和画面一起过颗粒与相纸；Super 35 / 16mm / Super 8 / 4×5 / Instax 那七个是印刷画框，另一套。	fotufilm: the ten 135/120 gates share one rebate -- fog, leaks, sprockets, edge print, DX and dates all apply, and it goes through grain and paper with the picture; the seven Super 35 / 16mm / Super 8 / 4x5 / Instax gauges are print frames, a different strip

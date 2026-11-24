@@ -722,6 +722,7 @@ public class SpektraLabEngine implements AutoCloseable {
     private static native void nativeSetExportExif(String make, String model, String datetime,
                                                    String shutter, String aperture, String iso, String focal);
     private static native String nativeReadJpegExif(byte[] head);
+    private static native void nativeSetExportGps(String line);
     private static native float[] nativeRawMulForKelvin(long sessionHandle, double kelvin, double tint);
 
     /**
@@ -832,6 +833,18 @@ public class SpektraLabEngine implements AutoCloseable {
                                      String shutter, String aperture, String iso, String focal) {
         try { nativeSetExportExif(make, model, datetime, shutter, aperture, iso, focal); }
         catch (Throwable ignored) { }
+    }
+
+    /**
+     * The position for the next export, as {@code lat,lon,alt,below,time,date}.
+     *
+     * <p>Separate from {@link #setExportExif} because it comes from a **different
+     * file**: a raw carries no GPS, and the JPEG the camera wrote beside it does.
+     * Call it after that method -- which resets the whole struct -- and pass an
+     * empty string when there is no fix.
+     */
+    public static void setExportGps(String line) {
+        try { nativeSetExportGps(line == null ? "" : line); } catch (Throwable ignored) { }
     }
 
     /** The source JPEG's own EXIF, seven fields; empty strings when unreadable. */

@@ -1830,6 +1830,40 @@ JNI(void, nativeSetExportExif)(JNIEnv* env, jclass, jstring make, jstring model,
                               g_export_exif.datetime.empty());
 }
 
+// **The fix, handed over separately because it comes from another file.**
+//
+// A phone's raw carries no GPS; the JPEG the camera wrote beside it does. The
+// app finds that sibling, reads its GPS IFD and passes the fix here as one line
+// -- "lat,lon,alt,below,time,date" -- which is written into the export's own Exif.
+// Must be called *after* nativeSetExportExif, which resets the struct.
+JNI(void, nativeSetExportGps)(JNIEnv* env, jclass, jstring line) {
+    g_export_exif.has_gps = false;
+    const std::string text = jni_string(env, line);
+    if (text.empty()) return;
+    std::vector<std::string> f;
+    size_t at = 0;
+    while (f.size() < 6) {
+        const size_t comma = text.find(',', at);
+        f.push_back(text.substr(at, comma == std::string::npos ? std::string::npos : comma - at));
+        if (comma == std::string::npos) break;
+        at = comma + 1;
+    }
+    if (f.size() < 3) return;
+    const double lat = std::atof(f[0].c_str());
+    const double lon = std::atof(f[1].c_str());
+    // 0,0 is the Gulf of Guinea and also the default of a field nobody filled;
+    // a camera on the equator at Greenwich does not exist, so it means "no fix".
+    if (!(std::fabs(lat) > 1e-6 || std::fabs(lon) > 1e-6)) return;
+    if (std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) return;
+    g_export_exif.has_gps = true;
+    g_export_exif.gps_lat = lat;
+    g_export_exif.gps_lon = lon;
+    g_export_exif.gps_alt = std::atof(f[2].c_str());
+    if (f.size() > 3) g_export_exif.gps_below_sea = f[3] == "1";
+    if (f.size() > 4) g_export_exif.gps_time = f[4];
+    if (f.size() > 5) g_export_exif.gps_date = f[5];
+}
+
 // **What the source JPEG's own APP1 says, as seven fields.**
 //
 // Returned rather than stashed: the caller merges it with whatever the platform

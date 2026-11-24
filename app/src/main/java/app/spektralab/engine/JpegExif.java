@@ -54,12 +54,21 @@ public final class JpegExif {
         public String software = "SpektraLab";
         /** Free text, EXIF UserComment -- the film and the sheet this print came off. */
         public String note = "";
+        /**
+         * Where it was taken, when the source could tell us.
+         *
+         * <p>A raw file usually cannot: the camera puts the fix in the JPEG it
+         * writes beside the raw. See {@link GpsExif} for why the two are read
+         * together and written here.
+         */
+        public GpsExif.Fix gps;
         public int width;
         public int height;
     }
 
     // ------------------------------------------------------------------ build
 
+    private static final int T_BYTE = 1;
     private static final int T_SHORT = 3;
     private static final int T_LONG = 4;
     private static final int T_RATIONAL = 5;
@@ -103,12 +112,18 @@ public final class JpegExif {
         // that carries the camera or the date is. A frame with no size at all is
         // a caller mistake, not a file to enhance.
         final boolean worth = filled(m.make) || filled(m.model) || filled(m.datetime)
-                || (m.width > 0 && m.height > 0);
+                || (m.width > 0 && m.height > 0) || (m.gps != null && m.gps.usable());
         if (!worth) return null;
 
+        // **GPS is its own IFD**, pointed at from IFD0 like the Exif one is. It
+        // is written only when there is a fix: an empty GPS IFD is a claim that
+        // the photograph has no position, which is not the same as silence.
+        final List<Entry> gps = (m.gps != null && m.gps.usable()) ? gpsOf(m.gps) : null;
         if (!exif.isEmpty())
             ifd0.add(new Entry(0x8769, T_LONG, new byte[]{0, 0, 0, 0}));   // ExifIFDPointer
-        final byte[] tiff = assemble(ifd0, exif);
+        if (gps != null)
+            ifd0.add(new Entry(0x8825, T_LONG, new byte[]{0, 0, 0, 0}));   // GPSInfoIFDPointer
+        final byte[] tiff = assemble(ifd0, exif, gps);
         if (tiff == null) return null;
 
         final int total = 2 + 6 + tiff.length;
@@ -140,11 +155,12 @@ public final class JpegExif {
         }
     }
 
-    /** Two IFDs, little-endian, values after them. Null when it does not fit one segment. */
-    private static byte[] assemble(List<Entry> ifd0, List<Entry> exif) {
+    /** Up to three IFDs, little-endian, values after them. Null when it does not fit. */
+    private static byte[] assemble(List<Entry> ifd0, List<Entry> exif, List<Entry> gps) {
         final Comparator<Entry> byTag = (a, b) -> Integer.compare(a.tag, b.tag);
         ifd0.sort(byTag);
         exif.sort(byTag);
+        if (gps != null) gps.sort(byTag);
 
         final int ifd0At = 8;
         final int ifd0Size = 2 + ifd0.size() * 12 + 4;
@@ -154,7 +170,11 @@ public final class JpegExif {
         final int exifSize = 2 + exif.size() * 12 + 4;
         int exifValues = 0;
         for (Entry e : exif) if (e.data.length > 4) exifValues += align(e.data.length);
-        final int total = exifAt + exifSize + exifValues;
+        final int gpsAt = exifAt + exifSize + exifValues;
+        final int gpsSize = gps == null ? 0 : 2 + gps.size() * 12 + 4;
+        int gpsValues = 0;
+        if (gps != null) for (Entry e : gps) if (e.data.length > 4) gpsValues += align(e.data.length);
+        final int total = gpsAt + gpsSize + gpsValues;
         if (total > 65000) return null;
 
         final byte[] tiff = new byte[total];
@@ -162,14 +182,10 @@ public final class JpegExif {
         put16(tiff, 2, 42);
         put32(tiff, 4, ifd0At);
 
-        // The pointer only exists because the Exif IFD does; write its offset now.
+        // The pointers only exist because those IFDs do; write their offsets now.
         for (Entry e : ifd0) {
-            if (e.tag == 0x8769) {
-                e.data[0] = (byte) (exifAt & 0xFF);
-                e.data[1] = (byte) ((exifAt >> 8) & 0xFF);
-                e.data[2] = (byte) ((exifAt >> 16) & 0xFF);
-                e.data[3] = (byte) ((exifAt >> 24) & 0xFF);
-            }
+            if (e.tag == 0x8769) put32(e.data, 0, exifAt);
+            if (e.tag == 0x8825) put32(e.data, 0, gpsAt);
         }
 
         int at = ifd0At;
@@ -203,7 +219,89 @@ public final class JpegExif {
             at += 12;
         }
         put32(tiff, at, 0);
+        if (gps != null) {
+            at = gpsAt;
+            put16(tiff, at, gps.size()); at += 2;
+            valueAt = gpsAt + gpsSize;
+            for (Entry e : gps) {
+                put16(tiff, at, e.tag); put16(tiff, at + 2, e.type); put32(tiff, at + 4, e.count());
+                if (e.data.length > 4) {
+                    put32(tiff, at + 8, valueAt);
+                    System.arraycopy(e.data, 0, tiff, valueAt, e.data.length);
+                    valueAt += align(e.data.length);
+                } else {
+                    System.arraycopy(e.data, 0, tiff, at + 8, e.data.length);
+                }
+                at += 12;
+            }
+            put32(tiff, at, 0);
+        }
         return tiff;
+    }
+
+    // --------------------------------------------------------------------- gps
+
+    /**
+     * The GPS IFD for one fix.
+     *
+     * <p>Latitude and longitude are degrees-minutes-seconds, three rationals
+     * each, with the hemisphere in a separate ASCII tag -- EXIF's own shape, not
+     * a design decision here. Seconds are stored to a ten-thousandth, which is
+     * about three millimetres on the ground: finer than any phone's GPS.
+     */
+    private static List<Entry> gpsOf(GpsExif.Fix fix) {
+        final List<Entry> out = new ArrayList<>();
+        out.add(new Entry(0x0000, T_BYTE, new byte[]{2, 3, 0, 0}));         // GPSVersionID
+        out.add(ascii(0x0001, fix.lat < 0 ? "S" : "N"));                     // GPSLatitudeRef
+        out.add(sexagesimal(0x0002, Math.abs(fix.lat)));                     // GPSLatitude
+        out.add(ascii(0x0003, fix.lon < 0 ? "W" : "E"));                     // GPSLongitudeRef
+        out.add(sexagesimal(0x0004, Math.abs(fix.lon)));                     // GPSLongitude
+        out.add(new Entry(0x0005, T_BYTE, new byte[]{(byte) (fix.belowSea ? 1 : 0)}));
+        out.add(rational(0x0006, Math.round(fix.alt * 1000.0), 1000));       // GPSAltitude
+        final long[] hms = clockOf(fix.time);
+        if (hms != null) {                                                   // GPSTimeStamp
+            final byte[] d = new byte[24];
+            for (int i = 0; i < 3; ++i) {
+                put32(d, i * 8, hms[i]);
+                put32(d, i * 8 + 4, 1);
+            }
+            out.add(new Entry(0x0007, T_RATIONAL, d));
+        }
+        if (filled(fix.date)) out.add(ascii(0x001D, fix.date));              // GPSDateStamp
+        return out;
+    }
+
+    /** Degrees to {degrees, minutes, seconds} rationals, with the carry handled. */
+    private static Entry sexagesimal(int tag, double degrees) {
+        final double a = Math.max(0.0, degrees);
+        long deg = (long) Math.floor(a);
+        double minutes = (a - deg) * 60.0;
+        long min = (long) Math.floor(minutes);
+        long secNum = Math.round((minutes - min) * 60.0 * 10000.0);
+        long secDen = 10000;
+        if (secNum >= 60 * secDen) { secNum -= 60 * secDen; min += 1; }
+        if (min >= 60) { min -= 60; deg += 1; }
+        final byte[] d = new byte[24];
+        put32(d, 0, deg); put32(d, 4, 1);
+        put32(d, 8, min); put32(d, 12, 1);
+        put32(d, 16, secNum); put32(d, 20, secDen);
+        return new Entry(tag, T_RATIONAL, d);
+    }
+
+    /** "10:30:00" to {10, 30, 0}, or null when the string is not a clock. */
+    private static long[] clockOf(String text) {
+        if (!filled(text)) return null;
+        final String[] p = text.trim().split(":");
+        if (p.length < 2) return null;
+        try {
+            final long h = Long.parseLong(p[0].trim());
+            final long m = Long.parseLong(p[1].trim());
+            final long s = p.length > 2 ? Math.round(Double.parseDouble(p[2].trim())) : 0;
+            if (h < 0 || h > 23 || m < 0 || m > 59 || s < 0 || s > 60) return null;
+            return new long[]{h, m, s};
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static int align(int n) { return (n + 1) & ~1; }
